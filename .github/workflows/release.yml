@@ -842,8 +842,9 @@ jobs:
           notes="$(cat <<'EOF'
           ## What's Changed
 
-          - Restore AtomUI title-bar menus and controls by registering the correct window decorations theme.
-          - Fix the zero-sized title-bar toolbar layout that caused the menus and icons to disappear.
+          - Fix blank confirmation and information dialog buttons with localized default labels.
+          - Preserve custom confirm and cancel labels in confirmation dialogs.
+          - Make X11 server shutdown resilient to accept-loop races.
           - Publish self-contained packages for Windows, macOS, and Linux.
           EOF
           )"

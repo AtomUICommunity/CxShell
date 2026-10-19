@@ -73,6 +73,11 @@ public sealed partial class X11Server
             {
                 return;
             }
+            catch (InvalidOperationException)
+            {
+                // DisposeAsync may stop the listener between accepted clients.
+                return;
+            }
             tcp.NoDelay = true;
             bool local = tcp.Client.RemoteEndPoint is IPEndPoint { Address: var address } && IPAddress.IsLoopback(address);
             TrackConnection(ServeAndDisposeAsync(tcp, local, cancellationToken));

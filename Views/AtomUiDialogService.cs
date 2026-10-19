@@ -5,6 +5,7 @@ using Avalonia.Controls;
 using Avalonia.Input;
 using Avalonia.Layout;
 using Avalonia.Media;
+using CxShell.Services;
 using CxShell.ViewModels;
 
 namespace CxShell.Views;
@@ -26,14 +27,14 @@ internal static class AtomUiDialogService
                 TextWrapping = TextWrapping.Wrap,
                 VerticalAlignment = VerticalAlignment.Center
             },
-            options: new MessageBoxOptions
+            options: WithLocalizedButtonText(new MessageBoxOptions
             {
                 Title = title,
                 Style = style,
                 Width = 420,
                 MinHeight = 150,
                 PlacementTarget = owner as Control
-            },
+            }),
             topLevel: owner);
     }
 
@@ -51,14 +52,16 @@ internal static class AtomUiDialogService
                 TextWrapping = TextWrapping.Wrap,
                 VerticalAlignment = VerticalAlignment.Center
             },
-            options: new MessageBoxOptions
+            options: WithLocalizedButtonText(new MessageBoxOptions
             {
                 Title = title,
                 Style = MessageBoxStyle.Confirm,
                 Width = 380,
                 MinHeight = 150,
-                PlacementTarget = owner as Control
-            },
+                PlacementTarget = owner as Control,
+                OkButtonText = okText,
+                CancelButtonText = cancelText
+            }),
             topLevel: owner);
 
         return result is DialogCode.Accepted;
@@ -102,7 +105,7 @@ internal static class AtomUiDialogService
 
         var result = await MessageBox.ShowMessageBoxModalAsync(
             content,
-            options: new MessageBoxOptions
+            options: WithLocalizedButtonText(new MessageBoxOptions
             {
                 Title = title,
                 Style = MessageBoxStyle.Confirm,
@@ -111,7 +114,7 @@ internal static class AtomUiDialogService
                 PlacementTarget = owner as Control,
                 OkButtonText = connectText,
                 CancelButtonText = cancelText
-            },
+            }),
             topLevel: owner);
 
         return new ExternalLaunchConfirmation(result is DialogCode.Accepted, trustCheckBox.IsChecked == true);
@@ -214,15 +217,24 @@ internal static class AtomUiDialogService
 
         await MessageBox.ShowMessageBoxModalAsync(
             content,
-            options: new MessageBoxOptions
+            options: WithLocalizedButtonText(new MessageBoxOptions
             {
                 Title = title,
                 Style = MessageBoxStyle.Information,
                 Width = 560,
                 MinHeight = 260,
                 PlacementTarget = owner as Control
-            },
+            }),
             topLevel: owner);
+    }
+
+    internal static MessageBoxOptions WithLocalizedButtonText(MessageBoxOptions options)
+    {
+        return options with
+        {
+            OkButtonText = options.OkButtonText ?? LocalizationService.Shared.Text("Common.Ok"),
+            CancelButtonText = options.CancelButtonText ?? LocalizationService.Shared.Text("Common.Cancel")
+        };
     }
 
     private static void OpenUrl(string url)

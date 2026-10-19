@@ -69,6 +69,20 @@ public sealed class X11ServerProtocolTests
         listener.Start();
     }
 
+    [Fact]
+    public async Task TcpServer_DisposeAfterAcceptingClientDoesNotThrow()
+    {
+        for (int attempt = 0; attempt < 10; attempt++)
+        {
+            X11Server server = await StartServerAsync(RandomNumberGenerator.GetBytes(16));
+            using (await ConnectAsync(server.DisplayNumber))
+            {
+            }
+
+            await server.DisposeAsync();
+        }
+    }
+
     private static async Task<X11Server> StartServerAsync(byte[] cookie)
     {
         X11Server server = new(new X11ServerOptions
