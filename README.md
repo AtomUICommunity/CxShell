@@ -8,7 +8,7 @@ The project is still moving quickly. Windows is currently the primary developmen
 
 ## Latest Release
 
-The latest release is [CxShell v0.1.59](https://github.com/xiaochengzjc/CxShell/releases/tag/v0.1.59). It consolidates application data in SQLite with legacy JSON migration, adds configurable session log retention, improves session recording selection and bulk deletion, and fixes a crash when refreshing recent connections.
+The latest release is [CxShell v0.1.64](https://github.com/xiaochengzjc/CxShell/releases/tag/v0.1.64). It upgrades AtomUI to 6.2.6 and Avalonia to 12.1.4, adds language-specific `/en/` and `/zh/` routes to the official website, and improves donation QR-code alignment.
 
 Packages are available for Windows x64, macOS x64/arm64, and Linux x64/arm64. The release page provides Windows and macOS installers or portable archives, plus Linux AppImage and tar.gz packages.
 

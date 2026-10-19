@@ -842,10 +842,9 @@ jobs:
           notes="$(cat <<'EOF'
           ## What's Changed
 
-          - Add an optional built-in X server for SSH X11 forwarding, including per-session authorization and clipboard synchronization.
-          - Add local Python execution for login scripts and bundle Python 3.12 with Windows, Linux, and macOS packages.
-          - Improve terminal sizing, selection, scrollback, and SSH X11 authorization handling.
-          - Upgrade AtomUI to 6.2.2 and Avalonia to 12.1.3.
+          - Upgrade AtomUI desktop controls and DataGrid to 6.2.6, and Avalonia to 12.1.4.
+          - Add `/en/` and `/zh/` routes to the official website; language switching updates the address and supports browser history navigation.
+          - Align the donation QR codes with the accompanying content and refine AtomUI initialization for the updated startup pipeline.
           - Publish self-contained packages for Windows, macOS, and Linux.
           EOF
           )"

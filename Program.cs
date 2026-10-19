@@ -33,6 +33,7 @@ internal class Program
                 DisableSetProcessName = false
             })
             .WithAtomUIDefaultOptions()
+            .UseAtomUI(App.ConfigureAtomUI)
             .LogToTrace();
     }
 }

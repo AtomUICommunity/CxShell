@@ -24,16 +24,16 @@ public partial class App : Application
     {
         AvaloniaXamlLoader.Load(this);
         InstallMacOsApplicationMenu();
+    }
 
-        this.UseAtomUI(builder =>
-        {
-            var initialTheme = LoadInitialTheme();
-            builder.WithInitialTheme(IThemeManager.DEFAULT_THEME_ID, initialTheme);
-            builder.UseAlibabaSansFont();
-            builder.UseDesktopControls();
-            builder.UseDesktopColorPicker();
-            builder.UseDesktopDataGrid();
-        });
+    public static void ConfigureAtomUI(IAtomUIBuilder builder)
+    {
+        var initialTheme = LoadInitialTheme();
+        builder.WithInitialTheme(IThemeManager.DEFAULT_THEME_ID, initialTheme);
+        builder.UseAlibabaSansFont();
+        builder.UseDesktopControls();
+        builder.UseDesktopColorPicker();
+        builder.UseDesktopDataGrid();
     }
 
     private static ThemeConfig LoadInitialTheme()

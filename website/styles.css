@@ -145,7 +145,7 @@ h2 em { color: var(--purple-soft); font-style: normal; }
 .inline-link { display: inline-flex; align-items: center; gap: 8px; margin-top: 12px; border-bottom: 1px solid var(--purple); color: #fff; font-size: 13px; padding-bottom: 5px; }
 .inline-link:hover { color: var(--purple-soft); }
 
-.support-grid { align-items: start; }
+.support-grid { align-items: center; }
 .donation-grid { display: grid; grid-template-columns: repeat(2, minmax(150px, 220px)); gap: 18px; justify-content: center; }
 .donation-item { display: grid; justify-items: center; gap: 12px; color: rgba(11, 10, 13, .68); font-family: var(--sans); font-size: 13px; font-weight: 600; letter-spacing: .02em; text-align: center; }
 .donation-item img { width: 100%; aspect-ratio: 1; object-fit: cover; border: 1px solid var(--line-light); background: #fff; }

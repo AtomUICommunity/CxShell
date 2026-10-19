@@ -7,6 +7,30 @@
     const revealItems = document.querySelectorAll('.reveal');
     const carousel = document.querySelector('[data-carousel]');
 
+    const getLanguageFromPath = () => {
+        const match = window.location.pathname.match(/(?:^|\/)(en|zh)(?:\/index\.html)?\/?$/i);
+        return match?.[1].toLowerCase();
+    };
+
+    const getSiteBasePath = () => {
+        const segments = window.location.pathname.split('/').filter(Boolean);
+        if (segments.at(-1)?.toLowerCase() === 'index.html') segments.pop();
+        if (['en', 'zh'].includes(segments.at(-1)?.toLowerCase())) segments.pop();
+        return `/${segments.length ? `${segments.join('/')}/` : ''}`;
+    };
+
+    const getLanguagePath = (language) => `${getSiteBasePath()}${language}/`;
+
+    const makeResourceUrlsAbsolute = () => {
+        document.querySelectorAll('[src], link[href]').forEach((element) => {
+            const attribute = element.hasAttribute('src') ? 'src' : 'href';
+            const value = element.getAttribute(attribute);
+            if (value?.startsWith('./')) {
+                element.setAttribute(attribute, new URL(value, document.baseURI).href);
+            }
+        });
+    };
+
     const translations = {
         en: {
             documentTitle: 'CxShell · A clear remote workspace',
@@ -162,11 +186,36 @@
         }
     };
 
+    const initialLanguage = getLanguageFromPath() ?? 'en';
+    if (window.location.protocol !== 'file:') {
+        makeResourceUrlsAbsolute();
+        const initialPath = getLanguageFromPath();
+        const localizedPath = getLanguagePath(initialLanguage);
+        if (!initialPath) {
+            window.history.replaceState({ language: initialLanguage }, '', `${localizedPath}${window.location.search}${window.location.hash}`);
+        }
+    }
+    applyLanguage(initialLanguage);
+
+    if (window.location.protocol !== 'file:') {
+        window.addEventListener('popstate', () => {
+            applyLanguage(getLanguageFromPath() ?? 'en');
+        });
+    }
+
     languageToggle?.addEventListener('click', () => {
-        const nextLanguage = document.documentElement.lang.startsWith('zh') ? 'en' : 'zh';
+        const currentLanguage = document.documentElement.lang.startsWith('zh') ? 'zh' : 'en';
+        const nextLanguage = currentLanguage === 'en' ? 'zh' : 'en';
+        if (window.location.protocol !== 'file:') {
+            const localizedPath = getLanguagePath(nextLanguage);
+            window.history.pushState(
+                { language: nextLanguage },
+                '',
+                `${localizedPath}${window.location.search}${window.location.hash}`
+            );
+        }
         applyLanguage(nextLanguage);
     });
-    applyLanguage('en');
 
     const updateHeader = () => {
         header?.classList.toggle('is-scrolled', window.scrollY > 24);
