@@ -2,6 +2,7 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:services="using:CxShell.Services"
              xmlns:atom="https://atomui.net"
+             xmlns:chrome="using:Avalonia.Controls.Chrome"
              xmlns:antdicons="https://atomui.net/icons/antdesign"
              xmlns:models="using:CxShell.Models"
              xmlns:controls="using:CxShell.Controls"
@@ -11,6 +12,7 @@
              x:Name="MainWindowRoot"
              x:DataType="vm:MainWindowViewModel"
              Title=""
+             WindowDecorationsTheme="{DynamicResource {x:Type chrome:WindowDrawnDecorations}}"
              Icon="/Assets/CxShellLogo.png"
              Width="1200"
              Height="800"
@@ -26,7 +28,8 @@
     </atom:Window.LogoTemplate>
 
     <atom:Window.LeftAddOn>
-        <StackPanel Orientation="Horizontal"
+        <StackPanel x:Name="LeftToolbarAddOn"
+                    Orientation="Horizontal"
                     Spacing="4"
                     VerticalAlignment="Center"
                     IsVisible="{Binding IsMainChromeVisible}">
@@ -201,7 +204,8 @@
     </atom:Window.LeftAddOn>
 
     <atom:Window.RightAddOn>
-        <StackPanel Orientation="Horizontal"
+        <StackPanel x:Name="RightToolbarAddOn"
+                    Orientation="Horizontal"
                     Spacing="4"
                     VerticalAlignment="Center"
                     IsVisible="{Binding IsMainChromeVisible}">

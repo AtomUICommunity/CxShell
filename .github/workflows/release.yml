@@ -842,9 +842,8 @@ jobs:
           notes="$(cat <<'EOF'
           ## What's Changed
 
-          - Upgrade AtomUI desktop controls and DataGrid to 6.2.6, and Avalonia to 12.1.4.
-          - Add `/en/` and `/zh/` routes to the official website; language switching updates the address and supports browser history navigation.
-          - Align the donation QR codes with the accompanying content and refine AtomUI initialization for the updated startup pipeline.
+          - Restore AtomUI title-bar menus and controls by registering the correct window decorations theme.
+          - Fix the zero-sized title-bar toolbar layout that caused the menus and icons to disappear.
           - Publish self-contained packages for Windows, macOS, and Linux.
           EOF
           )"

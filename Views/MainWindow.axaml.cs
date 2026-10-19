@@ -14,12 +14,13 @@ using CxShell.ViewModels;
 using AtomContextMenu = AtomUI.Desktop.Controls.ContextMenu;
 using AtomMenuItem = AtomUI.Desktop.Controls.MenuItem;
 using AtomMenuSeparator = AtomUI.Desktop.Controls.MenuSeparator;
+using AtomWindow = AtomUI.Desktop.Controls.Window;
 
 namespace CxShell.Views;
 
-public partial class MainWindow : Window
+public partial class MainWindow : AtomWindow
 {
-    protected override Type StyleKeyOverride { get; } = typeof(Window);
+    protected override Type StyleKeyOverride { get; } = typeof(AtomWindow);
     private readonly DispatcherTimer _fullScreenHintTimer;
     private readonly string[] _startupArgs;
     private readonly CommandLineLaunchOptions _startupLaunchOptions;
@@ -109,6 +110,8 @@ public partial class MainWindow : Window
             }
         };
         DataContext = vm;
+        LeftToolbarAddOn.DataContext = vm;
+        RightToolbarAddOn.DataContext = vm;
         WriteToolbarDiagnostics("MainWindow initialized; toolbar menus use AtomUI ContextMenu.");
         Closed += (_, _) => vm.Dispose();
         PropertyChanged += (_, e) =>
@@ -130,6 +133,11 @@ public partial class MainWindow : Window
     protected override void OnLoaded(RoutedEventArgs e)
     {
         base.OnLoaded(e);
+        Dispatcher.UIThread.Post(
+            () => WriteToolbarDiagnostics(
+                $"Toolbar layout: left={LeftToolbarAddOn.Bounds}; menu={ToolbarMenu.Bounds}; right={RightToolbarAddOn.Bounds}; " +
+                $"leftVisible={LeftToolbarAddOn.IsVisible}; rightVisible={RightToolbarAddOn.IsVisible}."),
+            DispatcherPriority.ApplicationIdle);
         StartCommandLineHandoffServer();
         StartRdpSmokeIfRequested();
         HandleCommandLineLaunchIfRequested();

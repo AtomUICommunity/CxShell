@@ -1,8 +1,10 @@
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Controls.Chrome;
 using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Markup.Xaml;
 using Avalonia.Platform;
+using Avalonia.Styling;
 using AtomUI;
 using AtomUI.Controls;
 using AtomUI.Desktop.Controls;
@@ -66,12 +68,31 @@ public partial class App : Application
     {
         if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime desktop)
         {
+            RegisterAtomUiWindowDecorationsTheme();
             desktop.MainWindow = new MainWindow(desktop.Args ?? Array.Empty<string>());
             InitializeWindowsTrayIcon(desktop);
             desktop.Exit += (_, _) => DisposeWindowsTrayIcon();
         }
 
         base.OnFrameworkInitializationCompleted();
+    }
+
+    private void RegisterAtomUiWindowDecorationsTheme()
+    {
+        var resourceKey = typeof(WindowDrawnDecorations);
+        var themeProvider = Styles
+            .OfType<IThemeManager>()
+            .OfType<IResourceProvider>()
+            .FirstOrDefault();
+
+        if (themeProvider?.TryGetResource(resourceKey, ActualThemeVariant, out var resource) == true &&
+            resource is ControlTheme controlTheme)
+        {
+            Resources[resourceKey] = controlTheme;
+            return;
+        }
+
+        throw new InvalidOperationException("AtomUI's WindowDrawnDecorations theme could not be resolved.");
     }
 
     private void InitializeWindowsTrayIcon(IClassicDesktopStyleApplicationLifetime desktop)
