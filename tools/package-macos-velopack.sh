@@ -27,6 +27,16 @@ if [ ! -x "$APP_PATH/Contents/MacOS/CxShell" ]; then
   exit 1
 fi
 
+while IFS= read -r -d '' symlink_path; do
+  symlink_target="$(readlink "$symlink_path")"
+  case "$symlink_target" in
+    /*)
+      echo "Absolute symlink is not relocatable in a macOS update package: $symlink_path -> $symlink_target" >&2
+      exit 1
+      ;;
+  esac
+done < <(find "$APP_PATH" -type l -print0)
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 VPK_TOOL_DIR="$REPO_ROOT/.tmp/vpk"

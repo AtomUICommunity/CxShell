@@ -828,6 +828,7 @@ jobs:
           - Enable in-app updates for macOS installations created from this release.
           - Existing macOS installations need a one-time manual replacement before in-app updates are available.
           - Preserve Velopack update metadata in macOS DMG and archive packages.
+          - Fix macOS update packaging for the bundled Python runtime.
           - Publish self-contained packages for Windows, macOS, and Linux.
           EOF
           )"

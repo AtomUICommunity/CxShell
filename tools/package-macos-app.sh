@@ -46,6 +46,39 @@ mkdir -p "$MACOS_DIR" "$RESOURCES_DIR"
 cp -R "$PUBLISH_DIR"/. "$MACOS_DIR"/
 chmod +x "$MACOS_DIR/$APP_NAME"
 
+# uv creates a version alias for its managed Python runtime using the build
+# machine's absolute install path. Keep that alias relocatable inside the app.
+PYTHON_RUNTIME_DIR="$MACOS_DIR/python-runtime"
+if [ -d "$PYTHON_RUNTIME_DIR" ]; then
+  for runtime_alias in "$PYTHON_RUNTIME_DIR"/cpython-3.12-macos-*-none; do
+    [ -L "$runtime_alias" ] || continue
+
+    link_target="$(readlink "$runtime_alias")"
+    case "$link_target" in
+      "$PUBLISH_DIR/python-runtime/"*)
+        relative_target="${link_target#"$PUBLISH_DIR/python-runtime/"}"
+        if [ ! -e "$PYTHON_RUNTIME_DIR/$relative_target" ]; then
+          echo "Python runtime alias target was not copied into the app: $link_target" >&2
+          exit 1
+        fi
+
+        ln -sfn "$relative_target" "$runtime_alias"
+        echo "Rewrote Python runtime alias to a relocatable link: $(basename "$runtime_alias") -> $relative_target"
+        ;;
+    esac
+  done
+fi
+
+while IFS= read -r -d '' symlink_path; do
+  symlink_target="$(readlink "$symlink_path")"
+  case "$symlink_target" in
+    /*)
+      echo "Absolute symlink is not allowed in the macOS app bundle: $symlink_path -> $symlink_target" >&2
+      exit 1
+      ;;
+  esac
+done < <(find "$APP_ROOT" -type l -print0)
+
 if [ -f "$ICON_SOURCE" ]; then
   if command -v sips >/dev/null 2>&1 && command -v iconutil >/dev/null 2>&1; then
     ICON_WORK_DIR="$(mktemp -d)"
