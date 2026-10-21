@@ -52,15 +52,18 @@ fi
   --outputDir "$OUTPUT_DIR"
 
 portable_package="$OUTPUT_DIR/$PACK_ID-$PACK_CHANNEL-Portable.zip"
-if [ ! -s "$portable_package" ]; then
-  echo "Velopack portable package was not created: $portable_package" >&2
-  exit 1
-fi
-
-test -s "$OUTPUT_DIR/assets.$PACK_CHANNEL.json"
-test -s "$OUTPUT_DIR/releases.$PACK_CHANNEL.json"
-test -s "$OUTPUT_DIR/RELEASES-$PACK_CHANNEL"
-test -s "$OUTPUT_DIR/$PACK_ID-$PACK_VERSION-$PACK_CHANNEL-full.nupkg"
+required_files=(
+  "$portable_package"
+  "$OUTPUT_DIR/releases.$PACK_CHANNEL.json"
+  "$OUTPUT_DIR/RELEASES-$PACK_CHANNEL"
+  "$OUTPUT_DIR/$PACK_ID-$PACK_VERSION-$PACK_CHANNEL-full.nupkg"
+)
+for required_file in "${required_files[@]}"; do
+  if [ ! -s "$required_file" ]; then
+    echo "Expected Velopack output was not created: $required_file" >&2
+    exit 1
+  fi
+done
 
 unpack_dir="$(mktemp -d)"
 app_parent="$(dirname "$APP_PATH")"
