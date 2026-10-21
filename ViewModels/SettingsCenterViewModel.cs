@@ -48,6 +48,7 @@ public sealed class AboutDependencyViewModel
 
 public partial class SettingsCenterViewModel : ObservableObject, IDisposable
 {
+    private const string AtomUiVersion = "6.2.7";
     private readonly LocalizationService _localization = LocalizationService.Shared;
 
     [ObservableProperty]
@@ -87,17 +88,19 @@ public partial class SettingsCenterViewModel : ObservableObject, IDisposable
     public string AboutAppNameText => "CxShell";
     public string AboutVersionText => string.Format(Text("About.Version"), _appVersion);
     public string AboutContentText => Text("About.Description");
-    public string AboutBuiltWithText => Text("About.BuiltWith");
+    public string AboutBuiltWithText => string.Format(Text("About.BuiltWith"), AtomUiVersion);
     public string AboutGitHubLabelText => Text("About.GitHub");
     public string AboutGitHubUrlText => "https://github.com/xiaochengzjc/CxShell";
     public string AboutVersionBadgeText => $"v{_appVersion}";
     public string AboutSystemInfoText => Text("About.SystemInfo");
     public string AboutFrameworkLabelText => Text("About.Framework");
+    public string AboutAtomUiLabelText => Text("About.AtomUI");
     public string AboutRuntimeLabelText => Text("About.Runtime");
     public string AboutSshLabelText => Text("About.SshLibrary");
     public string AboutOperatingSystemLabelText => Text("About.OperatingSystem");
     public string AboutConfigurationLabelText => Text("About.Configuration");
     public string AboutFrameworkValueText => "Avalonia UI 12.1.1";
+    public string AboutAtomUiValueText => $"AtomUI {AtomUiVersion}";
     public string AboutRuntimeValueText => RuntimeInformation.FrameworkDescription;
     public string AboutSshValueText => "SSH.NET 2024.2.0";
     public string AboutOperatingSystemValueText => $"{RuntimeInformation.OSDescription} ({RuntimeInformation.OSArchitecture})";
@@ -286,6 +289,7 @@ public partial class SettingsCenterViewModel : ObservableObject, IDisposable
         OnPropertyChanged(nameof(AboutVersionBadgeText));
         OnPropertyChanged(nameof(AboutSystemInfoText));
         OnPropertyChanged(nameof(AboutFrameworkLabelText));
+        OnPropertyChanged(nameof(AboutAtomUiLabelText));
         OnPropertyChanged(nameof(AboutRuntimeLabelText));
         OnPropertyChanged(nameof(AboutSshLabelText));
         OnPropertyChanged(nameof(AboutOperatingSystemLabelText));

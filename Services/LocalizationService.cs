@@ -1138,10 +1138,11 @@ public sealed class LocalizationService : INotifyPropertyChanged
         EnglishTexts["About.Message"] = "CxShell\nVersion: {0}\n\nA cross-platform remote session client for SSH, SFTP, FTP, TELNET, RLOGIN, SERIAL, VNC, and RDP.\n\nBuilt with Avalonia, AtomUI, SSH.NET, FluentFTP, FreeRDP, and Velopack.\n\nGitHub: https://github.com/xiaochengzjc/CxShell";
         EnglishTexts["About.Version"] = "Version: {0}";
         EnglishTexts["About.Description"] = "A cross-platform remote session client with support for SSH, SFTP, FTP, TELNET, RLOGIN, SERIAL, VNC, and RDP.";
-        EnglishTexts["About.BuiltWith"] = "Built with Avalonia, AtomUI, SSH.NET, FluentFTP, FreeRDP, and Velopack.";
+        EnglishTexts["About.BuiltWith"] = "Built with Avalonia, AtomUI {0}, SSH.NET, FluentFTP, FreeRDP, and Velopack.";
         EnglishTexts["About.GitHub"] = "GitHub:";
         EnglishTexts["About.SystemInfo"] = "System information";
         EnglishTexts["About.Framework"] = "Framework";
+        EnglishTexts["About.AtomUI"] = "UI toolkit";
         EnglishTexts["About.Runtime"] = "Runtime";
         EnglishTexts["About.SshLibrary"] = "SSH library";
         EnglishTexts["About.OperatingSystem"] = "Operating system";
@@ -1689,10 +1690,11 @@ public sealed class LocalizationService : INotifyPropertyChanged
         ChineseTexts["About.Message"] = "CxShell\n\u7248\u672c\uff1a{0}\n\n\u8de8\u5e73\u53f0\u8fdc\u7a0b\u4f1a\u8bdd\u5ba2\u6237\u7aef\uff0c\u652f\u6301 SSH\u3001SFTP\u3001FTP\u3001TELNET\u3001RLOGIN\u3001SERIAL\u3001VNC \u548c RDP\u3002\n\n\u57fa\u4e8e Avalonia\u3001AtomUI\u3001SSH.NET\u3001FluentFTP\u3001FreeRDP \u548c Velopack \u6784\u5efa\u3002\n\nGitHub\uff1ahttps://github.com/xiaochengzjc/CxShell";
         ChineseTexts["About.Version"] = "\u7248\u672c\uff1a{0}";
         ChineseTexts["About.Description"] = "\u8de8\u5e73\u53f0\u8fdc\u7a0b\u4f1a\u8bdd\u5ba2\u6237\u7aef\uff0c\u652f\u6301 SSH\u3001SFTP\u3001FTP\u3001TELNET\u3001RLOGIN\u3001SERIAL\u3001VNC \u548c RDP\u3002";
-        ChineseTexts["About.BuiltWith"] = "\u57fa\u4e8e Avalonia\u3001AtomUI\u3001SSH.NET\u3001FluentFTP\u3001FreeRDP \u548c Velopack \u6784\u5efa\u3002";
+        ChineseTexts["About.BuiltWith"] = "\u57fa\u4e8e Avalonia\u3001AtomUI {0}\u3001SSH.NET\u3001FluentFTP\u3001FreeRDP \u548c Velopack \u6784\u5efa\u3002";
         ChineseTexts["About.GitHub"] = "GitHub\uff1a";
         ChineseTexts["About.SystemInfo"] = "\u7cfb\u7edf\u4fe1\u606f";
         ChineseTexts["About.Framework"] = "\u6846\u67b6";
+        ChineseTexts["About.AtomUI"] = "UI \u7ec4\u4ef6\u5e93";
         ChineseTexts["About.Runtime"] = "\u8fd0\u884c\u65f6";
         ChineseTexts["About.SshLibrary"] = "SSH \u5e93";
         ChineseTexts["About.OperatingSystem"] = "\u64cd\u4f5c\u7cfb\u7edf";

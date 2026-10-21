@@ -10,16 +10,13 @@
                     Margin="0,2,12,18">
             <Grid ColumnDefinitions="88,*"
                   ColumnSpacing="16">
-                <Border Grid.Column="0"
-                        Width="72"
-                        Height="72"
-                        Padding="12"
-                        Background="{atom:SharedTokenResource ColorPrimary}"
-                        CornerRadius="14"
-                        VerticalAlignment="Top">
-                    <Image Source="/Assets/CxShellLogo.png"
-                           Stretch="Uniform"/>
-                </Border>
+                <Image Grid.Column="0"
+                       Width="48"
+                       Height="48"
+                       Margin="12,12,0,0"
+                       Source="/Assets/CxShellLogo.png"
+                       Stretch="Uniform"
+                       VerticalAlignment="Top"/>
 
                 <StackPanel Grid.Column="1"
                             Spacing="7"
@@ -60,7 +57,7 @@
                         BorderBrush="{atom:SharedTokenResource ColorSplit}"
                         BorderThickness="1"
                         CornerRadius="5">
-                    <Grid RowDefinitions="Auto,Auto,Auto,Auto,Auto">
+                    <Grid RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto">
                         <Border Grid.Row="0"
                                 Padding="14,11"
                                 BorderBrush="{atom:SharedTokenResource ColorSplit}"
@@ -81,6 +78,20 @@
                                 BorderThickness="0,0,0,1">
                             <Grid ColumnDefinitions="180,*"
                                   ColumnSpacing="18">
+                                <TextBlock Text="{Binding AboutAtomUiLabelText}"
+                                           Foreground="{atom:SharedTokenResource ColorTextSecondary}"/>
+                                <TextBlock Grid.Column="1"
+                                           Text="{Binding AboutAtomUiValueText}"
+                                           FontFamily="Cascadia Mono,Consolas,monospace"
+                                           Foreground="{atom:SharedTokenResource ColorText}"/>
+                            </Grid>
+                        </Border>
+                        <Border Grid.Row="2"
+                                Padding="14,11"
+                                BorderBrush="{atom:SharedTokenResource ColorSplit}"
+                                BorderThickness="0,0,0,1">
+                            <Grid ColumnDefinitions="180,*"
+                                  ColumnSpacing="18">
                                 <TextBlock Text="{Binding AboutRuntimeLabelText}"
                                            Foreground="{atom:SharedTokenResource ColorTextSecondary}"/>
                                 <TextBlock Grid.Column="1"
@@ -89,7 +100,7 @@
                                            Foreground="{atom:SharedTokenResource ColorText}"/>
                             </Grid>
                         </Border>
-                        <Border Grid.Row="2"
+                        <Border Grid.Row="3"
                                 Padding="14,11"
                                 BorderBrush="{atom:SharedTokenResource ColorSplit}"
                                 BorderThickness="0,0,0,1">
@@ -103,7 +114,7 @@
                                            Foreground="{atom:SharedTokenResource ColorText}"/>
                             </Grid>
                         </Border>
-                        <Border Grid.Row="3"
+                        <Border Grid.Row="4"
                                 Padding="14,11"
                                 BorderBrush="{atom:SharedTokenResource ColorSplit}"
                                 BorderThickness="0,0,0,1">
@@ -118,7 +129,7 @@
                                            Foreground="{atom:SharedTokenResource ColorText}"/>
                             </Grid>
                         </Border>
-                        <Border Grid.Row="4"
+                        <Border Grid.Row="5"
                                 Padding="14,11">
                             <Grid ColumnDefinitions="180,*"
                                   ColumnSpacing="18">

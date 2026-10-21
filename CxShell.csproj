@@ -58,9 +58,9 @@
     </ItemGroup>
 
     <ItemGroup>
-        <PackageReference Include="AtomUI.Desktop.Controls" Version="6.2.6" />
-        <PackageReference Include="AtomUI.Desktop.Controls.ColorPicker" Version="6.2.6" />
-        <PackageReference Include="AtomUI.Desktop.Controls.DataGrid" Version="6.2.6" />
+        <PackageReference Include="AtomUI.Desktop.Controls" Version="6.2.7" />
+        <PackageReference Include="AtomUI.Desktop.Controls.ColorPicker" Version="6.2.7" />
+        <PackageReference Include="AtomUI.Desktop.Controls.DataGrid" Version="6.2.7" />
         <PackageReference Include="Avalonia.AvaloniaEdit" Version="12.0.0" />
         <PackageReference Include="LiveMarkdown.Avalonia" Version="2.4.0" />
         <PackageReference Include="Avalonia.Desktop" Version="12.1.4" />

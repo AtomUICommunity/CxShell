@@ -824,7 +824,7 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
             "CxShell",
             string.Format(_localization.Text("About.Version"), BuildAppVersion()),
             _localization.Text("About.Description"),
-            _localization.Text("About.BuiltWith"),
+            string.Format(_localization.Text("About.BuiltWith"), "6.2.7"),
             _localization.Text("About.GitHub"),
             "https://github.com/xiaochengzjc/CxShell");
     }

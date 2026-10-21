@@ -842,9 +842,9 @@ jobs:
           notes="$(cat <<'EOF'
           ## What's Changed
 
-          - Fix blank confirmation and information dialog buttons with localized default labels.
-          - Preserve custom confirm and cancel labels in confirmation dialogs.
-          - Make X11 server shutdown resilient to accept-loop races.
+          - Upgrade AtomUI desktop controls to 6.2.7 and show the toolkit version in About.
+          - Improve AtomUI window-decoration theme resolution to avoid startup failure when a theme resource is unavailable.
+          - Refine the About page logo presentation.
           - Publish self-contained packages for Windows, macOS, and Linux.
           EOF
           )"

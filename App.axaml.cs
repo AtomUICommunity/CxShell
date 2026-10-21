@@ -80,19 +80,23 @@ public partial class App : Application
     private void RegisterAtomUiWindowDecorationsTheme()
     {
         var resourceKey = typeof(WindowDrawnDecorations);
-        var themeProvider = Styles
-            .OfType<IThemeManager>()
-            .OfType<IResourceProvider>()
-            .FirstOrDefault();
-
-        if (themeProvider?.TryGetResource(resourceKey, ActualThemeVariant, out var resource) == true &&
-            resource is ControlTheme controlTheme)
+        if (TryGetResource(resourceKey, ActualThemeVariant, out var resource) && resource is ControlTheme appTheme)
         {
-            Resources[resourceKey] = controlTheme;
+            Resources[resourceKey] = appTheme;
             return;
         }
 
-        throw new InvalidOperationException("AtomUI's WindowDrawnDecorations theme could not be resolved.");
+        foreach (var provider in Styles.OfType<IResourceProvider>())
+        {
+            if (provider.TryGetResource(resourceKey, ActualThemeVariant, out resource) && resource is ControlTheme theme)
+            {
+                Resources[resourceKey] = theme;
+                return;
+            }
+        }
+
+        System.Diagnostics.Debug.WriteLine(
+            "AtomUI WindowDrawnDecorations theme was not exposed by the active theme providers; continuing with Avalonia's default window decorations.");
     }
 
     private void InitializeWindowsTrayIcon(IClassicDesktopStyleApplicationLifetime desktop)
