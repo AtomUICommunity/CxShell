@@ -30,7 +30,7 @@ staging_dir="$(mktemp -d)"
 trap 'rm -rf "$staging_dir"' EXIT
 
 app_name="$(basename "$APP_PATH")"
-cp -R "$APP_PATH" "$staging_dir/$app_name"
+ditto "$APP_PATH" "$staging_dir/$app_name"
 ln -s /Applications "$staging_dir/Applications"
 
 cat > "$staging_dir/Install Guide.txt" <<'GUIDE'
@@ -44,6 +44,8 @@ Recommended no-admin install:
 Dragging CxShell.app to the system /Applications folder may ask for an administrator password. Touch ID availability for that prompt is controlled by macOS, not by CxShell.
 
 Automatic updates are smoother when CxShell.app is installed in a folder your user account can write to, such as ~/Applications.
+
+If you are upgrading from a CxShell DMG released before in-app updates were enabled, replace the existing app with this release once. Later releases can be installed from within CxShell.
 GUIDE
 
 if [ -n "$README_SOURCE" ] && [ -f "$README_SOURCE" ]; then

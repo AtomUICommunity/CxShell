@@ -111,10 +111,10 @@ jobs:
           export ARCH="${{ matrix.arch }}"
           bash tools/build-macos-drag-bridge.sh
 
-      - name: Ad-hoc sign app
+      - name: Clear downloaded file attributes
         shell: bash
         run: |
-          codesign --force --deep --sign - "artifacts/${{ matrix.artifact_dir }}/CxShell.app"
+          xattr -cr "artifacts/${{ matrix.artifact_dir }}/CxShell.app" || true
 
       - name: Validate package
         shell: bash
@@ -134,6 +134,20 @@ jobs:
           fi
           otool -L "$app_path/Contents/MacOS/libCxRdpBridge.dylib"
           otool -L "$app_path/Contents/MacOS/libCxMacDragBridge.dylib"
+
+      - name: Create Velopack package
+        shell: bash
+        run: |
+          set -euo pipefail
+          rid="${{ matrix.rid }}"
+          export APP_PATH="$GITHUB_WORKSPACE/artifacts/${{ matrix.artifact_dir }}/CxShell.app"
+          export PACK_ID="CxShell-$rid"
+          export PACK_VERSION="${{ steps.version.outputs.value }}"
+          export PACK_CHANNEL="$rid"
+          export PACK_RUNTIME="$rid"
+          export PACK_TITLE="CxShell"
+          export OUTPUT_DIR="$GITHUB_WORKSPACE/artifacts/velopack/$rid"
+          bash tools/package-macos-velopack.sh
 
       - name: Create archive
         shell: bash
@@ -156,4 +170,5 @@ jobs:
           path: |
             artifacts/${{ matrix.artifact_dir }}.tar.gz
             artifacts/${{ matrix.artifact_dir }}.dmg
+            artifacts/velopack/${{ matrix.rid }}/**
           if-no-files-found: error

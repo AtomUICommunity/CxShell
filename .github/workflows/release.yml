@@ -718,20 +718,11 @@ jobs:
           export ARCH="${{ matrix.arch }}"
           bash tools/build-macos-drag-bridge.sh
 
-      - name: Ad-hoc sign app when supported
-        id: sign_app
+      - name: Clear downloaded file attributes
         shell: bash
         run: |
-          set -euo pipefail
           package_name="CxShell-$RELEASE_TAG-${{ matrix.package_suffix }}"
-          app_path="artifacts/package/$package_name/CxShell.app"
-          xattr -cr "$app_path" || true
-          if codesign --force --deep --sign - "$app_path"; then
-            echo "signed=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "signed=false" >> "$GITHUB_OUTPUT"
-            echo "::warning::Ad-hoc signing failed. The DMG and archive will still be published, but no Velopack update package will be produced for this macOS architecture."
-          fi
+          xattr -cr "artifacts/package/$package_name/CxShell.app" || true
 
       - name: Validate package
         shell: bash
@@ -760,6 +751,21 @@ jobs:
           DYLD_LIBRARY_PATH="$app_path/Contents/MacOS${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}" \
             dotnet run --project tools/RdpSmokeTest/RdpSmokeTest.csproj --configuration Release -- --probe
 
+      - name: Create Velopack package
+        shell: bash
+        run: |
+          set -euo pipefail
+          rid="${{ matrix.rid }}"
+          package_name="CxShell-$RELEASE_TAG-${{ matrix.package_suffix }}"
+          export APP_PATH="$GITHUB_WORKSPACE/artifacts/package/$package_name/CxShell.app"
+          export PACK_ID="CxShell-$rid"
+          export PACK_VERSION="${RELEASE_TAG#v}"
+          export PACK_CHANNEL="$rid"
+          export PACK_RUNTIME="$rid"
+          export PACK_TITLE="CxShell"
+          export OUTPUT_DIR="$GITHUB_WORKSPACE/artifacts/velopack/$rid"
+          bash tools/package-macos-velopack.sh
+
       - name: Create archive
         shell: bash
         run: |
@@ -777,29 +783,6 @@ jobs:
           export VOLUME_NAME="CxShell $RELEASE_TAG ${{ matrix.package_suffix }}"
           export README_SOURCE="$GITHUB_WORKSPACE/artifacts/package/$package_name/README-macos.txt"
           bash tools/create-macos-dmg.sh
-
-      - name: Create Velopack package
-        if: steps.sign_app.outputs.signed == 'true'
-        shell: bash
-        run: |
-          set -euo pipefail
-          rid="${{ matrix.rid }}"
-          version="${RELEASE_TAG#v}"
-          package_name="CxShell-$RELEASE_TAG-${{ matrix.package_suffix }}"
-          app_path="$GITHUB_WORKSPACE/artifacts/package/$package_name/CxShell.app"
-          output_dir="$GITHUB_WORKSPACE/artifacts/velopack/$rid"
-
-          dotnet tool install vpk --tool-path ".tmp/vpk" --version 1.2.0
-          ".tmp/vpk/vpk" pack \
-            --packId "CxShell-$rid" \
-            --packVersion "$version" \
-            --packDir "$app_path" \
-            --packAuthors "xiaochengzjc" \
-            --packTitle "CxShell" \
-            --mainExe "CxShell" \
-            --runtime "$rid" \
-            --channel "$rid" \
-            --outputDir "$output_dir"
 
       - name: Upload package artifact
         uses: actions/upload-artifact@v4
@@ -842,9 +825,9 @@ jobs:
           notes="$(cat <<'EOF'
           ## What's Changed
 
-          - Upgrade AtomUI desktop controls to 6.2.7 and show the toolkit version in About.
-          - Improve AtomUI window-decoration theme resolution to avoid startup failure when a theme resource is unavailable.
-          - Refine the About page logo presentation.
+          - Enable in-app updates for macOS installations created from this release.
+          - Existing macOS installations need a one-time manual replacement before in-app updates are available.
+          - Preserve Velopack update metadata in macOS DMG and archive packages.
           - Publish self-contained packages for Windows, macOS, and Linux.
           EOF
           )"
