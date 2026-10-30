@@ -27,7 +27,7 @@ internal class Program
     {
         return AppBuilder.Configure<App>()
             .UseReactiveUI(builder => { })
-            .UsePlatformDetect()
+            .UseAtomUIPlatformDetect()
             .With(new MacOSPlatformOptions
             {
                 DisableSetProcessName = false

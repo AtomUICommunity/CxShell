@@ -825,10 +825,9 @@ jobs:
           notes="$(cat <<'EOF'
           ## What's Changed
 
-          - Enable in-app updates for macOS installations created from this release.
-          - Existing macOS installations need a one-time manual replacement before in-app updates are available.
-          - Preserve Velopack update metadata in macOS DMG and archive packages.
-          - Fix macOS update packaging for the bundled Python runtime.
+          - Upgrade AtomUI to 6.2.10.
+          - Keep terminal selections anchored to their text while scrolling with the mouse wheel or scrollbar.
+          - Fix an unhighlighted row when selecting upward across multiple screens.
           - Publish self-contained packages for Windows, macOS, and Linux.
           EOF
           )"

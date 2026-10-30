@@ -1107,11 +1107,15 @@ public class TerminalControl : Control
             return;
 
         var buffer = TerminalBuffer;
-        if (buffer == null || row < start.Row || row > end.Row)
+        if (buffer == null)
             return;
 
-        int startCol = row == start.Row ? start.Column : 0;
-        int endColExclusive = row == end.Row ? end.Column : buffer.Columns;
+        var contentRow = buffer.ScrollbackBase + buffer.ScrollbackCount - _scrollOffset + row;
+        if (contentRow < start.Row || contentRow > end.Row)
+            return;
+
+        int startCol = contentRow == start.Row ? start.Column : 0;
+        int endColExclusive = contentRow == end.Row ? end.Column : buffer.Columns;
         if (endColExclusive <= startCol)
             return;
 
@@ -1603,8 +1607,6 @@ public class TerminalControl : Control
             _isDraggingScrollbar = true;
             _scrollbarDragOffsetY = thumb.Contains(point) ? point.Y - thumb.Y : thumb.Height / 2;
             UpdateScrollOffsetFromScrollbar(point.Y, buffer);
-            _selectionAnchor = null;
-            _selectionEnd = null;
             e.Pointer.Capture(this);
             InvalidateVisual();
             e.Handled = true;
@@ -1639,7 +1641,7 @@ public class TerminalControl : Control
         if (!properties.IsLeftButtonPressed)
             return;
 
-        var position = GetCellPosition(e.GetPosition(this), includeCell: true);
+        var position = GetSelectionCellPosition(e.GetPosition(this), includeCell: true);
         _selectionAnchor = position;
         _selectionEnd = position;
         _isSelecting = true;
@@ -1693,7 +1695,7 @@ public class TerminalControl : Control
         if (!_isSelecting || !e.GetCurrentPoint(this).Properties.IsLeftButtonPressed)
             return;
 
-        _selectionEnd = GetCellPosition(e.GetPosition(this), includeCell: true);
+        _selectionEnd = GetSelectionCellPosition(e.GetPosition(this), includeCell: true);
         InvalidateVisual();
         e.Handled = true;
     }
@@ -1731,7 +1733,7 @@ public class TerminalControl : Control
         if (!_isSelecting || e.InitialPressMouseButton != MouseButton.Left)
             return;
 
-        _selectionEnd = GetCellPosition(e.GetPosition(this), includeCell: true);
+        _selectionEnd = GetSelectionCellPosition(e.GetPosition(this), includeCell: true);
         _isSelecting = false;
         e.Pointer.Capture(null);
         InvalidateVisual();
@@ -1772,8 +1774,6 @@ public class TerminalControl : Control
         if (_scrollOffset == oldOffset)
             return;
 
-        _selectionAnchor = null;
-        _selectionEnd = null;
         InvalidateVisual();
         e.Handled = true;
     }
@@ -1928,27 +1928,26 @@ public class TerminalControl : Control
         if (buffer == null || !TryGetOrderedSelection(out var start, out var end))
             return string.Empty;
 
-        return BuildSelectedText(buffer, _scrollOffset, start.Row, start.Column, end.Row, end.Column);
+        return BuildSelectedText(buffer, start.Row, start.Column, end.Row, end.Column);
     }
 
     internal static string BuildSelectedText(
         TerminalBuffer buffer,
-        int scrollOffset,
-        int startRow,
+        int startContentRow,
         int startColumn,
-        int endRow,
+        int endContentRow,
         int endColumn)
     {
         var result = new StringBuilder();
-        for (int row = startRow; row <= endRow; row++)
+        for (int row = startContentRow; row <= endContentRow; row++)
         {
-            int startCol = row == startRow ? startColumn : 0;
-            int endColExclusive = row == endRow ? endColumn : buffer.Columns;
-            var continues = row < endRow && buffer.IsViewportRowWrapped(row, scrollOffset);
+            int startCol = row == startContentRow ? startColumn : 0;
+            int endColExclusive = row == endContentRow ? endColumn : buffer.Columns;
+            var continues = row < endContentRow && buffer.IsContentRowWrapped(row);
             if (continues)
             {
                 while (endColExclusive > startCol &&
-                       !buffer.GetViewportCell(row, endColExclusive - 1, scrollOffset).IsWritten)
+                       !buffer.GetContentCell(row, endColExclusive - 1).IsWritten)
                 {
                     endColExclusive--;
                 }
@@ -1958,13 +1957,13 @@ public class TerminalControl : Control
 
             for (int col = startCol; col < endColExclusive; col++)
             {
-                var cell = buffer.GetViewportCell(row, col, scrollOffset);
+                var cell = buffer.GetContentCell(row, col);
                 if (!cell.IsWideContinuation)
                     line.Append(cell.GetText());
             }
 
             result.Append(continues ? line.ToString() : line.ToString().TrimEnd());
-            if (row < endRow && !continues)
+            if (row < endContentRow && !continues)
                 result.AppendLine();
         }
 
@@ -1984,6 +1983,20 @@ public class TerminalControl : Control
             column = Math.Min(columns, column + 1);
 
         return new CellPosition(row, column);
+    }
+
+    private CellPosition GetSelectionCellPosition(Point point, bool includeCell = false)
+    {
+        var viewportPosition = GetCellPosition(point, includeCell);
+        return new CellPosition(GetContentRow(viewportPosition.Row), viewportPosition.Column);
+    }
+
+    private int GetContentRow(int viewportRow)
+    {
+        var buffer = TerminalBuffer;
+        return buffer == null
+            ? viewportRow
+            : buffer.ScrollbackBase + buffer.ScrollbackCount - _scrollOffset + viewportRow;
     }
 
     private static TerminalMouseButton? TryGetPressedMouseButton(PointerPointProperties properties)

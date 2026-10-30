@@ -12,6 +12,7 @@ public class TerminalBuffer
 {
     private TerminalCell[,] _cells;
     private List<TerminalCell[]> _scrollback = new();
+    private int _scrollbackBase;
     private readonly int _maxScrollback;
     private TerminalCell[,]? _mainCellsWhileAlternate;
     private List<TerminalCell[]>? _mainScrollbackWhileAlternate;
@@ -327,6 +328,40 @@ public class TerminalBuffer
 
         scrollOffset = Math.Clamp(scrollOffset, 0, _scrollback.Count);
         return IsRowWrapped(_scrollback.Count - scrollOffset + row);
+    }
+
+    /// <summary>
+    /// Number of history rows discarded from the front of the scrollback. Content
+    /// rows are expressed relative to this base so a selection keeps pointing at
+    /// the same text when old history is trimmed.
+    /// </summary>
+    public int ScrollbackBase => _scrollbackBase;
+
+    public TerminalCell GetContentCell(int contentRow, int col)
+    {
+        if (col < 0 || col >= Columns)
+            return TerminalCell.Default;
+
+        var combinedRow = contentRow - _scrollbackBase;
+        if (combinedRow < 0 || combinedRow >= _scrollback.Count + Rows)
+            return TerminalCell.Default;
+
+        if (combinedRow < _scrollback.Count)
+        {
+            var scrollbackRow = _scrollback[combinedRow];
+            return col < scrollbackRow.Length ? scrollbackRow[col] : TerminalCell.Default;
+        }
+
+        return _cells[combinedRow - _scrollback.Count, col];
+    }
+
+    internal bool IsContentRowWrapped(int contentRow)
+    {
+        var combinedRow = contentRow - _scrollbackBase;
+        if (combinedRow < 0 || combinedRow >= _scrollback.Count + Rows)
+            return false;
+
+        return IsRowWrapped(combinedRow);
     }
 
     /// <summary>
@@ -1004,6 +1039,7 @@ public class TerminalBuffer
     {
         if (clearScrollback)
         {
+            InvalidateContentRows();
             _scrollback.Clear();
             _scrollbackWrapped.Clear();
         }
@@ -1047,6 +1083,7 @@ public class TerminalBuffer
         if (_scrollback.Count >= _maxScrollback)
         {
             _scrollback.RemoveAt(0);
+            _scrollbackBase++;
             if (_scrollbackWrapped.Count > 0)
                 _scrollbackWrapped.RemoveAt(0);
         }
@@ -1570,9 +1607,31 @@ public class TerminalBuffer
         while (_scrollback.Count > _maxScrollback)
         {
             _scrollback.RemoveAt(0);
+            _scrollbackBase++;
             if (_scrollbackWrapped.Count > 0)
                 _scrollbackWrapped.RemoveAt(0);
         }
+    }
+
+    private void InvalidateContentRows()
+    {
+        // Advance the base past every addressable row so selections anchored to
+        // content that is about to be discarded can no longer resolve to cells.
+        _scrollbackBase += _scrollback.Count + Rows;
+    }
+
+    private bool HasWrittenScreenCells()
+    {
+        for (var row = 0; row < Rows; row++)
+        {
+            for (var column = 0; column < Columns; column++)
+            {
+                if (_cells[row, column].IsWritten)
+                    return true;
+            }
+        }
+
+        return false;
     }
 
     private void ResizeGrid(int newColumns, int newRows)
@@ -1662,6 +1721,7 @@ public class TerminalBuffer
 
     public void Clear()
     {
+        var hadContent = _scrollback.Count > 0 || HasWrittenScreenCells();
         for (int r = 0; r < _cells.GetLength(0); r++)
         {
             for (int c = 0; c < _cells.GetLength(1); c++)
@@ -1671,6 +1731,8 @@ public class TerminalBuffer
         }
         CursorRow = 0;
         CursorCol = 0;
+        if (hadContent)
+            InvalidateContentRows();
         _scrollback.Clear();
         _scrollbackWrapped.Clear();
         Array.Clear(_wrappedRows, 0, _wrappedRows.Length);

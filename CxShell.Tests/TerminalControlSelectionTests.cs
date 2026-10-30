@@ -10,7 +10,7 @@ public sealed class TerminalControlSelectionTests
     {
         var buffer = CreateBuffer("abcdefghijkl");
 
-        var selected = TerminalControl.BuildSelectedText(buffer, 0, 0, 0, 2, 2);
+        var selected = TerminalControl.BuildSelectedText(buffer, 0, 0, 2, 2);
 
         Assert.Equal("abcdefghijkl", selected);
     }
@@ -20,7 +20,7 @@ public sealed class TerminalControlSelectionTests
     {
         var buffer = CreateBuffer("ab   X");
 
-        var selected = TerminalControl.BuildSelectedText(buffer, 0, 0, 0, 1, 1);
+        var selected = TerminalControl.BuildSelectedText(buffer, 0, 0, 1, 1);
 
         Assert.Equal("ab   X", selected);
     }
@@ -30,7 +30,7 @@ public sealed class TerminalControlSelectionTests
     {
         var buffer = CreateBuffer("abcd 中");
 
-        var selected = TerminalControl.BuildSelectedText(buffer, 0, 0, 0, 1, 3);
+        var selected = TerminalControl.BuildSelectedText(buffer, 0, 0, 1, 3);
 
         Assert.Equal("abcd 中", selected);
     }
@@ -40,7 +40,7 @@ public sealed class TerminalControlSelectionTests
     {
         var buffer = CreateBuffer("abcd中X");
 
-        var selected = TerminalControl.BuildSelectedText(buffer, 0, 0, 0, 1, 3);
+        var selected = TerminalControl.BuildSelectedText(buffer, 0, 0, 1, 3);
 
         Assert.Equal("abcd中X", selected);
     }
@@ -50,7 +50,7 @@ public sealed class TerminalControlSelectionTests
     {
         var buffer = CreateBuffer("abcde\r\nx");
 
-        var selected = TerminalControl.BuildSelectedText(buffer, 0, 0, 0, 1, 1);
+        var selected = TerminalControl.BuildSelectedText(buffer, 0, 0, 1, 1);
 
         Assert.Equal($"abcde{Environment.NewLine}x", selected);
     }
@@ -60,9 +60,23 @@ public sealed class TerminalControlSelectionTests
     {
         var buffer = CreateBuffer("abcdefghijklmnop");
 
-        var selected = TerminalControl.BuildSelectedText(buffer, 1, 0, 0, 2, 1);
+        var selected = TerminalControl.BuildSelectedText(buffer, 0, 0, 2, 1);
 
         Assert.Equal("abcdefghijk", selected);
+    }
+
+    [Fact]
+    public void ContentRowsKeepPointingAtTheSameTextWhenTheViewportScrolls()
+    {
+        var buffer = CreateBuffer("abcdefghijklmnop");
+        var contentRow = buffer.ScrollbackBase + buffer.ScrollbackCount;
+
+        var bottomCell = buffer.GetContentCell(contentRow, 0);
+        var scrolledCell = buffer.GetViewportCell(1, 0, scrollOffset: 1);
+
+        Assert.Equal("f", bottomCell.GetText());
+        Assert.Equal(bottomCell.GetText(), scrolledCell.GetText());
+        Assert.Equal("fghij", TerminalControl.BuildSelectedText(buffer, contentRow, 0, contentRow, 5));
     }
 
     private static TerminalBuffer CreateBuffer(string text)
