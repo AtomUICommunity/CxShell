@@ -648,11 +648,11 @@ public sealed class LocalizationService : INotifyPropertyChanged
         ["Option.Vertical"] = "竖线",
         ["Option.Underline"] = "下划线",
         ["Option.Center"] = "中央",
-        ["Option.Tile"] = "瓦",
-        ["Option.Stretch"] = "伸展",
-        ["Option.TopLeft"] = "左上方",
+        ["Option.Tile"] = "平铺",
+        ["Option.Stretch"] = "拉伸",
+        ["Option.TopLeft"] = "左上",
         ["Option.TopRight"] = "右上",
-        ["Option.BottomLeft"] = "左下方",
+        ["Option.BottomLeft"] = "左下",
         ["Option.BottomRight"] = "右下",
         ["Option.Ssh2ThenSsh1"] = "SSH2, SSH1 (如果服务器同时支持，则选择SSH2)",
         ["Option.Ssh1ThenSsh2"] = "SSH1, SSH2 (如果服务器同时支持，则选择SSH1)",
@@ -968,6 +968,11 @@ public sealed class LocalizationService : INotifyPropertyChanged
         EnglishTexts["ApplicationSettings.General"] = "Settings that apply to CxShell rather than an individual connection";
         EnglishTexts["ApplicationSettings.Startup"] = "Startup";
         EnglishTexts["ApplicationSettings.Appearance"] = "Appearance";
+        EnglishTexts["ApplicationSettings.BackgroundImage"] = "Background Image";
+        EnglishTexts["ApplicationSettings.BackgroundImageDescription"] = "Used by terminals when the session does not configure its own background image.";
+        EnglishTexts["ApplicationSettings.BackgroundImageFile"] = "File (F):";
+        EnglishTexts["ApplicationSettings.BackgroundImagePosition"] = "Position (P):";
+        EnglishTexts["ApplicationSettings.BackgroundImageOpacity"] = "Opacity (O):";
         EnglishTexts["ApplicationSettings.Theme"] = "Theme";
         EnglishTexts["ApplicationSettings.DarkTheme"] = "Dark";
         EnglishTexts["ApplicationSettings.LightTheme"] = "Light";
@@ -1520,6 +1525,11 @@ public sealed class LocalizationService : INotifyPropertyChanged
         ChineseTexts["ApplicationSettings.General"] = "\u8fd9\u4e9b\u8bbe\u7f6e\u9002\u7528\u4e8e CxShell \u6574\u4f53\uff0c\u4e0d\u9488\u5bf9\u5355\u4e2a\u8fde\u63a5";
         ChineseTexts["ApplicationSettings.Startup"] = "\u542f\u52a8";
         ChineseTexts["ApplicationSettings.Appearance"] = "\u5916\u89c2";
+        ChineseTexts["ApplicationSettings.BackgroundImage"] = "\u80cc\u666f\u56fe";
+        ChineseTexts["ApplicationSettings.BackgroundImageDescription"] = "\u4f1a\u8bdd\u672a\u5355\u72ec\u914d\u7f6e\u80cc\u666f\u56fe\u65f6\uff0c\u7ec8\u7aef\u4f7f\u7528\u6b64\u5168\u5c40\u80cc\u666f\u3002";
+        ChineseTexts["ApplicationSettings.BackgroundImageFile"] = "\u6587\u4ef6(F):";
+        ChineseTexts["ApplicationSettings.BackgroundImagePosition"] = "\u4f4d\u7f6e(P):";
+        ChineseTexts["ApplicationSettings.BackgroundImageOpacity"] = "\u4e0d\u900f\u660e\u5ea6(O):";
         ChineseTexts["ApplicationSettings.Theme"] = "\u4e3b\u9898";
         ChineseTexts["ApplicationSettings.DarkTheme"] = "\u6697\u8272";
         ChineseTexts["ApplicationSettings.LightTheme"] = "\u4eae\u8272";
@@ -2246,6 +2256,7 @@ public sealed class LocalizationService : INotifyPropertyChanged
         english["UiText.262"] = "Log retention (days):";
         english["UiText.263"] = "On connect, matching log files older than this are deleted.";
         english["UiText.264"] = "(0 = unlimited)";
+        english["UiText.265"] = "Opacity (O):";
 
         chinese["UiText.001"] = "服务器监控";
         chinese["UiText.002"] = "内存";
@@ -2511,6 +2522,7 @@ public sealed class LocalizationService : INotifyPropertyChanged
         chinese["UiText.262"] = "日志保留天数:";
         chinese["UiText.263"] = "连接并开始记录时，会删除匹配模板且超过保留期的日志。";
         chinese["UiText.264"] = "（0 表示不限）";
+        chinese["UiText.265"] = "不透明度(O):";
     }
 
     public string Language { get; private set; } = Chinese;

@@ -172,8 +172,34 @@ public partial class TerminalViewModel : ObservableObject
         Math.Clamp(_session?.AppearanceWindowPaddingBottom ?? 5, 0, 200));
     public double AppearanceLineSpacing => Math.Clamp(_session?.AppearanceLineSpacing ?? 0, -5, 32);
     public double AppearanceCharacterSpacing => Math.Clamp(_session?.AppearanceCharacterSpacing ?? 0, -5, 32);
-    public string AppearanceBackgroundImagePath => _session?.AppearanceBackgroundImagePath ?? string.Empty;
-    public string AppearanceBackgroundImagePosition => _session?.AppearanceBackgroundImagePosition ?? "Center";
+    private static ApplicationSettings? GlobalBackgroundSettings => SessionTreeViewModel.SharedSettings;
+    private bool SessionHasBackgroundImage => !string.IsNullOrWhiteSpace(_session?.AppearanceBackgroundImagePath);
+    public string AppearanceBackgroundImagePath => SessionHasBackgroundImage
+        ? _session!.AppearanceBackgroundImagePath
+        : GlobalBackgroundSettings?.BackgroundImagePath ?? string.Empty;
+    public string AppearanceBackgroundImagePosition
+    {
+        get
+        {
+            if (SessionHasBackgroundImage)
+                return _session?.AppearanceBackgroundImagePosition ?? "Center";
+            var position = GlobalBackgroundSettings?.BackgroundImagePosition;
+            return string.IsNullOrWhiteSpace(position) ? "Center" : position;
+        }
+    }
+    public double AppearanceBackgroundImageOpacity => SessionHasBackgroundImage
+        ? Math.Clamp(_session?.AppearanceBackgroundImageOpacity ?? 100, 0, 100) / 100.0
+        : Math.Clamp(GlobalBackgroundSettings?.BackgroundImageOpacity ?? 100, 0, 100) / 100.0;
+
+    /// <summary>
+    /// Re-announces the effective background image after global settings change.
+    /// </summary>
+    public void NotifyGlobalBackgroundChanged()
+    {
+        OnPropertyChanged(nameof(AppearanceBackgroundImagePath));
+        OnPropertyChanged(nameof(AppearanceBackgroundImagePosition));
+        OnPropertyChanged(nameof(AppearanceBackgroundImageOpacity));
+    }
     public bool FlashInactiveWindowOnBell => _session?.AdvancedBellFlashInactiveWindow == true;
     public IReadOnlyList<HighlightRule> AppearanceHighlightRules
     {
@@ -3855,6 +3881,7 @@ public partial class TerminalViewModel : ObservableObject
         OnPropertyChanged(nameof(AppearanceCharacterSpacing));
         OnPropertyChanged(nameof(AppearanceBackgroundImagePath));
         OnPropertyChanged(nameof(AppearanceBackgroundImagePosition));
+        OnPropertyChanged(nameof(AppearanceBackgroundImageOpacity));
         OnPropertyChanged(nameof(AppearanceHighlightRules));
     }
 

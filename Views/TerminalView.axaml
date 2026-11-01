@@ -54,6 +54,7 @@
                                   CharacterSpacing="{Binding AppearanceCharacterSpacing}"
                                   BackgroundImagePath="{Binding AppearanceBackgroundImagePath}"
                                   BackgroundImagePosition="{Binding AppearanceBackgroundImagePosition}"
+                                  BackgroundImageOpacity="{Binding AppearanceBackgroundImageOpacity}"
                                   HighlightRules="{Binding AppearanceHighlightRules}"
                                   TerminalBuffer="{Binding Buffer}"/>
 

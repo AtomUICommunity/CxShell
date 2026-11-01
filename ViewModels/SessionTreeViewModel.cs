@@ -100,6 +100,12 @@ public partial class SessionTreeViewModel : ObservableObject
 
     public MainWindowViewModel MainWindow => _mainWindow;
     public ApplicationSettings Settings => _data.Settings ??= new ApplicationSettings();
+
+    /// <summary>
+    /// Latest shared application settings; set during startup and whenever
+    /// settings are saved so terminal tabs can fall back to global values.
+    /// </summary>
+    public static ApplicationSettings? SharedSettings { get; private set; }
     private LocalizationService L => LocalizationService.Shared;
     public string SessionManagerTitle => L.Text("SessionManager.Title");
     public string NewText => L.Text("SessionManager.New");
@@ -128,6 +134,7 @@ public partial class SessionTreeViewModel : ObservableObject
         _data.Settings ??= new ApplicationSettings();
         _settingsStore = new ApplicationSettingsStore();
         _data.Settings = _settingsStore.Load(_data.Settings);
+        SharedSettings = _data.Settings;
         LocalizationService.Shared.SetLanguage(_data.Settings.UiLanguage);
         LocalizationService.Shared.LanguageChanged += (_, _) => NotifyLocalizationChanged();
         LoadSessions();
@@ -177,6 +184,7 @@ public partial class SessionTreeViewModel : ObservableObject
     public void SaveSettings(ApplicationSettings settings)
     {
         _data.Settings = settings;
+        SharedSettings = settings;
         _settingsStore.Save(settings);
     }
 

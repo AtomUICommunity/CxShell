@@ -2551,26 +2551,31 @@
                                 Padding="18">
                             <StackPanel Spacing="14">
                                 <TextBlock Text="{Binding [UiText.145], Source={x:Static services:LocalizationService.Shared}}" FontWeight="SemiBold"/>
-                                <Grid ColumnDefinitions="110,*,64"
-                                      RowDefinitions="Auto,14,Auto"
-                                      ColumnSpacing="10">
+                                <Grid ColumnDefinitions="110,*,64" ColumnSpacing="10">
                                     <TextBlock Text="{Binding [UiText.146], Source={x:Static services:LocalizationService.Shared}}" VerticalAlignment="Center"/>
                                     <atom:LineEdit Grid.Column="1"
                                                    x:Name="SessionAppearanceBackgroundImagePathBox"
                                                    Text="{Binding AppearanceBackgroundImagePath, Mode=TwoWay}"/>
-                                     <atom:Button Grid.Column="2"
-                                                  Content="..."
-                                                  Width="48"
-                                                  MinWidth="48"
-                                                  HorizontalContentAlignment="Center"
-                                                  Click="OnBrowseSessionAppearanceBackgroundImageClick"/>
-                                    <TextBlock Grid.Row="2" Text="{Binding [UiText.147], Source={x:Static services:LocalizationService.Shared}}" VerticalAlignment="Center"/>
-                                    <atom:Select Grid.Row="2"
-                                                 Grid.Column="1"
+                                    <atom:Button Grid.Column="2"
+                                                 Content="..."
+                                                 Width="48"
+                                                 MinWidth="48"
+                                                 HorizontalContentAlignment="Center"
+                                                 Click="OnBrowseSessionAppearanceBackgroundImageClick"/>
+                                </Grid>
+                                <Grid ColumnDefinitions="110,*" ColumnSpacing="10">
+                                    <TextBlock Text="{Binding [UiText.147], Source={x:Static services:LocalizationService.Shared}}" VerticalAlignment="Center"/>
+                                    <atom:Select Grid.Column="1"
                                                  x:Name="SessionAppearanceBackgroundImagePositionSelect"
                                                  OptionsSource="{Binding AppearanceBackgroundImagePositionOptions}"
                                                  Mode="Single"
                                                  SelectionChanged="OnSessionAppearanceSelectionChanged"/>
+                                </Grid>
+                                <Grid ColumnDefinitions="110,112,90,Auto" ColumnSpacing="14">
+                                    <TextBlock Text="{Binding [UiText.265], Source={x:Static services:LocalizationService.Shared}}" VerticalAlignment="Center"/>
+                                    <atom:NumericUpDown Grid.Column="1" Minimum="0" Maximum="100"
+                                                        Value="{Binding AppearanceBackgroundImageOpacity, Mode=TwoWay}"/>
+                                    <TextBlock Grid.Column="3" Text="(0 ~ 100)" VerticalAlignment="Center"/>
                                 </Grid>
                             </StackPanel>
                         </Border>

@@ -330,6 +330,9 @@ public class ApplicationSettings
     public bool AgentReadOnlyMode { get; set; }
     public string AgentAllowedCommandPrefixes { get; set; } = string.Empty;
     public string AgentBlockedCommandPrefixes { get; set; } = string.Empty;
+    public string BackgroundImagePath { get; set; } = string.Empty;
+    public string BackgroundImagePosition { get; set; } = "Center";
+    public int BackgroundImageOpacity { get; set; } = 100;
     public bool ConfirmSshHostKeyOnFirstConnection { get; set; } = true;
     public bool BlockChangedSshHostKeys { get; set; } = true;
     public bool RecordTerminalSessions { get; set; }
@@ -479,6 +482,7 @@ public class SessionInfo
     public string AppearanceTabIcon { get; set; } = "Default";
     public string AppearanceBackgroundImagePath { get; set; } = string.Empty;
     public string AppearanceBackgroundImagePosition { get; set; } = "Center";
+    public int AppearanceBackgroundImageOpacity { get; set; } = 100;
     public string AppearanceHighlightSetId { get; set; } = "None";
     public ObservableCollection<HighlightSet> AppearanceHighlightSets { get; set; } = new();
     public string AdvancedQuickCommandSet { get; set; } = "<<所有命令>>";

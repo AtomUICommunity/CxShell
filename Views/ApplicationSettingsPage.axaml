@@ -45,6 +45,55 @@
             </StackPanel>
 
             <StackPanel Spacing="8">
+                <TextBlock Text="{Binding BackgroundImageText}"
+                           FontWeight="SemiBold"
+                           Foreground="{atom:SharedTokenResource ColorText}"/>
+                <Border Background="{atom:SharedTokenResource ColorBgLayout}"
+                        BorderBrush="{atom:SharedTokenResource ColorSplit}"
+                        BorderThickness="1"
+                        CornerRadius="5"
+                        Padding="12,10">
+                    <StackPanel Spacing="9">
+                        <TextBlock Text="{Binding BackgroundImageDescriptionText}"
+                                   TextWrapping="Wrap"
+                                   FontSize="11"
+                                   Foreground="{atom:SharedTokenResource ColorTextTertiary}"/>
+                        <Grid ColumnDefinitions="132,*,Auto" ColumnSpacing="10">
+                            <TextBlock Text="{Binding BackgroundImageFileText}"
+                                       VerticalAlignment="Center"
+                                       Foreground="{atom:SharedTokenResource ColorTextSecondary}"/>
+                            <atom:TextBox Grid.Column="1"
+                                          Text="{Binding BackgroundImagePath, Mode=TwoWay}"/>
+                            <atom:Button Grid.Column="2"
+                                         Content="..."
+                                         MinWidth="48"
+                                         HorizontalContentAlignment="Center"
+                                         Click="OnBrowseBackgroundImageClick"/>
+                        </Grid>
+                        <Grid ColumnDefinitions="132,*" ColumnSpacing="10">
+                            <TextBlock Text="{Binding BackgroundImagePositionText}"
+                                       VerticalAlignment="Center"
+                                       Foreground="{atom:SharedTokenResource ColorTextSecondary}"/>
+                            <atom:Select Grid.Column="1"
+                                         OptionsSource="{Binding BackgroundImagePositionOptions}"
+                                         SelectedOption="{Binding BackgroundImagePositionOption, Mode=TwoWay}"
+                                         HorizontalAlignment="Stretch"/>
+                        </Grid>
+                        <Grid ColumnDefinitions="132,Auto,*" ColumnSpacing="10">
+                            <TextBlock Text="{Binding BackgroundImageOpacityText}"
+                                       VerticalAlignment="Center"
+                                       Foreground="{atom:SharedTokenResource ColorTextSecondary}"/>
+                            <atom:NumericUpDown Grid.Column="1"
+                                                Width="92"
+                                                Minimum="0"
+                                                Maximum="100"
+                                                Value="{Binding BackgroundImageOpacity, Mode=TwoWay}"/>
+                        </Grid>
+                    </StackPanel>
+                </Border>
+            </StackPanel>
+
+            <StackPanel Spacing="8">
                 <TextBlock Text="{Binding ThemeText}"
                            FontWeight="SemiBold"
                            Foreground="{atom:SharedTokenResource ColorText}"/>

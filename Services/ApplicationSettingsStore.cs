@@ -147,6 +147,10 @@ public sealed class ApplicationSettingsStore
         settings.UiLanguage = string.IsNullOrWhiteSpace(settings.UiLanguage)
             ? "zh-CN"
             : settings.UiLanguage.Trim();
+        settings.BackgroundImagePath = settings.BackgroundImagePath?.Trim() ?? string.Empty;
+        if (string.IsNullOrWhiteSpace(settings.BackgroundImagePosition))
+            settings.BackgroundImagePosition = "Center";
+        settings.BackgroundImageOpacity = Math.Clamp(settings.BackgroundImageOpacity, 0, 100);
         settings.SftpPanelWidth = NormalizeWidth(settings.SftpPanelWidth, 240, 800, 318);
         settings.AgentPanelWidth = NormalizeWidth(settings.AgentPanelWidth, 280, 600, 360);
         if (settings.AgentProvider.BaseUrl.Contains("/plan/v1", StringComparison.OrdinalIgnoreCase))

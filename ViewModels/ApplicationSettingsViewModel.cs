@@ -99,6 +99,9 @@ public partial class ApplicationSettingsViewModel : ObservableObject
     [ObservableProperty] private int _globalProxyPort;
     [ObservableProperty] private string _globalProxyUsername;
     [ObservableProperty] private string _globalProxyPassword;
+    [ObservableProperty] private string _backgroundImagePath = string.Empty;
+    [ObservableProperty] private ISelectOption? _backgroundImagePositionOption;
+    [ObservableProperty] private int _backgroundImageOpacity = 100;
     [ObservableProperty] private string _agentStatusText = string.Empty;
     [ObservableProperty] private bool _agentIsReady;
     [ObservableProperty] private string _agentModelCatalogStatus = string.Empty;
@@ -110,6 +113,7 @@ public partial class ApplicationSettingsViewModel : ObservableObject
     public ObservableCollection<ISelectOption> AgentProviderTypeOptions { get; } = new();
     public ObservableCollection<ISelectOption> AgentModelOptions { get; } = new();
     public ObservableCollection<ISelectOption> GlobalProxyTypeOptions { get; } = new();
+    public ObservableCollection<ISelectOption> BackgroundImagePositionOptions { get; } = new();
 
     public string TitleText => Text("ApplicationSettings.Title");
     public string GeneralText => Text("ApplicationSettings.General");
@@ -201,6 +205,11 @@ public partial class ApplicationSettingsViewModel : ObservableObject
     public string GlobalProxyPortText => Text("ApplicationSettings.GlobalProxyPort");
     public string GlobalProxyUsernameText => Text("ApplicationSettings.GlobalProxyUsername");
     public string GlobalProxyPasswordText => Text("ApplicationSettings.GlobalProxyPassword");
+    public string BackgroundImageText => Text("ApplicationSettings.BackgroundImage");
+    public string BackgroundImageDescriptionText => Text("ApplicationSettings.BackgroundImageDescription");
+    public string BackgroundImageFileText => Text("ApplicationSettings.BackgroundImageFile");
+    public string BackgroundImagePositionText => Text("ApplicationSettings.BackgroundImagePosition");
+    public string BackgroundImageOpacityText => Text("ApplicationSettings.BackgroundImageOpacity");
     public string AgentSecondsText => Text("ApplicationSettings.Seconds");
     public string AgentReadyText => Text("ApplicationSettings.AgentReady");
     public string ChineseText => Text("Language.Chinese");
@@ -278,6 +287,9 @@ public partial class ApplicationSettingsViewModel : ObservableObject
         _recordTerminalSessions = settings.RecordTerminalSessions;
         _recordingRetentionDays = settings.RecordingRetentionDays;
         _uiLanguage = NormalizeLanguage(settings.UiLanguage);
+        _backgroundImagePath = settings.BackgroundImagePath ?? string.Empty;
+        _backgroundImageOpacity = Math.Clamp(settings.BackgroundImageOpacity, 0, 100);
+        RebuildBackgroundImagePositionOptions(settings.BackgroundImagePosition);
         var agentProvider = EnsureAgentProvider();
         _agentEnabled = agentProvider.Enabled;
         var permissionMode = AgentPermissionPolicy.NormalizePermissionMode(settings.AgentPermissionMode);
@@ -741,6 +753,35 @@ public partial class ApplicationSettingsViewModel : ObservableObject
         Persist();
     }
 
+    partial void OnBackgroundImagePathChanged(string value)
+    {
+        _settings.BackgroundImagePath = value?.Trim() ?? string.Empty;
+        Persist();
+    }
+
+    partial void OnBackgroundImagePositionOptionChanged(ISelectOption? value)
+    {
+        var position = value?.Content?.ToString();
+        if (string.IsNullOrWhiteSpace(position))
+            return;
+
+        _settings.BackgroundImagePosition = position;
+        Persist();
+    }
+
+    partial void OnBackgroundImageOpacityChanged(int value)
+    {
+        var normalized = Math.Clamp(value, 0, 100);
+        if (value != normalized)
+        {
+            BackgroundImageOpacity = normalized;
+            return;
+        }
+
+        _settings.BackgroundImageOpacity = normalized;
+        Persist();
+    }
+
     private void RebuildAgentProviderTypeOptions(AgentProviderType preferredType)
     {
         AgentProviderTypeOptions.Clear();
@@ -828,6 +869,24 @@ public partial class ApplicationSettingsViewModel : ObservableObject
         GlobalProxyTypeOption = GlobalProxyTypeOptions.FirstOrDefault(option =>
             option.Content is ProxyProtocol protocol && protocol == preferred)
             ?? GlobalProxyTypeOptions[0];
+    }
+
+    private void RebuildBackgroundImagePositionOptions(string? preferredPosition)
+    {
+        BackgroundImagePositionOptions.Clear();
+        foreach (var position in new[]
+                 { "Center", "Tile", "Stretch", "TopLeft", "TopRight", "BottomLeft", "BottomRight" })
+        {
+            BackgroundImagePositionOptions.Add(new SelectOption
+            {
+                Header = Text($"Option.{position}"),
+                Content = position
+            });
+        }
+
+        BackgroundImagePositionOption = BackgroundImagePositionOptions.FirstOrDefault(option =>
+            string.Equals(option.Content?.ToString(), preferredPosition, StringComparison.OrdinalIgnoreCase))
+            ?? BackgroundImagePositionOptions[0];
     }
 
     private void RebuildAgentModelOptions()
@@ -949,6 +1008,12 @@ public partial class ApplicationSettingsViewModel : ObservableObject
         OnPropertyChanged(nameof(GlobalProxyPortText));
         OnPropertyChanged(nameof(GlobalProxyUsernameText));
         OnPropertyChanged(nameof(GlobalProxyPasswordText));
+        OnPropertyChanged(nameof(BackgroundImageText));
+        OnPropertyChanged(nameof(BackgroundImageDescriptionText));
+        OnPropertyChanged(nameof(BackgroundImageFileText));
+        OnPropertyChanged(nameof(BackgroundImagePositionText));
+        OnPropertyChanged(nameof(BackgroundImageOpacityText));
+        RebuildBackgroundImagePositionOptions(_settings.BackgroundImagePosition);
         RebuildAgentProviderTypeOptions(EnsureAgentProvider().Type);
         RebuildGlobalProxyTypeOptions(EnsureGlobalProxy().Protocol);
         RefreshAgentProviderStatus();

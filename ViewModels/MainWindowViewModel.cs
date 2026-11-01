@@ -896,6 +896,7 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         {
             tab.Terminal.SetCommandSuggestionsEnabled(settings.EnableCommandSuggestions);
             tab.Terminal.RefreshRecordingOptions();
+            tab.Terminal.NotifyGlobalBackgroundChanged();
         }
         if (IsTabBarVisible != settings.ShowTabBar)
             IsTabBarVisible = settings.ShowTabBar;

@@ -221,6 +221,7 @@ public partial class SessionEditViewModel : ObservableObject
     [ObservableProperty] private string _appearanceTabIcon = SessionTabIconCatalog.Default;
     [ObservableProperty] private string _appearanceBackgroundImagePath = string.Empty;
     [ObservableProperty] private string _appearanceBackgroundImagePosition = "Center";
+    [ObservableProperty] private decimal _appearanceBackgroundImageOpacity = 100;
     [ObservableProperty] private string _appearanceHighlightSetId = "None";
     [ObservableProperty] private HighlightSet? _selectedHighlightSet;
     [ObservableProperty] private HighlightRule? _selectedHighlightRule;
@@ -1395,6 +1396,7 @@ public partial class SessionEditViewModel : ObservableObject
         AppearanceBackgroundImagePosition = string.IsNullOrWhiteSpace(session.AppearanceBackgroundImagePosition)
             ? "Center"
             : session.AppearanceBackgroundImagePosition;
+        AppearanceBackgroundImageOpacity = Math.Clamp(session.AppearanceBackgroundImageOpacity, 0, 100);
         LoadHighlightSets(session.AppearanceHighlightSets, session.AppearanceHighlightSetId);
         AdvancedQuickCommandSet = string.IsNullOrWhiteSpace(session.AdvancedQuickCommandSet) ? "<<所有命令>>" : session.AdvancedQuickCommandSet;
         AdvancedDisableQuickCommandShortcuts = session.AdvancedDisableQuickCommandShortcuts;
@@ -1790,6 +1792,7 @@ public partial class SessionEditViewModel : ObservableObject
         session.AppearanceBackgroundImagePosition = string.IsNullOrWhiteSpace(AppearanceBackgroundImagePosition)
             ? "Center"
             : AppearanceBackgroundImagePosition;
+        session.AppearanceBackgroundImageOpacity = Math.Clamp((int)AppearanceBackgroundImageOpacity, 0, 100);
         session.AppearanceHighlightSetId = string.IsNullOrWhiteSpace(AppearanceHighlightSetId)
             ? "None"
             : AppearanceHighlightSetId;

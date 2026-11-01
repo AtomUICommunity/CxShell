@@ -185,6 +185,9 @@ public class TerminalControl : Control
     public static readonly StyledProperty<string> BackgroundImagePositionProperty =
         AvaloniaProperty.Register<TerminalControl, string>(nameof(BackgroundImagePosition), "Center");
 
+    public static readonly StyledProperty<double> BackgroundImageOpacityProperty =
+        AvaloniaProperty.Register<TerminalControl, double>(nameof(BackgroundImageOpacity), 1.0);
+
     public static readonly StyledProperty<IReadOnlyList<HighlightRule>?> HighlightRulesProperty =
         AvaloniaProperty.Register<TerminalControl, IReadOnlyList<HighlightRule>?>(nameof(HighlightRules));
 
@@ -420,6 +423,12 @@ public class TerminalControl : Control
     {
         get => GetValue(BackgroundImagePositionProperty);
         set => SetValue(BackgroundImagePositionProperty, value);
+    }
+
+    public double BackgroundImageOpacity
+    {
+        get => GetValue(BackgroundImageOpacityProperty);
+        set => SetValue(BackgroundImageOpacityProperty, value);
     }
 
     public IReadOnlyList<HighlightRule>? HighlightRules
@@ -664,6 +673,10 @@ public class TerminalControl : Control
             InvalidateVisual();
         }
         else if (change.Property == BackgroundImagePositionProperty)
+        {
+            InvalidateVisual();
+        }
+        else if (change.Property == BackgroundImageOpacityProperty)
         {
             InvalidateVisual();
         }
@@ -958,6 +971,23 @@ public class TerminalControl : Control
     }
 
     private void DrawBackgroundImage(DrawingContext context, Rect target)
+    {
+        var opacity = Math.Clamp(BackgroundImageOpacity, 0.0, 1.0);
+        if (opacity <= 0.0)
+            return;
+
+        if (opacity < 1.0)
+        {
+            using (context.PushOpacity(opacity))
+                DrawBackgroundImageCore(context, target);
+        }
+        else
+        {
+            DrawBackgroundImageCore(context, target);
+        }
+    }
+
+    private void DrawBackgroundImageCore(DrawingContext context, Rect target)
     {
         if (_backgroundImage == null)
             LoadBackgroundImage();
