@@ -596,7 +596,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - runs_on: macos-14
+          - runs_on: macos-15
             rid: osx-arm64
             triplet: arm64-osx
             arch: arm64
@@ -825,9 +825,10 @@ jobs:
           notes="$(cat <<'EOF'
           ## What's Changed
 
-          - Upgrade AtomUI to 6.2.10.
-          - Keep terminal selections anchored to their text while scrolling with the mouse wheel or scrollbar.
-          - Fix an unhighlighted row when selecting upward across multiple screens.
+          - Add global terminal background image settings with position and opacity controls.
+          - Use the global background image when a session does not configure its own.
+          - Improve session editing layout and Chinese localization.
+          - Use macOS 15 arm64 runners for release builds.
           - Publish self-contained packages for Windows, macOS, and Linux.
           EOF
           )"

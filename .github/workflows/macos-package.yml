@@ -16,7 +16,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - runs_on: macos-14
+          - runs_on: macos-15
             rid: osx-arm64
             triplet: arm64-osx
             arch: arm64
