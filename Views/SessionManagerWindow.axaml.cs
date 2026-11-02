@@ -18,7 +18,11 @@ public partial class SessionManagerWindow : Window
         : this()
     {
         vm.SelectedNode = null;
-        Opened += (_, _) => DataContext = vm;
+        // Bind before Show so the DataGrid source and first layout are ready
+        // before macOS presents the native window. Setting DataContext from
+        // Opened forces a second layout pass after the window is already visible,
+        // which leaves only the native title bar on screen until that pass ends.
+        DataContext = vm;
     }
 
     private async void OnConnectClick(object? sender, RoutedEventArgs e)
