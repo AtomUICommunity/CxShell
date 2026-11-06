@@ -77,7 +77,6 @@ public partial class SessionTreeViewModel : ObservableObject
     private readonly ApplicationSettingsStore _settingsStore;
     private readonly MainWindowViewModel _mainWindow;
     private SessionData _data;
-    private SessionInfo? _copiedSession;
 
     public SessionInfo? SelectedSession => SelectedNode?.Session;
     public bool CanUseSelectedSession => SelectedSession != null && SelectedNodes.Count <= 1;
@@ -87,16 +86,6 @@ public partial class SessionTreeViewModel : ObservableObject
     public bool HasOpenSelectedSession => GetSelectedSessions().Any(session =>
         _mainWindow.Tabs.Any(tab => tab.Session.Id == session.Id));
     public bool CanDeleteSelectedSessions => HasSelectedSessions && !HasOpenSelectedSession;
-    public bool CanPaste => _copiedSession != null;
-    public bool CanMoveSelectedSessionUp => GetSelectedVisibleSessionIndex() > 0;
-    public bool CanMoveSelectedSessionDown
-    {
-        get
-        {
-            var index = GetSelectedVisibleSessionIndex();
-            return index >= 0 && index < SessionRows.Count - 1;
-        }
-    }
 
     public MainWindowViewModel MainWindow => _mainWindow;
     public ApplicationSettings Settings => _data.Settings ??= new ApplicationSettings();
@@ -110,13 +99,10 @@ public partial class SessionTreeViewModel : ObservableObject
     public string SessionManagerTitle => L.Text("SessionManager.Title");
     public string NewText => L.Text("SessionManager.New");
     public string CopyText => L.Text("SessionManager.Copy");
-    public string PasteText => L.Text("SessionManager.Paste");
     public string PropertiesText => L.Text("SessionManager.Properties");
     public string DeleteText => L.Text("SessionManager.Delete");
     public string ImportText => L.Text("SessionManager.Import");
     public string ExportText => L.Text("SessionManager.Export");
-    public string MoveUpText => L.Text("SessionManager.MoveUp");
-    public string MoveDownText => L.Text("SessionManager.MoveDown");
     public string SearchPlaceholderText => L.Text("SessionManager.SearchPlaceholder");
     public string ConnectText => L.Text("Toolbar.Connect");
     public string DiagnosticsText => L.Text("Diagnostics.Title");
@@ -145,13 +131,10 @@ public partial class SessionTreeViewModel : ObservableObject
         OnPropertyChanged(nameof(SessionManagerTitle));
         OnPropertyChanged(nameof(NewText));
         OnPropertyChanged(nameof(CopyText));
-        OnPropertyChanged(nameof(PasteText));
         OnPropertyChanged(nameof(PropertiesText));
         OnPropertyChanged(nameof(DeleteText));
         OnPropertyChanged(nameof(ImportText));
         OnPropertyChanged(nameof(ExportText));
-        OnPropertyChanged(nameof(MoveUpText));
-        OnPropertyChanged(nameof(MoveDownText));
         OnPropertyChanged(nameof(SearchPlaceholderText));
         OnPropertyChanged(nameof(ConnectText));
         OnPropertyChanged(nameof(DiagnosticsText));
@@ -434,15 +417,11 @@ public partial class SessionTreeViewModel : ObservableObject
 
         OnPropertyChanged(nameof(SelectedSession));
         NotifySelectionStateChanged();
-        OnPropertyChanged(nameof(CanMoveSelectedSessionUp));
-        OnPropertyChanged(nameof(CanMoveSelectedSessionDown));
     }
 
     partial void OnSelectedNodesChanged(ObservableCollection<SessionNodeViewModel> value)
     {
         NotifySelectionStateChanged();
-        OnPropertyChanged(nameof(CanMoveSelectedSessionUp));
-        OnPropertyChanged(nameof(CanMoveSelectedSessionDown));
     }
 
     private void NotifySelectionStateChanged()
@@ -505,9 +484,6 @@ public partial class SessionTreeViewModel : ObservableObject
         SelectedNodes.Clear();
         if (SelectedNode != null)
             SelectedNodes.Add(SelectedNode);
-
-        OnPropertyChanged(nameof(CanMoveSelectedSessionUp));
-        OnPropertyChanged(nameof(CanMoveSelectedSessionDown));
     }
 
     private IEnumerable<SessionInfo> GetVisibleOrderedSessions()
@@ -516,21 +492,6 @@ public partial class SessionTreeViewModel : ObservableObject
         return string.IsNullOrWhiteSpace(query)
             ? GetOrderedSessions()
             : GetOrderedSessions().Where(session => MatchesSessionSearch(session, query));
-    }
-
-    private int GetSelectedVisibleSessionIndex()
-    {
-        var selectedSessionId = SelectedSession?.Id;
-        if (!selectedSessionId.HasValue)
-            return -1;
-
-        for (var i = 0; i < SessionRows.Count; i++)
-        {
-            if (SessionRows[i].Session?.Id == selectedSessionId.Value)
-                return i;
-        }
-
-        return -1;
     }
 
     private IEnumerable<SessionInfo> GetOrderedSessions()
@@ -596,15 +557,6 @@ public partial class SessionTreeViewModel : ObservableObject
 
     public string GetSessionPath(SessionInfo session) => BuildSessionPath(session);
 
-    public string BuildSessionLaunchCommand(SessionInfo session)
-    {
-        var executablePath = Environment.ProcessPath;
-        if (string.IsNullOrWhiteSpace(executablePath))
-            executablePath = Path.Combine(AppContext.BaseDirectory, "CxShell.exe");
-
-        return $"{QuoteCommandArgument(executablePath)} {QuoteCommandArgument(session.Id.ToString())}";
-    }
-
     public bool UpdateSessionSecret(Guid sessionId, Action<SessionInfo> update)
     {
         var existing = _data.Sessions.FirstOrDefault(session => session.Id == sessionId);
@@ -657,11 +609,6 @@ public partial class SessionTreeViewModel : ObservableObject
             value = value.Replace("//", "/", StringComparison.Ordinal);
 
         return value.Trim('/');
-    }
-
-    private static string QuoteCommandArgument(string value)
-    {
-        return "\"" + value.Replace("\"", "\\\"", StringComparison.Ordinal) + "\"";
     }
 
     private static bool MatchesSessionSearch(SessionInfo session, string query)
@@ -916,46 +863,69 @@ public partial class SessionTreeViewModel : ObservableObject
         return depth;
     }
 
-    public void MoveSelectedSessionUp()
+    public void MoveSession(
+        SessionNodeViewModel sourceNode,
+        SessionNodeViewModel targetNode,
+        bool insertAfter)
     {
-        MoveSelectedSession(-1);
+        ApplySessionMove(sourceNode, targetNode, insertAfter);
+        ReorderSessionRows(SessionRows, GetVisibleOrderedSessions().ToList());
     }
 
-    public void MoveSelectedSessionDown()
+    /// <summary>
+    /// Persists a move that has already been applied to <see cref="SessionRows"/>
+    /// by the grid's movable source.
+    /// </summary>
+    public void PersistSessionMove(
+        SessionNodeViewModel sourceNode,
+        SessionNodeViewModel targetNode,
+        bool insertAfter)
     {
-        MoveSelectedSession(1);
+        ApplySessionMove(sourceNode, targetNode, insertAfter);
     }
 
-    private void MoveSelectedSession(int direction)
+    private void ApplySessionMove(
+        SessionNodeViewModel sourceNode,
+        SessionNodeViewModel targetNode,
+        bool insertAfter)
     {
-        var selected = SelectedSession;
-        if (selected == null)
+        if (sourceNode.Session is not { } source ||
+            targetNode.Session is not { } target ||
+            source.Id == target.Id)
+        {
             return;
+        }
 
-        var visibleSessions = SessionRows
-            .Select(row => row.Session)
-            .Where(session => session != null)
-            .Cast<SessionInfo>()
-            .ToList();
-        var visibleIndex = visibleSessions.FindIndex(session => session.Id == selected.Id);
-        var targetVisibleIndex = visibleIndex + direction;
-        if (visibleIndex < 0 || targetVisibleIndex < 0 || targetVisibleIndex >= visibleSessions.Count)
+        var orderedSessions = GetOrderedSessions().ToList();
+        var sourceIndex = orderedSessions.FindIndex(session => session.Id == source.Id);
+        if (sourceIndex < 0)
+        {
             return;
+        }
 
-        var target = visibleSessions[targetVisibleIndex];
-        var selectedIndex = _data.Sessions.FindIndex(session => session.Id == selected.Id);
-        var targetIndex = _data.Sessions.FindIndex(session => session.Id == target.Id);
-        if (selectedIndex < 0 || targetIndex < 0)
+        orderedSessions.RemoveAt(sourceIndex);
+        var targetIndex = orderedSessions.FindIndex(session => session.Id == target.Id);
+        if (targetIndex < 0)
+        {
             return;
+        }
 
-        (_data.Sessions[selectedIndex], _data.Sessions[targetIndex]) =
-            (_data.Sessions[targetIndex], _data.Sessions[selectedIndex]);
+        if (insertAfter)
+        {
+            targetIndex++;
+        }
+
+        if (source.GroupId != target.GroupId)
+        {
+            source.GroupId = target.GroupId;
+        }
+
+        orderedSessions.Insert(targetIndex, source);
+        _data.Sessions.Clear();
+        _data.Sessions.AddRange(orderedSessions);
         NormalizeSessionSortOrders();
         _storage.Save(_data);
         RefreshSessionNodes();
-        ReorderSessionRows(SessionRows, GetVisibleOrderedSessions().ToList());
-        OnPropertyChanged(nameof(CanMoveSelectedSessionUp));
-        OnPropertyChanged(nameof(CanMoveSelectedSessionDown));
     }
 
     internal static void ReorderSessionRows(
@@ -1067,26 +1037,35 @@ public partial class SessionTreeViewModel : ObservableObject
 
     public void CopySelectedSession()
     {
-        if (SelectedSession == null)
+        if (SelectedSession is not { } source)
             return;
 
-        _copiedSession = CloneSession(SelectedSession, SelectedSession.Name);
-        OnPropertyChanged(nameof(CanPaste));
-    }
-
-    public void PasteCopiedSession()
-    {
-        if (_copiedSession == null)
+        var copiedSession = CloneSession(source, CreateUniqueCopyName(source.Name));
+        var orderedSessions = GetOrderedSessions().ToList();
+        var sourceIndex = orderedSessions.FindIndex(session => session.Id == source.Id);
+        if (sourceIndex < 0)
             return;
 
-        var name = CreateUniqueCopyName(_copiedSession.Name);
-        var pastedSession = CloneSession(_copiedSession, name);
-        pastedSession.SortOrder = _data.Sessions.Count == 0
-            ? 0
-            : _data.Sessions.Max(session => session.SortOrder) + 1;
+        orderedSessions.Insert(sourceIndex + 1, copiedSession);
+        _data.Sessions.Clear();
+        _data.Sessions.AddRange(orderedSessions);
+        NormalizeSessionSortOrders();
+        _storage.Save(_data);
 
-        AddSession(pastedSession);
-        SelectedNode = SessionRows.FirstOrDefault(node => node.Session?.Id == pastedSession.Id);
+        // Insert the copied row directly instead of rebuilding the whole list, so
+        // the grid keeps its current selection and scroll position.
+        var sourceRow = SessionRows.FirstOrDefault(node => node.Session?.Id == source.Id);
+        if (sourceRow != null)
+        {
+            var sourceRowIndex = SessionRows.IndexOf(sourceRow);
+            SessionRows.Insert(sourceRowIndex + 1, new SessionNodeViewModel(copiedSession));
+        }
+        else
+        {
+            ApplySessionFilter();
+        }
+
+        RefreshSessionNodes();
     }
 
     private string CreateUniqueCopyName(string sourceName)

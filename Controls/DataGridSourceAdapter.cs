@@ -44,6 +44,13 @@ public sealed class DataGridSourceAdapter<T> : IDisposable
 
     public IDataGridSource Source => _source;
 
+    public ValueTask<DataGridMutationResult> MoveAsync(
+        DataGridMoveRequest request,
+        CancellationToken cancellationToken) =>
+        _source is IDataGridMovableSource movableSource
+            ? movableSource.MoveAsync(request, cancellationToken)
+            : ValueTask.FromResult(new DataGridMutationResult(null));
+
     public bool TryGetItem(DataGridRowKey key, out T item)
     {
         RebuildKeyMap();

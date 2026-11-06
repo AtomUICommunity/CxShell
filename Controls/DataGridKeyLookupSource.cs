@@ -2,13 +2,17 @@ using AtomUI.Desktop.Controls;
 
 namespace CxShell.Controls;
 
-internal sealed class DataGridKeyLookupSource : IDataGridKeyLookupSource, IDisposable
+internal sealed class DataGridKeyLookupSource : IDataGridKeyLookupSource, IDataGridMovableSource, IDisposable
 {
     private readonly IDataGridSource _source;
+    private readonly Func<DataGridMoveRequest, CancellationToken, ValueTask<DataGridMutationResult>>? _moveAsync;
 
-    public DataGridKeyLookupSource(IDataGridSource source)
+    public DataGridKeyLookupSource(
+        IDataGridSource source,
+        Func<DataGridMoveRequest, CancellationToken, ValueTask<DataGridMutationResult>>? moveAsync = null)
     {
         _source = source;
+        _moveAsync = moveAsync;
         _source.Invalidated += OnSourceInvalidated;
     }
 
@@ -20,6 +24,12 @@ internal sealed class DataGridKeyLookupSource : IDataGridKeyLookupSource, IDispo
         DataGridFetchRequest request,
         CancellationToken cancellationToken) =>
         _source.FetchAsync(request, cancellationToken);
+
+    public ValueTask<DataGridMutationResult> MoveAsync(
+        DataGridMoveRequest request,
+        CancellationToken cancellationToken) =>
+        _moveAsync?.Invoke(request, cancellationToken) ??
+        ValueTask.FromResult(new DataGridMutationResult(null));
 
     public void Dispose()
     {

@@ -70,11 +70,8 @@ public sealed class LocalizationService : INotifyPropertyChanged
         ["SessionManager.Title"] = "Session Manager",
         ["SessionManager.New"] = "New",
         ["SessionManager.Copy"] = "Copy",
-        ["SessionManager.Paste"] = "Paste",
         ["SessionManager.Properties"] = "Properties",
         ["SessionManager.Delete"] = "Delete",
-        ["SessionManager.MoveUp"] = "Move Up",
-        ["SessionManager.MoveDown"] = "Move Down",
         ["SessionManager.SearchPlaceholder"] = "Search name, host, or username",
         ["SessionManager.ColumnName"] = "Name",
         ["SessionManager.ColumnHost"] = "Host",
@@ -83,9 +80,6 @@ public sealed class LocalizationService : INotifyPropertyChanged
         ["SessionManager.ColumnPort"] = "Port",
         ["SessionManager.Close"] = "Close",
         ["SessionManager.ShowOnStartup"] = "Show this dialog at startup",
-        ["SessionManager.CopyFullPath"] = "Copy full path",
-        ["SessionManager.CopySessionId"] = "Copy session ID",
-        ["SessionManager.CopyLaunchCommand"] = "Copy launch command",
         ["SessionManager.Import"] = "Import",
         ["SessionManager.Export"] = "Export",
         ["SessionManager.ImportSuccessTitle"] = "Import completed",
@@ -406,11 +400,8 @@ public sealed class LocalizationService : INotifyPropertyChanged
         ["SessionManager.Title"] = "会话管理器",
         ["SessionManager.New"] = "新建",
         ["SessionManager.Copy"] = "复制",
-        ["SessionManager.Paste"] = "粘贴",
         ["SessionManager.Properties"] = "属性",
         ["SessionManager.Delete"] = "删除",
-        ["SessionManager.MoveUp"] = "上移",
-        ["SessionManager.MoveDown"] = "下移",
         ["SessionManager.SearchPlaceholder"] = "搜索名称、主机、用户名",
         ["SessionManager.ColumnName"] = "名称",
         ["SessionManager.ColumnHost"] = "主机",
@@ -1225,9 +1216,6 @@ public sealed class LocalizationService : INotifyPropertyChanged
         EnglishTexts["Update.DownloadCancelled"] = "Update download was cancelled.";
         EnglishTexts["Update.ReleaseNotes"] = "Release notes:";
         EnglishTexts["Update.MacApplicationsWarning"] = "CxShell is currently running from {0}. macOS may require an administrator password when replacing apps in /Applications. To avoid this, quit CxShell and move CxShell.app to {1}, then run updates from there.";
-        EnglishTexts["SessionManager.CopyFullPath"] = "Copy full path";
-        EnglishTexts["SessionManager.CopySessionId"] = "Copy session ID";
-        EnglishTexts["SessionManager.CopyLaunchCommand"] = "Copy launch command";
         EnglishTexts["SessionEdit.PrivateKeyPassphrase"] = "Private key passphrase";
         EnglishTexts["SessionEdit.PrivateKeyPassphraseHint"] = "Leave empty for unencrypted keys. Saved passphrases are encrypted in the session file.";
         EnglishTexts["SessionEdit.SaveSuccessTitle"] = "Saved";
@@ -1789,9 +1777,6 @@ public sealed class LocalizationService : INotifyPropertyChanged
         ChineseTexts["Update.DownloadCancelled"] = "\u66f4\u65b0\u4e0b\u8f7d\u5df2\u53d6\u6d88\u3002";
         ChineseTexts["Update.ReleaseNotes"] = "\u66f4\u65b0\u8bf4\u660e\uff1a";
         ChineseTexts["Update.MacApplicationsWarning"] = "CxShell \u5f53\u524d\u4f4d\u4e8e {0}\u3002macOS \u66ff\u6362 /Applications \u4e2d\u7684\u5e94\u7528\u65f6\u53ef\u80fd\u8981\u6c42\u7ba1\u7406\u5458\u5bc6\u7801\u3002\u82e5\u60f3\u514d\u7ba1\u7406\u5458\u5bc6\u7801\u66f4\u65b0\uff0c\u8bf7\u9000\u51fa CxShell \u540e\u5c06 CxShell.app \u79fb\u52a8\u5230 {1}\uff0c\u518d\u4ece\u8be5\u4f4d\u7f6e\u542f\u52a8\u5e76\u66f4\u65b0\u3002";
-        ChineseTexts["SessionManager.CopyFullPath"] = "\u590d\u5236\u5b8c\u6574\u8def\u5f84";
-        ChineseTexts["SessionManager.CopySessionId"] = "\u590d\u5236\u4f1a\u8bdd ID";
-        ChineseTexts["SessionManager.CopyLaunchCommand"] = "\u590d\u5236\u542f\u52a8\u547d\u4ee4";
         ChineseTexts["SessionEdit.PrivateKeyPassphrase"] = "\u79c1\u94a5\u53e3\u4ee4";
         ChineseTexts["SessionEdit.PrivateKeyPassphraseHint"] = "\u672a\u52a0\u5bc6\u79c1\u94a5\u53ef\u7559\u7a7a\uff1b\u4fdd\u5b58\u7684\u53e3\u4ee4\u4f1a\u5728\u4f1a\u8bdd\u6587\u4ef6\u4e2d\u52a0\u5bc6\u5b58\u50a8\u3002";
         ChineseTexts["SessionEdit.SaveSuccessTitle"] = "\u4fdd\u5b58\u6210\u529f";

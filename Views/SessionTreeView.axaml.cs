@@ -1,7 +1,7 @@
 using System;
 using System.Collections.Generic;
-using System.Diagnostics;
 using System.Linq;
+using System.Reflection;
 using AtomUI.Desktop.Controls;
 using Avalonia;
 using Avalonia.Controls;
@@ -23,17 +23,16 @@ namespace CxShell.Views;
 
 public partial class SessionTreeView : UserControl
 {
-    private static readonly object SessionGridLogLock = new();
-    private static readonly string SessionGridLogPath = GetSessionGridLogPath();
+    private const string RowReorderHandleTypeName = "AtomUI.Desktop.Controls.DataGridRowReorderHandle";
+
+    private static readonly MethodInfo? TryBeginRowReorderMethod =
+        typeof(DataGrid).GetMethod("TryBeginRowReorder", BindingFlags.Instance | BindingFlags.NonPublic);
 
     private bool _selectionSyncPending;
-    private bool _suppressSelectionSync;
     private int _selectionSyncGeneration;
     private SessionNodeViewModel? _selectionAnchorNode;
     private DataGridSourceAdapter<SessionNodeViewModel>? _gridSource;
     private DataGridKeyLookupSource? _sessionGridSource;
-    private EventHandler<AvaloniaPropertyChangedEventArgs>? _sessionGridReadyHandler;
-    private CancellationTokenSource? _sessionGridScrollCancellation;
 
     private static string T(string key) => LocalizationService.Shared.Text(key);
 
@@ -54,7 +53,7 @@ public partial class SessionTreeView : UserControl
         _selectionSyncGeneration++;
         _selectionSyncPending = false;
         _gridSource = new DataGridSourceAdapter<SessionNodeViewModel>(vm.SessionRows);
-        _sessionGridSource = new DataGridKeyLookupSource(_gridSource.Source);
+        _sessionGridSource = new DataGridKeyLookupSource(_gridSource.Source, MoveSessionRowAsync);
         SessionTree.ItemsSource = _sessionGridSource;
         _gridSource.ConfigureColumns(SessionTree);
         _gridSource.SetSelectedItems(SessionTree, []);
@@ -67,6 +66,7 @@ public partial class SessionTreeView : UserControl
             OnDataContextChanged(this, EventArgs.Empty);
         _selectionSyncGeneration++;
 
+        AddHandler(PointerWheelChangedEvent, OnTreePointerWheelChanged, RoutingStrategies.Tunnel);
         if (SessionTree != null)
         {
             SessionTree.AddHandler(PointerPressedEvent, OnTreePointerPressed, RoutingStrategies.Tunnel);
@@ -76,12 +76,6 @@ public partial class SessionTreeView : UserControl
         LocalizationService.Shared.LanguageChanged += OnLanguageChanged;
 
         if (NewSessionBtn != null) NewSessionBtn.Click += OnNewClick;
-        if (CopySessionBtn != null) CopySessionBtn.Click += OnCopyClick;
-        if (PasteSessionBtn != null) PasteSessionBtn.Click += OnPasteClick;
-        if (PropertiesSessionBtn != null) PropertiesSessionBtn.Click += OnEditClick;
-        if (DeleteSessionBtn != null) DeleteSessionBtn.Click += OnDeleteClick;
-        if (MoveSessionUpBtn != null) MoveSessionUpBtn.Click += OnMoveUpClick;
-        if (MoveSessionDownBtn != null) MoveSessionDownBtn.Click += OnMoveDownClick;
         if (ImportSessionBtn != null) ImportSessionBtn.Click += OnImportClick;
         if (ExportSessionBtn != null) ExportSessionBtn.Click += OnExportClick;
     }
@@ -90,8 +84,12 @@ public partial class SessionTreeView : UserControl
     {
         _selectionSyncGeneration++;
         _selectionSyncPending = false;
+        RemoveHandler(PointerWheelChangedEvent, OnTreePointerWheelChanged);
         if (SessionTree != null)
+        {
+            SessionTree.RemoveHandler(PointerPressedEvent, OnTreePointerPressed);
             SessionTree.SelectionChanged -= OnTreeSelectionChanged;
+        }
         LocalizationService.Shared.LanguageChanged -= OnLanguageChanged;
         DetachGridSource();
         base.OnUnloaded(e);
@@ -99,7 +97,6 @@ public partial class SessionTreeView : UserControl
 
     private void DetachGridSource()
     {
-        CancelSessionGridScroll();
         if (SessionTree == null)
             return;
 
@@ -119,13 +116,13 @@ public partial class SessionTreeView : UserControl
 
     private void UpdateColumnHeaders()
     {
-        if (SessionTree?.Columns.Count >= 5)
+        if (SessionTree?.Columns.Count >= 6)
         {
-            SessionTree.Columns[0].Header = LocalizationService.Shared.Text("SessionManager.ColumnName");
-            SessionTree.Columns[1].Header = LocalizationService.Shared.Text("SessionManager.ColumnHost");
-            SessionTree.Columns[2].Header = LocalizationService.Shared.Text("SessionManager.ColumnUsername");
-            SessionTree.Columns[3].Header = LocalizationService.Shared.Text("SessionManager.ColumnProtocol");
-            SessionTree.Columns[4].Header = LocalizationService.Shared.Text("SessionManager.ColumnPort");
+            SessionTree.Columns[1].Header = LocalizationService.Shared.Text("SessionManager.ColumnName");
+            SessionTree.Columns[2].Header = LocalizationService.Shared.Text("SessionManager.ColumnHost");
+            SessionTree.Columns[3].Header = LocalizationService.Shared.Text("SessionManager.ColumnUsername");
+            SessionTree.Columns[4].Header = LocalizationService.Shared.Text("SessionManager.ColumnProtocol");
+            SessionTree.Columns[5].Header = LocalizationService.Shared.Text("SessionManager.ColumnPort");
         }
     }
 
@@ -136,6 +133,11 @@ public partial class SessionTreeView : UserControl
 
         var point = e.GetCurrentPoint(SessionTree);
         var node = FindClickedNode(e);
+
+        // The tunnel handler must not consume presses on the row-reorder handle,
+        // otherwise AtomUI never receives the pointer press that starts a drag.
+        if (point.Properties.IsLeftButtonPressed && IsRowReorderHandleSource(e.Source))
+            return;
 
         // Right-click opens the context menu.
         if (point.Properties.IsRightButtonPressed)
@@ -151,9 +153,9 @@ public partial class SessionTreeView : UserControl
                 }
                 else
                     vm.SetSelectedNodes(selectedNodes);
-
-                ShowSessionContextMenu(SessionTree, vm);
             }
+
+            ShowSessionContextMenu(SessionTree, vm);
             e.Handled = true;
             return;
         }
@@ -163,6 +165,20 @@ public partial class SessionTreeView : UserControl
 
         SessionTree.Focus();
         ApplySessionSelection(vm, node, e.KeyModifiers);
+
+        // AtomUI only starts a reorder from its small handle. Start the same
+        // built-in session when the press lands anywhere else on the row.
+        if (e.ClickCount == 1 && !IsInteractiveRowSource(e.Source))
+        {
+            var row = FindVisualAncestor<DataGridRow>(e.Source as Visual);
+            if (row != null)
+            {
+                var handle = FindRowReorderHandle(row);
+                if (handle != null)
+                    TryBeginRowDrag(e, row, handle);
+            }
+        }
+
         e.Handled = true;
 
         if (e.ClickCount != 2 || node.Session == null)
@@ -235,6 +251,135 @@ public partial class SessionTreeView : UserControl
         _gridSource?.SetSelectedItems(SessionTree, selected);
     }
 
+    private async ValueTask<DataGridMutationResult> MoveSessionRowAsync(
+        DataGridMoveRequest request,
+        CancellationToken cancellationToken)
+    {
+        if (cancellationToken.IsCancellationRequested ||
+            DataContext is not SessionTreeViewModel vm ||
+            _gridSource == null ||
+            !_gridSource.TryGetItem(request.RowKey, out var sourceNode))
+        {
+            return new DataGridMutationResult(null);
+        }
+
+        SessionNodeViewModel? targetNode = null;
+        var insertAfter = false;
+        if (request.BeforeKey is { } beforeKey &&
+            _gridSource.TryGetItem(beforeKey, out var beforeNode))
+        {
+            targetNode = beforeNode;
+        }
+        else if (request.AfterKey is { } afterKey &&
+                 _gridSource.TryGetItem(afterKey, out var afterNode))
+        {
+            targetNode = afterNode;
+            insertAfter = true;
+        }
+
+        if (targetNode == null)
+        {
+            return new DataGridMutationResult(null);
+        }
+
+        // Let the local source perform the actual collection move so the grid
+        // receives the new snapshot and does not stay in a stale drag state.
+        var result = await _gridSource.MoveAsync(request, cancellationToken);
+        vm.PersistSessionMove(sourceNode, targetNode, insertAfter);
+        return result;
+    }
+
+    private void OnTreePointerWheelChanged(object? sender, PointerWheelEventArgs e)
+    {
+        // Scrolling can change the range snapshot and invalidate an active
+        // AtomUI row-reorder session. Keep the drag alive while the pointer is
+        // captured by the reorder handle.
+        if (e.Pointer.Captured is Visual captured &&
+            captured.GetType().FullName == RowReorderHandleTypeName)
+        {
+            e.Handled = true;
+        }
+    }
+
+    private bool TryBeginRowDrag(PointerPressedEventArgs e, DataGridRow row, object handle)
+    {
+        if (TryBeginRowReorderMethod == null || SessionTree == null)
+            return false;
+
+        var rowsPresenter = SessionTree.GetVisualDescendants()
+            .OfType<DataGridRowsPresenter>()
+            .FirstOrDefault();
+        if (rowsPresenter == null)
+            return false;
+
+        try
+        {
+            return TryBeginRowReorderMethod.Invoke(
+                SessionTree,
+                [handle, row, e.Pointer, e.GetPosition(rowsPresenter)]) is true;
+        }
+        catch (TargetInvocationException)
+        {
+            return false;
+        }
+        catch (ArgumentException)
+        {
+            return false;
+        }
+    }
+
+    private static object? FindRowReorderHandle(DataGridRow row) =>
+        row.GetVisualDescendants()
+            .FirstOrDefault(visual => visual.GetType().FullName == RowReorderHandleTypeName);
+
+    private static T? FindVisualAncestor<T>(Visual? source) where T : Visual
+    {
+        var current = source;
+        while (current != null)
+        {
+            if (current is T match)
+                return match;
+            current = current.GetVisualParent() as Visual;
+        }
+
+        return null;
+    }
+
+    private static bool IsInteractiveRowSource(object? source)
+    {
+        var current = source as Visual;
+        while (current != null && current is not DataGridRow)
+        {
+            if (current is Avalonia.Controls.Button or
+                Avalonia.Controls.TextBox or
+                Avalonia.Controls.ComboBox or
+                Avalonia.Controls.CheckBox or
+                Avalonia.Controls.Slider)
+            {
+                return true;
+            }
+            current = current.GetVisualParent() as Visual;
+        }
+
+        return false;
+    }
+
+    private static bool IsRowReorderHandleSource(object? source) =>
+        source is Visual visual && IsRowReorderHandle(visual);
+
+    private static bool IsRowReorderHandle(Visual visual)
+    {
+        var current = visual;
+        while (current != null)
+        {
+            if (current.GetType().FullName == RowReorderHandleTypeName)
+                return true;
+            current = current.GetVisualParent() as Visual;
+        }
+
+        return false;
+    }
+
     private SessionNodeViewModel? FindClickedNode(PointerPressedEventArgs e)
     {
         var source = e.Source as Visual;
@@ -283,22 +428,6 @@ public partial class SessionTreeView : UserControl
         mainVm?.NewSessionCommand.Execute(null);
     }
 
-    private void OnCopyClick(object? sender, RoutedEventArgs e)
-    {
-        if (DataContext is SessionTreeViewModel vm)
-        {
-            vm.CopySelectedSession();
-        }
-    }
-
-    private void OnPasteClick(object? sender, RoutedEventArgs e)
-    {
-        if (DataContext is SessionTreeViewModel vm)
-        {
-            vm.PasteCopiedSession();
-        }
-    }
-
     private async void OnConnectClick(object? sender, RoutedEventArgs e)
     {
         if (DataContext is not SessionTreeViewModel vm) return;
@@ -324,290 +453,6 @@ public partial class SessionTreeView : UserControl
             return;
 
         vm.DeleteSelectedSessions();
-    }
-
-    private void OnMoveUpClick(object? sender, RoutedEventArgs e)
-    {
-        if (DataContext is not SessionTreeViewModel vm)
-            return;
-
-        MoveSelectedSessionAndRestoreHighlight(vm, vm.MoveSelectedSessionUp, -1);
-    }
-
-    private void OnMoveDownClick(object? sender, RoutedEventArgs e)
-    {
-        if (DataContext is not SessionTreeViewModel vm)
-            return;
-
-        MoveSelectedSessionAndRestoreHighlight(vm, vm.MoveSelectedSessionDown, 1);
-    }
-
-    private void MoveSelectedSessionAndRestoreHighlight(
-        SessionTreeViewModel vm,
-        Action moveAction,
-        int direction)
-    {
-        if (direction < 0 && !vm.CanMoveSelectedSessionUp ||
-            direction > 0 && !vm.CanMoveSelectedSessionDown)
-            return;
-
-        var selectedSessionId = vm.SelectedSession?.Id;
-        if (selectedSessionId == null)
-            return;
-
-        var viewport = CaptureSessionGridViewport();
-        TraceSessionGrid(
-            $"move start: id={selectedSessionId.Value}, direction={direction}, " +
-            $"index={vm.SessionRows.ToList().FindIndex(row => row.Session?.Id == selectedSessionId.Value)}, " +
-            $"rows={vm.SessionRows.Count}, firstVisible={viewport?.FirstCompleteIndex}, " +
-            $"visibleCount={viewport?.CompleteCount}");
-
-        _selectionSyncGeneration++;
-        _selectionSyncPending = false;
-        CancelSessionGridScroll();
-        _suppressSelectionSync = true;
-        try
-        {
-            moveAction();
-        }
-        finally
-        {
-            _suppressSelectionSync = false;
-        }
-
-        var selectedNode = vm.SessionRows
-            .FirstOrDefault(node => node.Session?.Id == selectedSessionId.Value);
-        if (selectedNode == null || _gridSource?.GetKey(selectedNode) is not { IsValid: true } selectedKey)
-            return;
-
-        if (SessionTree.Selection.ExplicitKeys.Length != 1 ||
-            SessionTree.Selection.ExplicitKeys[0] != selectedKey ||
-            SessionTree.CurrentRowKey != selectedKey)
-        {
-            _suppressSelectionSync = true;
-            try
-            {
-                SetGridSelectedItems([selectedNode]);
-            }
-            finally
-            {
-                _suppressSelectionSync = false;
-            }
-        }
-
-        if (vm.SelectedNodes.Count != 1 || !ReferenceEquals(vm.SelectedNodes[0], selectedNode))
-            vm.SetSelectedNodes([selectedNode]);
-        _selectionAnchorNode = selectedNode;
-
-        var selectedIndex = vm.SessionRows.IndexOf(selectedNode);
-        var anchorKey = selectedKey;
-        if (viewport is { } previous &&
-            SessionTree.Query.Sorts.IsEmpty &&
-            SessionTree.Query.Filters.IsEmpty &&
-            SessionTree.Query.Groups.IsEmpty)
-        {
-            var first = Math.Clamp(previous.FirstCompleteIndex, 0, vm.SessionRows.Count - 1);
-            if (selectedIndex < first)
-                first = selectedIndex;
-            else if (selectedIndex >= first + previous.CompleteCount)
-                first = selectedIndex - previous.CompleteCount + 1;
-
-            anchorKey = _gridSource.GetKey(vm.SessionRows[first]);
-        }
-
-        TraceSessionGrid(
-            $"move applied: id={selectedSessionId.Value}, index={selectedIndex}, " +
-            $"anchor={anchorKey}, loadState={SessionTree.LoadState}");
-        QueueSessionGridScroll(selectedSessionId.Value, selectedKey, anchorKey, _selectionSyncGeneration);
-    }
-
-    private readonly record struct SessionGridViewport(int FirstCompleteIndex, int CompleteCount);
-
-    private SessionGridViewport? CaptureSessionGridViewport()
-    {
-        var scrollBar = GetSessionGridScrollBar();
-        var rowHeight = GetSessionGridRowHeight();
-        if (scrollBar == null || !rowHeight.HasValue || rowHeight.Value <= 0 ||
-            scrollBar.ViewportSize <= 0)
-            return null;
-
-        var first = (int)Math.Ceiling(scrollBar.Value / rowHeight.Value - 0.0001);
-        var count = Math.Max(1, (int)Math.Floor(scrollBar.ViewportSize / rowHeight.Value));
-        return new SessionGridViewport(Math.Max(0, first), count);
-    }
-
-    private Avalonia.Controls.Primitives.ScrollBar? GetSessionGridScrollBar()
-    {
-        return SessionTree.GetVisualDescendants()
-            .OfType<Avalonia.Controls.Primitives.ScrollBar>()
-            .FirstOrDefault(scrollBar => scrollBar.Orientation == Avalonia.Layout.Orientation.Vertical);
-    }
-
-    private double? GetSessionGridRowHeight()
-    {
-        var actualHeight = SessionTree.GetVisualDescendants()
-            .OfType<AtomUI.Desktop.Controls.DataGridRow>()
-            .Select(row => row.Bounds.Height)
-            .FirstOrDefault(height => height > 0);
-        if (actualHeight > 0)
-            return actualHeight;
-
-        return double.IsFinite(SessionTree.RowHeight) && SessionTree.RowHeight > 0
-            ? SessionTree.RowHeight
-            : null;
-    }
-
-    private void QueueSessionGridScroll(
-        Guid selectedSessionId,
-        DataGridRowKey selectedKey,
-        DataGridRowKey anchorKey,
-        int generation)
-    {
-        CancelSessionGridScroll();
-        var cancellation = new CancellationTokenSource();
-        _sessionGridScrollCancellation = cancellation;
-
-        void StartScroll()
-        {
-            DetachSessionGridReadyHandler();
-            Dispatcher.UIThread.Post(
-                () => _ = ScrollSessionGridAsync(
-                    selectedSessionId, selectedKey, anchorKey, generation, cancellation),
-                DispatcherPriority.Background);
-        }
-
-        if (SessionTree.LoadState == DataGridLoadState.Ready)
-        {
-            StartScroll();
-            return;
-        }
-
-        _sessionGridReadyHandler = (_, args) =>
-        {
-            if (args.Property != DataGrid.LoadStateProperty)
-                return;
-
-            if (SessionTree.LoadState == DataGridLoadState.Ready)
-                StartScroll();
-            else if (SessionTree.LoadState == DataGridLoadState.Error)
-            {
-                TraceSessionGrid($"scroll skipped: grid load failed, id={selectedSessionId}");
-                CancelSessionGridScroll();
-            }
-        };
-        SessionTree.PropertyChanged += _sessionGridReadyHandler;
-    }
-
-    private async Task ScrollSessionGridAsync(
-        Guid selectedSessionId,
-        DataGridRowKey selectedKey,
-        DataGridRowKey anchorKey,
-        int generation,
-        CancellationTokenSource cancellation)
-    {
-        try
-        {
-            if (generation != _selectionSyncGeneration || !IsLoaded || cancellation.IsCancellationRequested)
-                return;
-
-            await Dispatcher.UIThread.InvokeAsync(() => { }, DispatcherPriority.ApplicationIdle);
-            if (generation != _selectionSyncGeneration || !IsLoaded || cancellation.IsCancellationRequested)
-                return;
-
-            if (IsSessionGridRowFullyVisible(selectedSessionId))
-            {
-                TraceSessionGrid($"scroll unnecessary: id={selectedSessionId}");
-                return;
-            }
-
-            var requested = await SessionTree.ScrollIntoViewAsync(
-                anchorKey, cancellationToken: cancellation.Token);
-            await Dispatcher.UIThread.InvokeAsync(() => { }, DispatcherPriority.ApplicationIdle);
-
-            if (generation != _selectionSyncGeneration || !IsLoaded || cancellation.IsCancellationRequested)
-                return;
-
-            if (!requested || !IsSessionGridRowFullyVisible(selectedSessionId))
-                requested = await SessionTree.ScrollIntoViewAsync(
-                    selectedKey, cancellationToken: cancellation.Token);
-
-            TraceSessionGrid(
-                $"scroll requested: id={selectedSessionId}, anchor={anchorKey}, " +
-                $"selected={selectedKey}, accepted={requested}");
-        }
-        catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
-        {
-        }
-        catch (Exception exception)
-        {
-            TraceSessionGrid($"scroll failed: id={selectedSessionId}, {exception}");
-        }
-        finally
-        {
-            if (ReferenceEquals(_sessionGridScrollCancellation, cancellation))
-                _sessionGridScrollCancellation = null;
-            cancellation.Dispose();
-        }
-    }
-
-    private bool IsSessionGridRowFullyVisible(Guid selectedSessionId)
-    {
-        var rowsPresenter = SessionTree.GetVisualDescendants()
-            .OfType<DataGridRowsPresenter>()
-            .FirstOrDefault();
-        var selectedRow = SessionTree.GetVisualDescendants()
-            .OfType<DataGridRow>()
-            .FirstOrDefault(row => row.DataContext is SessionNodeViewModel node &&
-                                   node.Session?.Id == selectedSessionId);
-        if (rowsPresenter == null || selectedRow == null || !selectedRow.IsVisible ||
-            selectedRow.TranslatePoint(new Point(0, 0), rowsPresenter) is not { } position)
-            return false;
-
-        return position.Y >= -1 &&
-               position.Y + selectedRow.Bounds.Height <= rowsPresenter.Bounds.Height + 1;
-    }
-
-    private void DetachSessionGridReadyHandler()
-    {
-        if (_sessionGridReadyHandler == null)
-            return;
-
-        SessionTree.PropertyChanged -= _sessionGridReadyHandler;
-        _sessionGridReadyHandler = null;
-    }
-
-    private void CancelSessionGridScroll()
-    {
-        DetachSessionGridReadyHandler();
-        _sessionGridScrollCancellation?.Cancel();
-        _sessionGridScrollCancellation?.Dispose();
-        _sessionGridScrollCancellation = null;
-    }
-
-    private static string GetSessionGridLogPath()
-    {
-        var root = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-        if (string.IsNullOrWhiteSpace(root))
-            root = AppContext.BaseDirectory;
-
-        var directory = Path.Combine(root, "CxShell", "Logs");
-        Directory.CreateDirectory(directory);
-        return Path.Combine(directory, "session-grid.log");
-    }
-
-    private static void TraceSessionGrid(string message)
-    {
-        var line = $"{DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss.fff zzz} [SessionGrid] {message}";
-        Debug.WriteLine(line);
-        try
-        {
-            lock (SessionGridLogLock)
-                File.AppendAllText(SessionGridLogPath, line + Environment.NewLine);
-        }
-        catch
-        {
-            // Diagnostics must never break session management.
-        }
     }
 
     private async void OnImportClick(object? sender, RoutedEventArgs e)
@@ -710,9 +555,12 @@ public partial class SessionTreeView : UserControl
             PlacementTarget = anchor
         };
 
-        void AddItem(string text, Func<System.Threading.Tasks.Task> action)
+        void AddItem(
+            string text,
+            Func<System.Threading.Tasks.Task> action,
+            bool isEnabled = true)
         {
-            var item = new AtomMenuItem { Header = text };
+            var item = new AtomMenuItem { Header = text, IsEnabled = isEnabled };
             item.Click += async (_, _) =>
             {
                 menu.Close();
@@ -721,60 +569,64 @@ public partial class SessionTreeView : UserControl
             menu.Items.Add(item);
         }
 
-        AddItem(vm.PropertiesText, () =>
-        {
-            OnEditClick(anchor, new RoutedEventArgs());
-            return System.Threading.Tasks.Task.CompletedTask;
-        });
         AddItem(vm.ConnectText, () =>
         {
             OnConnectClick(anchor, new RoutedEventArgs());
             return System.Threading.Tasks.Task.CompletedTask;
-        });
-        if (vm.SelectedSession is { } session)
+        }, vm.CanUseSelectedSession);
+        AddItem(vm.PropertiesText, () =>
+        {
+            OnEditClick(anchor, new RoutedEventArgs());
+            return System.Threading.Tasks.Task.CompletedTask;
+        }, vm.CanUseSelectedSession);
+        menu.Items.Add(new AtomMenuSeparator());
+        AddItem(vm.CopyText, () =>
+        {
+            CopySelectedSession(vm);
+            return System.Threading.Tasks.Task.CompletedTask;
+        }, vm.CanUseSelectedSession);
+        if (vm.SelectedSession is { Protocol: SessionProtocol.SSH } session)
         {
             menu.Items.Add(new AtomMenuSeparator());
-            if (session.Protocol == SessionProtocol.SSH)
+            AddItem(vm.DiagnosticsText, () =>
             {
-                AddItem(vm.DiagnosticsText, () =>
-                {
-                    var mainVm = GetMainWindowViewModel();
-                    return mainVm?.ShowConnectionDiagnosticsAsync(session)
-                        ?? System.Threading.Tasks.Task.CompletedTask;
-                });
-            }
-            AddItem(T("SessionManager.CopyFullPath"), () => CopyTextAsync(anchor, vm.GetSessionPath(session)));
-            AddItem(T("SessionManager.CopySessionId"), () => CopyTextAsync(anchor, session.Id.ToString()));
-            AddItem(T("SessionManager.CopyLaunchCommand"), () => CopyTextAsync(anchor, vm.BuildSessionLaunchCommand(session)));
+                var mainVm = GetMainWindowViewModel();
+                return mainVm?.ShowConnectionDiagnosticsAsync(session)
+                    ?? System.Threading.Tasks.Task.CompletedTask;
+            });
         }
         menu.Items.Add(new AtomMenuSeparator());
         AddItem(vm.DeleteText, () =>
         {
             OnDeleteClick(anchor, new RoutedEventArgs());
             return System.Threading.Tasks.Task.CompletedTask;
-        });
+        }, vm.CanDeleteSelectedSessions);
         menu.Open(anchor);
     }
 
-    private static async System.Threading.Tasks.Task CopyTextAsync(Control anchor, string text)
+    private void CopySelectedSession(SessionTreeViewModel vm)
     {
-        var clipboard = TopLevel.GetTopLevel(anchor)?.Clipboard;
-        if (clipboard == null)
-            return;
+        var scrollViewer = SessionTree?
+            .GetVisualDescendants()
+            .OfType<Avalonia.Controls.ScrollViewer>()
+            .FirstOrDefault();
+        var offset = scrollViewer?.Offset ?? default;
 
-        try
+        vm.CopySelectedSession();
+
+        // Inserting the copy should not move the grid away from the current row.
+        // Restore the scroll offset in case the data source refresh resets it.
+        if (scrollViewer != null)
         {
-            await clipboard.SetTextAsync(text);
-        }
-        catch
-        {
-            // Clipboard access can fail on some platforms; copying is a convenience action.
+            Dispatcher.UIThread.Post(
+                () => scrollViewer.Offset = offset,
+                DispatcherPriority.Loaded);
         }
     }
 
     private void OnTreeSelectionChanged(object? sender, DataGridSelectionChangedEventArgs e)
     {
-        if (_selectionSyncPending || _suppressSelectionSync)
+        if (_selectionSyncPending)
             return;
 
         _selectionSyncPending = true;
