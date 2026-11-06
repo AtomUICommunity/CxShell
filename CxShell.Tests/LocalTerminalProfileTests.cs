@@ -89,4 +89,43 @@ public sealed class LocalTerminalProfileTests
         service.ResizeTerminal(100, 30);
         service.Disconnect();
     }
+
+    [Fact]
+    public async Task UnixForkPtyCanStartShellAndReceiveOutput()
+    {
+        if (!OperatingSystem.IsLinux() && !OperatingSystem.IsMacOS())
+            return;
+        if (!File.Exists("/bin/sh"))
+            return;
+
+        var profile = new LocalTerminalProfile(
+            "test-sh",
+            "sh",
+            "/bin/sh",
+            ["-i"],
+            supportsPosixShellFeatures: true);
+
+        using var service = new LocalTerminalConnectionService();
+        var output = new StringBuilder();
+        var received = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        service.DataReceived += text =>
+        {
+            lock (output)
+            {
+                output.Append(text);
+                if (output.ToString().Contains("CXSHELL_LOCAL_PTY_TEST", StringComparison.Ordinal))
+                    received.TrySetResult(true);
+            }
+        };
+
+        await service.ConnectAsync(profile.CreateSession(), null, 80, 24);
+        await Task.Delay(250);
+        service.SendData("echo CXSHELL_LOCAL_PTY_TEST\n");
+
+        var completed = await Task.WhenAny(received.Task, Task.Delay(TimeSpan.FromSeconds(5)));
+        Assert.Same(received.Task, completed);
+        Assert.True(service.IsConnected);
+        service.ResizeTerminal(100, 30);
+        service.Disconnect();
+    }
 }

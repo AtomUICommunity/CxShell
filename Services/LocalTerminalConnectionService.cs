@@ -816,7 +816,25 @@ public sealed class LocalTerminalConnectionService : ITerminalConnectionService
         public override Stream Output => _stream;
 
         public override Task<int> ReadAsync(byte[] buffer, CancellationToken cancellationToken)
-            => _stream.ReadAsync(buffer.AsMemory(), cancellationToken).AsTask();
+        {
+            // A PTY master file descriptor does not support asynchronous I/O.
+            // Use a blocking read on the thread pool instead of FileStream.ReadAsync,
+            // which requires an async-capable handle on macOS.
+            return Task.Run(() =>
+            {
+                if (cancellationToken.IsCancellationRequested)
+                    return 0;
+
+                try
+                {
+                    return _stream.Read(buffer, 0, buffer.Length);
+                }
+                catch (Exception) when (cancellationToken.IsCancellationRequested)
+                {
+                    return 0;
+                }
+            }, cancellationToken);
+        }
 
         public override void Write(byte[] data)
         {
@@ -880,7 +898,7 @@ public sealed class LocalTerminalConnectionService : ITerminalConnectionService
                     new SafeFileHandle((IntPtr)master, ownsHandle: true),
                     FileAccess.ReadWrite,
                     16 * 1024,
-                    isAsync: true);
+                    isAsync: false);
                 return new UnixForkPtySession(stream, processId);
             }
             finally
