@@ -283,7 +283,7 @@
             <Setter Property="VerticalAlignment" Value="Center"/>
         </Style>
         <Style Selector="atom|CardTabStrip.quick-session-tab-strip">
-            <Setter Property="Background" Value="{atom:SharedTokenResource ColorBgLayout}"/>
+            <Setter Property="Background" Value="{atom:SharedTokenResource ColorBgContainer}"/>
             <Setter Property="BorderBrush" Value="Transparent"/>
             <Setter Property="BorderThickness" Value="0"/>
             <Setter Property="Height" Value="34"/>
@@ -293,7 +293,7 @@
             <Setter Property="Spacing" Value="0"/>
         </Style>
         <Style Selector="atom|CardTabStrip.quick-session-tab-strip atom|TabStripItem">
-            <Setter Property="Background" Value="{atom:SharedTokenResource ColorBgLayout}"/>
+            <Setter Property="Background" Value="{atom:SharedTokenResource ColorBgContainer}"/>
             <Setter Property="BorderBrush" Value="Transparent"/>
             <Setter Property="BorderThickness" Value="0"/>
             <Setter Property="CornerRadius" Value="0"/>
@@ -314,7 +314,7 @@
             <Setter Property="Foreground" Value="{atom:SharedTokenResource ColorPrimaryHover}"/>
         </Style>
         <Style Selector="atom|CardTabStrip.quick-session-tab-strip atom|TabStripItem:selected">
-            <Setter Property="Background" Value="{atom:SharedTokenResource ColorBgLayout}"/>
+            <Setter Property="Background" Value="{atom:SharedTokenResource ColorBgContainer}"/>
             <Setter Property="BorderBrush" Value="Transparent"/>
             <Setter Property="BorderThickness" Value="0"/>
             <Setter Property="Foreground" Value="{atom:SharedTokenResource ColorText}"/>
@@ -340,9 +340,9 @@
             <Setter Property="Padding" Value="0"/>
             <Setter Property="Margin" Value="0,2,0,0"/>
             <Style Selector="^ /template/ Border#Frame">
-                <Setter Property="CornerRadius" Value="8,8,0,0"/>
-                <Setter Property="BorderBrush" Value="{atom:SharedTokenResource ColorBorderSecondary}"/>
-                <Setter Property="BorderThickness" Value="1,1,1,0"/>
+                <Setter Property="CornerRadius" Value="0"/>
+                <Setter Property="BorderBrush" Value="Transparent"/>
+                <Setter Property="BorderThickness" Value="0"/>
                 <Setter Property="MinHeight" Value="34"/>
             </Style>
             <Style Selector="^ /template/ atom|IconButton#PART_ItemCloseButton">
@@ -353,9 +353,9 @@
             <Setter Property="Background" Value="{atom:SharedTokenResource ColorFillQuaternary}"/>
         </Style>
         <Style Selector="atom|TabStrip.session-tab-strip atom|TabStripItem:selected">
-            <Setter Property="Margin" Value="0,2,0,-1"/>
+            <Setter Property="Margin" Value="0,2,0,0"/>
             <Style Selector="^ /template/ Border#Frame">
-                <Setter Property="BorderBrush" Value="{atom:SharedTokenResource ColorBorder}"/>
+                <Setter Property="BorderBrush" Value="Transparent"/>
             </Style>
         </Style>
         <Style Selector="atom|ListBox.recent-session-list">
@@ -422,17 +422,16 @@
 
         <DataTemplate x:Key="ArrangedTabPaneTemplate" DataType="vm:TerminalTabGroupViewModel">
             <Border Margin="1"
-                    Background="{atom:SharedTokenResource ColorBgLayout}"
-                    BorderBrush="{atom:SharedTokenResource ColorSplit}"
-                    BorderThickness="1"
+                    Background="{atom:SharedTokenResource ColorBgContainer}"
+                    BorderBrush="Transparent"
+                    BorderThickness="0"
                     ClipToBounds="True"
                     PointerPressed="OnTabGroupPanePointerPressed">
                 <Grid RowDefinitions="Auto,*">
                     <Border Grid.Row="0"
                             MinHeight="36"
-                            Background="{atom:SharedTokenResource ColorBgLayout}"
-                            BorderBrush="{atom:SharedTokenResource ColorBorder}"
-                            BorderThickness="0,0,0,1">
+                            Background="{atom:SharedTokenResource ColorBgContainer}"
+                            BorderThickness="0">
                         <atom:TabStrip ItemsSource="{Binding Tabs}"
                                        Classes="session-tab-strip"
                                        SelectedItem="{Binding SelectedTab, Mode=TwoWay}"
@@ -449,7 +448,7 @@
                                        Closing="OnTabStripClosing"/>
                     </Border>
                     <Grid Grid.Row="1"
-                          Background="{atom:SharedTokenResource ColorBgLayout}">
+                          Background="{atom:SharedTokenResource ColorBgContainer}">
                         <Grid IsVisible="{Binding IsSelectedTerminalSession}"
                               RowDefinitions="Auto,*">
                             <Border Grid.Row="0"
@@ -650,9 +649,8 @@
                 Padding="8,5"
                 ClipToBounds="False"
                  IsVisible="{Binding IsQuickSessionBarVisible}"
-                 Background="{atom:SharedTokenResource ColorBgLayout}"
-                BorderBrush="{atom:SharedTokenResource ColorBorderSecondary}"
-                BorderThickness="0,1,0,1">
+                 Background="{atom:SharedTokenResource ColorBgContainer}"
+                BorderThickness="0">
             <DockPanel LastChildFill="True"
                        ClipToBounds="False"
                        VerticalAlignment="Center">
@@ -743,7 +741,7 @@
 
         <Grid Grid.Row="1">
             <Grid x:Name="MainContentGrid"
-                  Background="{atom:SharedTokenResource ColorBgLayout}">
+                  Background="{atom:SharedTokenResource ColorBgContainer}">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="0"/>
                     <ColumnDefinition Width="{Binding SftpSplitterWidth}"/>

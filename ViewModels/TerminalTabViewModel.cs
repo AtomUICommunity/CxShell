@@ -236,10 +236,8 @@ public partial class TerminalTabViewModel : ObservableObject, IDisposable
     private Color ResolveDefaultTabBackground()
     {
         return ThemeTokenColorHelper.GetColor(
-            IsSelected
-                ? SharedTokenKind.ColorBgContainer
-                : SharedTokenKind.ColorBgLayout,
-            IsSelected ? Color.Parse("#FFFFFF") : Color.Parse("#F5F5F5"));
+            SharedTokenKind.ColorBgContainer,
+            Color.Parse("#FFFFFF"));
     }
 
     [RelayCommand]
