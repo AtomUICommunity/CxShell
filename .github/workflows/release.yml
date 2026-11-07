@@ -430,7 +430,7 @@ jobs:
         include:
           - rid: linux-x64
             triplet: x64-linux
-            runs_on: ubuntu-latest
+            runs_on: ubuntu-24.04
           - rid: linux-arm64
             triplet: arm64-linux
             runs_on: ubuntu-24.04-arm
