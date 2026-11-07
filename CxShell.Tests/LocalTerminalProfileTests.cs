@@ -97,6 +97,13 @@ public sealed class LocalTerminalProfileTests
             return;
         if (!File.Exists("/bin/sh"))
             return;
+        // GitHub Actions runners do not provide a reliable interactive PTY for
+        // forkpty-based integration tests, so keep this check for local runs only.
+        if (string.Equals(
+                Environment.GetEnvironmentVariable("GITHUB_ACTIONS"),
+                "true",
+                StringComparison.OrdinalIgnoreCase))
+            return;
 
         var profile = new LocalTerminalProfile(
             "test-sh",
