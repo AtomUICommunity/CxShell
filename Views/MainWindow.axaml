@@ -732,9 +732,6 @@
                     <atom:TextBlock Text="{Binding ConnectedHostInfo}"
                                     VerticalAlignment="Center"
                                     Opacity="0.8"/>
-                    <atom:TextBlock Text="{Binding TerminalSizeText}"
-                                    VerticalAlignment="Center"
-                                    Opacity="0.8"/>
                 </StackPanel>
             </DockPanel>
         </Border>

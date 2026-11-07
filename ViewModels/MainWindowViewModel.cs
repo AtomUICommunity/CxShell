@@ -77,7 +77,6 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
     [ObservableProperty] private string _connectionStatusText = "Disconnected";
     [ObservableProperty] private IBrush _connectionStatusColor = Brushes.Gray;
     [ObservableProperty] private string _connectedHostInfo = string.Empty;
-    [ObservableProperty] private string _terminalSizeText = "80x24";
     [ObservableProperty] private bool _isDarkMode;
     [ObservableProperty] private bool _isTerminalFullScreen;
     [ObservableProperty] private bool _isFullScreenHintVisible;
@@ -1300,7 +1299,6 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
                 IsMonitorVisible = false;
         }
         UpdateStatusBar();
-        UpdateTerminalSize();
         UpdateMonitor(value);
         UpdateSftp(value);
         CurrentConnectCommand.NotifyCanExecuteChanged();
@@ -2052,9 +2050,6 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
             ConnectionStatusText = vnc.IsConnected ? "VNC connected" : "VNC disconnected";
             ConnectionStatusColor = new SolidColorBrush(vnc.IsConnected ? Color.Parse("#52C41A") : Colors.Gray);
             ConnectedHostInfo = $"{SelectedTab.Session.Host}:{(SelectedTab.Session.Port > 0 ? SelectedTab.Session.Port : 5900)}";
-            TerminalSizeText = vnc.RemoteWidth > 0 && vnc.RemoteHeight > 0
-                ? $"{vnc.RemoteWidth}x{vnc.RemoteHeight}"
-                : string.Empty;
             return;
         }
 
@@ -2063,7 +2058,6 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
             ConnectionStatusText = rdp.IsConnected ? "RDP connected" : rdp.StatusText;
             ConnectionStatusColor = new SolidColorBrush(rdp.IsConnected ? Color.Parse("#52C41A") : Colors.Gray);
             ConnectedHostInfo = BuildRdpHostInfo(SelectedTab.Session);
-            TerminalSizeText = string.Empty;
             return;
         }
 
@@ -2074,7 +2068,6 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
                 : $"{SelectedTab.Session.Protocol} disconnected";
             ConnectionStatusColor = new SolidColorBrush(fileTransfer.IsConnected ? Color.Parse("#52C41A") : Colors.Gray);
             ConnectedHostInfo = BuildFileTransferHostInfo(SelectedTab.Session);
-            TerminalSizeText = string.Empty;
             return;
         }
 
@@ -2090,33 +2083,6 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
             ConnectionStatusText = "Disconnected";
             ConnectionStatusColor = new SolidColorBrush(Colors.Gray);
             ConnectedHostInfo = string.Empty;
-        }
-    }
-
-    private void UpdateTerminalSize()
-    {
-        if (SelectedTab?.Vnc is { } vnc)
-        {
-            TerminalSizeText = vnc.RemoteWidth > 0 && vnc.RemoteHeight > 0
-                ? $"{vnc.RemoteWidth}x{vnc.RemoteHeight}"
-                : string.Empty;
-            return;
-        }
-
-        if (SelectedTab?.FileTransfer != null)
-        {
-            TerminalSizeText = string.Empty;
-            return;
-        }
-
-        var terminal = SelectedTab?.Terminal;
-        if (terminal != null)
-        {
-            TerminalSizeText = $"{terminal.Columns}x{terminal.Rows}";
-        }
-        else
-        {
-            TerminalSizeText = "80x24";
         }
     }
 
@@ -2641,7 +2607,6 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
 
             ConnectionStatusText = "VNC connected";
             ConnectionStatusColor = new SolidColorBrush(Color.Parse("#52C41A"));
-            UpdateTerminalSize();
         }
         catch (Exception ex)
         {
@@ -2718,11 +2683,6 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
             UpdateStatusBar();
             CurrentConnectCommand.NotifyCanExecuteChanged();
             CurrentDisconnectCommand.NotifyCanExecuteChanged();
-        }
-        if (e.PropertyName == nameof(TerminalViewModel.Columns) ||
-            e.PropertyName == nameof(TerminalViewModel.Rows))
-        {
-            UpdateTerminalSize();
         }
     }
 
@@ -2886,7 +2846,6 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
             IsMonitorVisible = false;
             Sftp = _emptySftp;
             UpdateStatusBar();
-            UpdateTerminalSize();
             return;
         }
 
@@ -3320,7 +3279,6 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
                 await tab.Vnc.ConnectAsync(tab.Session, vncPassword);
                 tab.ConnectedPassword = vncPassword;
                 UpdateStatusBar();
-                UpdateTerminalSize();
             }
             catch (Exception ex)
             {
@@ -3429,7 +3387,6 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         }
 
         UpdateStatusBar();
-        UpdateTerminalSize();
     }
 
     private static string? GetSavedPassword(SessionInfo session)
