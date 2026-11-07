@@ -825,8 +825,11 @@ jobs:
           notes="$(cat <<'EOF'
           ## What's Changed
 
-          - Fix the macOS Session Manager briefly showing only the native title bar before its content renders.
-          - Bind the Session Manager data context before the window is shown so its first layout is ready before macOS presents it.
+          - Hide the terminal size indicator (for example 80x24) from the status bar.
+          - Replace AtomUI row reordering with scroll-safe session drag and drop in the Session Manager.
+          - Fix Unix local terminal PTY reads on macOS.
+          - Unify session and tab backgrounds with the container color token.
+          - Add local terminal profile tests and improve DataGrid source adapters.
           - Publish self-contained packages for Windows, macOS, and Linux.
           EOF
           )"
