@@ -40,3 +40,6 @@ artifacts/
 
 OpenCowork/
 VelaShell/
+
+# WorkBuddy workspace data
+.workbuddy/
