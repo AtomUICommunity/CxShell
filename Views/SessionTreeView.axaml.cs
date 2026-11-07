@@ -8,6 +8,7 @@ using Avalonia.Controls;
 using Avalonia.Input;
 using Avalonia.Input.Platform;
 using Avalonia.Interactivity;
+using Avalonia.Media;
 using Avalonia.Platform.Storage;
 using Avalonia.Threading;
 using Avalonia.VisualTree;
@@ -23,16 +24,31 @@ namespace CxShell.Views;
 
 public partial class SessionTreeView : UserControl
 {
-    private const string RowReorderHandleTypeName = "AtomUI.Desktop.Controls.DataGridRowReorderHandle";
+    // Matches DataGrid.MouseWheelDelta so a forwarded wheel notch scrolls the
+    // same distance as it would without an active row drag.
+    private const double MouseWheelDelta = 50;
+    private const double RowDragThreshold = 4;
+    private const double AutoScrollEdgeSize = 28;
+    private const double AutoScrollMaxStep = 26;
 
-    private static readonly MethodInfo? TryBeginRowReorderMethod =
-        typeof(DataGrid).GetMethod("TryBeginRowReorder", BindingFlags.Instance | BindingFlags.NonPublic);
+    private static readonly MethodInfo? UpdateScrollMethod =
+        typeof(DataGrid).GetMethod("UpdateScroll", BindingFlags.Instance | BindingFlags.NonPublic);
+
+    private readonly DispatcherTimer _rowDragAutoScrollTimer;
 
     private bool _selectionSyncPending;
     private int _selectionSyncGeneration;
     private SessionNodeViewModel? _selectionAnchorNode;
     private DataGridSourceAdapter<SessionNodeViewModel>? _gridSource;
     private DataGridKeyLookupSource? _sessionGridSource;
+
+    private IPointer? _rowDragPointer;
+    private SessionNodeViewModel? _rowDragSourceNode;
+    private Point _rowDragStartPoint;
+    private Point _rowDragLastPoint;
+    private bool _rowDragInProgress;
+    private SessionNodeViewModel? _rowDragTargetNode;
+    private bool _rowDragInsertAfter;
 
     private static string T(string key) => LocalizationService.Shared.Text(key);
 
@@ -41,11 +57,16 @@ public partial class SessionTreeView : UserControl
     public SessionTreeView()
     {
         InitializeComponent();
+        _rowDragAutoScrollTimer = new DispatcherTimer(
+            TimeSpan.FromMilliseconds(30),
+            DispatcherPriority.Input,
+            (_, _) => TickRowDragAutoScroll());
         DataContextChanged += OnDataContextChanged;
     }
 
     private void OnDataContextChanged(object? sender, EventArgs e)
     {
+        EndRowDrag();
         DetachGridSource();
         if (DataContext is not SessionTreeViewModel vm || SessionTree == null)
             return;
@@ -53,7 +74,7 @@ public partial class SessionTreeView : UserControl
         _selectionSyncGeneration++;
         _selectionSyncPending = false;
         _gridSource = new DataGridSourceAdapter<SessionNodeViewModel>(vm.SessionRows);
-        _sessionGridSource = new DataGridKeyLookupSource(_gridSource.Source, MoveSessionRowAsync);
+        _sessionGridSource = new DataGridKeyLookupSource(_gridSource.Source);
         SessionTree.ItemsSource = _sessionGridSource;
         _gridSource.ConfigureColumns(SessionTree);
         _gridSource.SetSelectedItems(SessionTree, []);
@@ -70,6 +91,9 @@ public partial class SessionTreeView : UserControl
         if (SessionTree != null)
         {
             SessionTree.AddHandler(PointerPressedEvent, OnTreePointerPressed, RoutingStrategies.Tunnel);
+            SessionTree.AddHandler(PointerMovedEvent, OnTreePointerMoved, RoutingStrategies.Tunnel);
+            SessionTree.AddHandler(PointerReleasedEvent, OnTreePointerReleased, RoutingStrategies.Tunnel);
+            SessionTree.AddHandler(PointerCaptureLostEvent, OnTreePointerCaptureLost, RoutingStrategies.Tunnel);
             SessionTree.SelectionChanged += OnTreeSelectionChanged;
         }
         UpdateColumnHeaders();
@@ -84,10 +108,14 @@ public partial class SessionTreeView : UserControl
     {
         _selectionSyncGeneration++;
         _selectionSyncPending = false;
+        EndRowDrag();
         RemoveHandler(PointerWheelChangedEvent, OnTreePointerWheelChanged);
         if (SessionTree != null)
         {
             SessionTree.RemoveHandler(PointerPressedEvent, OnTreePointerPressed);
+            SessionTree.RemoveHandler(PointerMovedEvent, OnTreePointerMoved);
+            SessionTree.RemoveHandler(PointerReleasedEvent, OnTreePointerReleased);
+            SessionTree.RemoveHandler(PointerCaptureLostEvent, OnTreePointerCaptureLost);
             SessionTree.SelectionChanged -= OnTreeSelectionChanged;
         }
         LocalizationService.Shared.LanguageChanged -= OnLanguageChanged;
@@ -116,13 +144,13 @@ public partial class SessionTreeView : UserControl
 
     private void UpdateColumnHeaders()
     {
-        if (SessionTree?.Columns.Count >= 6)
+        if (SessionTree?.Columns.Count >= 5)
         {
-            SessionTree.Columns[1].Header = LocalizationService.Shared.Text("SessionManager.ColumnName");
-            SessionTree.Columns[2].Header = LocalizationService.Shared.Text("SessionManager.ColumnHost");
-            SessionTree.Columns[3].Header = LocalizationService.Shared.Text("SessionManager.ColumnUsername");
-            SessionTree.Columns[4].Header = LocalizationService.Shared.Text("SessionManager.ColumnProtocol");
-            SessionTree.Columns[5].Header = LocalizationService.Shared.Text("SessionManager.ColumnPort");
+            SessionTree.Columns[0].Header = LocalizationService.Shared.Text("SessionManager.ColumnName");
+            SessionTree.Columns[1].Header = LocalizationService.Shared.Text("SessionManager.ColumnHost");
+            SessionTree.Columns[2].Header = LocalizationService.Shared.Text("SessionManager.ColumnUsername");
+            SessionTree.Columns[3].Header = LocalizationService.Shared.Text("SessionManager.ColumnProtocol");
+            SessionTree.Columns[4].Header = LocalizationService.Shared.Text("SessionManager.ColumnPort");
         }
     }
 
@@ -133,11 +161,6 @@ public partial class SessionTreeView : UserControl
 
         var point = e.GetCurrentPoint(SessionTree);
         var node = FindClickedNode(e);
-
-        // The tunnel handler must not consume presses on the row-reorder handle,
-        // otherwise AtomUI never receives the pointer press that starts a drag.
-        if (point.Properties.IsLeftButtonPressed && IsRowReorderHandleSource(e.Source))
-            return;
 
         // Right-click opens the context menu.
         if (point.Properties.IsRightButtonPressed)
@@ -166,17 +189,15 @@ public partial class SessionTreeView : UserControl
         SessionTree.Focus();
         ApplySessionSelection(vm, node, e.KeyModifiers);
 
-        // AtomUI only starts a reorder from its small handle. Start the same
-        // built-in session when the press lands anywhere else on the row.
+        // The session manager owns row reordering instead of AtomUI's built-in
+        // session, which is cancelled whenever scrolling recycles the source
+        // row. CanUserReorderRows stays false so AtomUI never takes over the
+        // gesture; pressing anywhere on a row starts our own drag candidate.
         if (e.ClickCount == 1 && !IsInteractiveRowSource(e.Source))
         {
             var row = FindVisualAncestor<DataGridRow>(e.Source as Visual);
             if (row != null)
-            {
-                var handle = FindRowReorderHandle(row);
-                if (handle != null)
-                    TryBeginRowDrag(e, row, handle);
-            }
+                BeginRowDragCandidate(e, row, node);
         }
 
         e.Handled = true;
@@ -251,86 +272,313 @@ public partial class SessionTreeView : UserControl
         _gridSource?.SetSelectedItems(SessionTree, selected);
     }
 
-    private async ValueTask<DataGridMutationResult> MoveSessionRowAsync(
-        DataGridMoveRequest request,
-        CancellationToken cancellationToken)
+    private void BeginRowDragCandidate(
+        PointerPressedEventArgs e,
+        DataGridRow row,
+        SessionNodeViewModel node)
     {
-        if (cancellationToken.IsCancellationRequested ||
-            DataContext is not SessionTreeViewModel vm ||
-            _gridSource == null ||
-            !_gridSource.TryGetItem(request.RowKey, out var sourceNode))
+        if (SessionTree == null || node.Session == null)
+            return;
+
+        EndRowDrag();
+
+        _rowDragPointer = e.Pointer;
+        _rowDragSourceNode = node;
+        _rowDragStartPoint = e.GetPosition(SessionTree);
+        _rowDragLastPoint = _rowDragStartPoint;
+        _rowDragTargetNode = null;
+        _rowDragInsertAfter = false;
+        _rowDragInProgress = false;
+
+        e.Pointer.Capture(SessionTree);
+        if (!ReferenceEquals(e.Pointer.Captured, SessionTree))
+            EndRowDrag();
+    }
+
+    private void OnTreePointerMoved(object? sender, PointerEventArgs e)
+    {
+        if (SessionTree == null ||
+            _rowDragPointer == null ||
+            !ReferenceEquals(e.Pointer, _rowDragPointer))
         {
-            return new DataGridMutationResult(null);
+            return;
         }
 
-        SessionNodeViewModel? targetNode = null;
-        var insertAfter = false;
-        if (request.BeforeKey is { } beforeKey &&
-            _gridSource.TryGetItem(beforeKey, out var beforeNode))
+        var point = e.GetPosition(SessionTree);
+        _rowDragLastPoint = point;
+
+        if (!_rowDragInProgress)
         {
-            targetNode = beforeNode;
-        }
-        else if (request.AfterKey is { } afterKey &&
-                 _gridSource.TryGetItem(afterKey, out var afterNode))
-        {
-            targetNode = afterNode;
-            insertAfter = true;
+            if (_rowDragSourceNode == null ||
+                !e.GetCurrentPoint(SessionTree).Properties.IsLeftButtonPressed)
+            {
+                EndRowDrag();
+                return;
+            }
+
+            var deltaX = point.X - _rowDragStartPoint.X;
+            var deltaY = point.Y - _rowDragStartPoint.Y;
+            if (Math.Abs(deltaX) < RowDragThreshold && Math.Abs(deltaY) < RowDragThreshold)
+                return;
+
+            // Only vertical movement starts a row move; horizontal movement is
+            // column resizing and must not turn into a reorder.
+            if (Math.Abs(deltaX) > Math.Abs(deltaY) * 2)
+                return;
+
+            _rowDragInProgress = true;
+            _rowDragAutoScrollTimer.Start();
+            SessionTree.LayoutUpdated += OnRowDragLayoutUpdated;
         }
 
-        if (targetNode == null)
+        UpdateRowDropTarget(point);
+        e.Handled = true;
+    }
+
+    private void OnTreePointerReleased(object? sender, PointerReleasedEventArgs e)
+    {
+        if (_rowDragPointer == null || !ReferenceEquals(e.Pointer, _rowDragPointer))
+            return;
+
+        var wasDragging = _rowDragInProgress;
+        var sourceNode = _rowDragSourceNode;
+        var targetNode = _rowDragTargetNode;
+        var insertAfter = _rowDragInsertAfter;
+
+        EndRowDrag();
+
+        if (!wasDragging || sourceNode == null || targetNode == null ||
+            ReferenceEquals(sourceNode, targetNode))
         {
-            return new DataGridMutationResult(null);
+            e.Handled = true;
+            return;
         }
 
-        // Let the local source perform the actual collection move so the grid
-        // receives the new snapshot and does not stay in a stale drag state.
-        var result = await _gridSource.MoveAsync(request, cancellationToken);
-        vm.PersistSessionMove(sourceNode, targetNode, insertAfter);
-        return result;
+        if (DataContext is SessionTreeViewModel vm)
+            vm.MoveSession(sourceNode, targetNode, insertAfter);
+
+        e.Handled = true;
+    }
+
+    private void OnTreePointerCaptureLost(object? sender, PointerCaptureLostEventArgs e)
+    {
+        if (_rowDragPointer != null && ReferenceEquals(e.Pointer, _rowDragPointer))
+            EndRowDrag();
+    }
+
+    private void EndRowDrag()
+    {
+        _rowDragAutoScrollTimer.Stop();
+        if (SessionTree != null)
+            SessionTree.LayoutUpdated -= OnRowDragLayoutUpdated;
+
+        var pointer = _rowDragPointer;
+        _rowDragPointer = null;
+        _rowDragSourceNode = null;
+        _rowDragTargetNode = null;
+        _rowDragInsertAfter = false;
+        _rowDragInProgress = false;
+        HideRowDropIndicator();
+
+        if (pointer != null &&
+            SessionTree != null &&
+            ReferenceEquals(pointer.Captured, SessionTree))
+        {
+            pointer.Capture(null);
+        }
     }
 
     private void OnTreePointerWheelChanged(object? sender, PointerWheelEventArgs e)
     {
-        // Scrolling can change the range snapshot and invalidate an active
-        // AtomUI row-reorder session. Keep the drag alive while the pointer is
-        // captured by the reorder handle.
-        if (e.Pointer.Captured is Visual captured &&
-            captured.GetType().FullName == RowReorderHandleTypeName)
-        {
+        if (!_rowDragInProgress)
+            return;
+
+        // The pointer is captured by this view during a row drag, so the wheel
+        // event never reaches DataGrid.OnPointerWheelChanged. Apply the same
+        // scroll that handler would apply; the layout update that follows
+        // recomputes the insertion point.
+        var scrolled = TryUpdateScroll(e.Delta * MouseWheelDelta);
+        if (scrolled)
             e.Handled = true;
-        }
     }
 
-    private bool TryBeginRowDrag(PointerPressedEventArgs e, DataGridRow row, object handle)
+    private void RefreshRowDropTarget()
     {
-        if (TryBeginRowReorderMethod == null || SessionTree == null)
+        if (!_rowDragInProgress || SessionTree == null)
+            return;
+
+        UpdateRowDropTarget(_rowDragLastPoint);
+    }
+
+    private void OnRowDragLayoutUpdated(object? sender, EventArgs e)
+    {
+        // Scrolling recycles and re-arranges rows, so an indicator computed
+        // before the layout pass points at stale bounds. Recompute after every
+        // layout while a drag is active.
+        RefreshRowDropTarget();
+    }
+
+    private void TickRowDragAutoScroll()
+    {
+        if (!_rowDragInProgress || SessionTree == null)
+        {
+            _rowDragAutoScrollTimer.Stop();
+            return;
+        }
+
+        if (!TryGetRowsViewport(out var top, out var bottom))
+            return;
+
+        var pointerY = _rowDragLastPoint.Y;
+        var delta = 0d;
+        if (pointerY < top + AutoScrollEdgeSize)
+        {
+            var ratio = Math.Clamp(
+                (top + AutoScrollEdgeSize - pointerY) / AutoScrollEdgeSize,
+                0,
+                1);
+            delta = ratio * AutoScrollMaxStep;
+        }
+        else if (pointerY > bottom - AutoScrollEdgeSize)
+        {
+            var ratio = Math.Clamp(
+                (pointerY - (bottom - AutoScrollEdgeSize)) / AutoScrollEdgeSize,
+                0,
+                1);
+            delta = -ratio * AutoScrollMaxStep;
+        }
+
+        if (Math.Abs(delta) < 0.5)
+            return;
+
+        // The resulting layout update recomputes the insertion point.
+        TryUpdateScroll(new Vector(0, delta));
+    }
+
+    private bool TryGetRowsViewport(out double top, out double bottom)
+    {
+        top = 0;
+        bottom = 0;
+        if (SessionTree == null || FindRowsPresenter() is not { } presenter)
             return false;
 
-        var rowsPresenter = SessionTree.GetVisualDescendants()
+        var origin = presenter.TranslatePoint(default, SessionTree);
+        if (origin is not { } position || presenter.Bounds.Height <= 0)
+            return false;
+
+        top = position.Y;
+        bottom = top + presenter.Bounds.Height;
+        return true;
+    }
+
+    private DataGridRowsPresenter? FindRowsPresenter() =>
+        SessionTree?.GetVisualDescendants()
             .OfType<DataGridRowsPresenter>()
             .FirstOrDefault();
-        if (rowsPresenter == null)
+
+    private bool TryUpdateScroll(Vector delta)
+    {
+        if (UpdateScrollMethod == null || SessionTree == null)
             return false;
 
         try
         {
-            return TryBeginRowReorderMethod.Invoke(
-                SessionTree,
-                [handle, row, e.Pointer, e.GetPosition(rowsPresenter)]) is true;
+            return UpdateScrollMethod.Invoke(SessionTree, [delta]) is true;
         }
         catch (TargetInvocationException)
         {
             return false;
         }
-        catch (ArgumentException)
+    }
+
+    private void UpdateRowDropTarget(Point point)
+    {
+        var presenter = FindRowsPresenter();
+        if (presenter == null || SessionTree == null)
         {
-            return false;
+            HideRowDropIndicator();
+            return;
+        }
+
+        var origin = presenter.TranslatePoint(default, SessionTree);
+        if (origin is not { } presenterOrigin)
+        {
+            HideRowDropIndicator();
+            return;
+        }
+
+        var rows = presenter.Children
+            .OfType<DataGridRow>()
+            .Where(row => row.Index >= 0 &&
+                          row.DataContext is SessionNodeViewModel { Session: not null })
+            .OrderBy(row => row.Index)
+            .ToList();
+        if (rows.Count == 0)
+        {
+            HideRowDropIndicator();
+            return;
+        }
+
+        var presenterTop = presenterOrigin.Y;
+        var presenterBottom = presenterTop + presenter.Bounds.Height;
+        var pointerY = Math.Clamp(point.Y, presenterTop, presenterBottom);
+
+        SessionNodeViewModel? targetNode = null;
+        var insertAfter = false;
+        var indicatorY = presenterTop;
+
+        foreach (var row in rows)
+        {
+            var rowTop = presenterTop + row.Bounds.Y;
+            var rowBottom = rowTop + row.Bounds.Height;
+            var node = (SessionNodeViewModel)row.DataContext!;
+
+            if (pointerY < rowTop)
+            {
+                targetNode = node;
+                insertAfter = false;
+                indicatorY = rowTop;
+                break;
+            }
+
+            targetNode = node;
+            if (pointerY < rowBottom)
+            {
+                insertAfter = pointerY >= rowTop + row.Bounds.Height / 2;
+                indicatorY = insertAfter ? rowBottom : rowTop;
+                break;
+            }
+
+            insertAfter = true;
+            indicatorY = rowBottom;
+        }
+
+        _rowDragTargetNode = targetNode;
+        _rowDragInsertAfter = insertAfter;
+        ShowRowDropIndicator(indicatorY);
+    }
+
+    private void ShowRowDropIndicator(double y)
+    {
+        if (RowDropIndicator == null)
+            return;
+
+        RowDropIndicator.IsVisible = true;
+        if (RowDropIndicator.RenderTransform is TranslateTransform transform)
+        {
+            transform.Y = y;
+        }
+        else
+        {
+            RowDropIndicator.RenderTransform = new TranslateTransform(0, y);
         }
     }
 
-    private static object? FindRowReorderHandle(DataGridRow row) =>
-        row.GetVisualDescendants()
-            .FirstOrDefault(visual => visual.GetType().FullName == RowReorderHandleTypeName);
+    private void HideRowDropIndicator()
+    {
+        if (RowDropIndicator != null)
+            RowDropIndicator.IsVisible = false;
+    }
 
     private static T? FindVisualAncestor<T>(Visual? source) where T : Visual
     {
@@ -358,22 +606,6 @@ public partial class SessionTreeView : UserControl
             {
                 return true;
             }
-            current = current.GetVisualParent() as Visual;
-        }
-
-        return false;
-    }
-
-    private static bool IsRowReorderHandleSource(object? source) =>
-        source is Visual visual && IsRowReorderHandle(visual);
-
-    private static bool IsRowReorderHandle(Visual visual)
-    {
-        var current = visual;
-        while (current != null)
-        {
-            if (current.GetType().FullName == RowReorderHandleTypeName)
-                return true;
             current = current.GetVisualParent() as Visual;
         }
 

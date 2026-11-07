@@ -44,29 +44,41 @@
                                  IsAllowClear="True"/>
             </Grid>
 
-            <atom:DataGrid x:Name="SessionTree"
-                                         x:CompileBindings="False"
-                           Grid.Row="2"
-                           Margin="0,8,0,16"
-                           VerticalAlignment="Stretch"
-                           AutoGenerateColumns="False"
-                           IsReadOnly="True"
-                           SelectionMode="Extended"
-                           SizeType="Middle"
-                           GridLinesVisibility="Horizontal"
-                           CanUserResizeColumns="True"
-                           CanUserSortColumns="True"
-                           CanUserReorderRows="True"
-                           >
-                <atom:DataGrid.Columns>
-                    <atom:DataGridRowReorderColumn Width="32"/>
-                    <atom:DataGridTextColumn Header="名称" Binding="{Binding Name}" Width="170"/>
-                    <atom:DataGridTextColumn Header="主机" Binding="{Binding Host}" Width="215"/>
-                    <atom:DataGridTextColumn Header="用户名" Binding="{Binding Username}" Width="140"/>
-                    <atom:DataGridTextColumn Header="协议" Binding="{Binding Protocol}" Width="92"/>
-                    <atom:DataGridTextColumn Header="端口" Binding="{Binding Port}" Width="92"/>
-                </atom:DataGrid.Columns>
-            </atom:DataGrid>
+            <Grid Grid.Row="2"
+                  Margin="0,8,0,16">
+                <atom:DataGrid x:Name="SessionTree"
+                               x:CompileBindings="False"
+                               VerticalAlignment="Stretch"
+                               AutoGenerateColumns="False"
+                               IsReadOnly="True"
+                               SelectionMode="Extended"
+                               SizeType="Middle"
+                               GridLinesVisibility="Horizontal"
+                               CanUserResizeColumns="True"
+                               CanUserSortColumns="True">
+                    <atom:DataGrid.Columns>
+                        <atom:DataGridTextColumn Header="名称" Binding="{Binding Name}" Width="170"/>
+                        <atom:DataGridTextColumn Header="主机" Binding="{Binding Host}" Width="215"/>
+                        <atom:DataGridTextColumn Header="用户名" Binding="{Binding Username}" Width="140"/>
+                        <atom:DataGridTextColumn Header="协议" Binding="{Binding Protocol}" Width="92"/>
+                        <atom:DataGridTextColumn Header="端口" Binding="{Binding Port}" Width="92"/>
+                    </atom:DataGrid.Columns>
+                </atom:DataGrid>
+
+                <Border x:Name="RowDropIndicator"
+                        Height="2"
+                        VerticalAlignment="Top"
+                        HorizontalAlignment="Stretch"
+                        Margin="0"
+                        CornerRadius="1"
+                        IsHitTestVisible="False"
+                        IsVisible="False"
+                        Background="{atom:SharedTokenResource ColorPrimary}">
+                    <Border.RenderTransform>
+                        <TranslateTransform/>
+                    </Border.RenderTransform>
+                </Border>
+            </Grid>
         </Grid>
     </Grid>
 </UserControl>
