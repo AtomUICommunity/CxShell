@@ -524,6 +524,30 @@ jobs:
           export TRIPLET="${{ matrix.triplet }}"
           bash tools/build-rdp-bridge.sh
 
+      - name: Build PTY bridge
+        shell: bash
+        run: |
+          set -euo pipefail
+          rid="${{ matrix.rid }}"
+          OUTPUT_DIR="$GITHUB_WORKSPACE/artifacts/publish/$rid" bash tools/build-pty-bridge.sh
+          test -f "$GITHUB_WORKSPACE/artifacts/publish/$rid/libCxPtyBridge.so"
+
+      - name: Smoke test local PTY bridge
+        shell: bash
+        # Informational on the first runs: the shared test job skips this
+        # integration test under GitHub Actions, so surface its result here
+        # without blocking a release if the runner behaves differently.
+        continue-on-error: true
+        env:
+          GITHUB_ACTIONS: ""
+        run: |
+          set -uo pipefail
+          dotnet test CxShell.Tests/CxShell.Tests.csproj \
+            --configuration Release \
+            --nologo \
+            --filter 'FullyQualifiedName~UnixForkPtyCanStartShellAndReceiveOutput' \
+            -v q
+
       - name: Validate RDP bridge
         shell: bash
         run: |
@@ -709,6 +733,31 @@ jobs:
           export TRIPLET="${{ matrix.triplet }}"
           bash tools/build-rdp-bridge.sh
 
+      - name: Build PTY bridge
+        shell: bash
+        run: |
+          set -euo pipefail
+          package_name="CxShell-$RELEASE_TAG-${{ matrix.package_suffix }}"
+          export OUTPUT_DIR="$GITHUB_WORKSPACE/artifacts/package/$package_name/CxShell.app/Contents/MacOS"
+          bash tools/build-pty-bridge.sh
+          test -f "$OUTPUT_DIR/libCxPtyBridge.dylib"
+
+      - name: Smoke test local PTY bridge
+        shell: bash
+        # The only place where the Darwin forkpty shim and its
+        # ioctl(TIOCSWINSZ) path are actually executed, so record the result on
+        # both macOS architectures. Kept non-blocking for the first releases.
+        continue-on-error: true
+        env:
+          GITHUB_ACTIONS: ""
+        run: |
+          set -uo pipefail
+          dotnet test CxShell.Tests/CxShell.Tests.csproj \
+            --configuration Release \
+            --nologo \
+            --filter 'FullyQualifiedName~UnixForkPtyCanStartShellAndReceiveOutput' \
+            -v q
+
       - name: Build Finder drag bridge
         shell: bash
         run: |
@@ -739,6 +788,7 @@ jobs:
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIconFile' "$app_path/Contents/Info.plist")" = "CxShell.icns"
           test -f "$app_path/Contents/MacOS/libCxRdpBridge.dylib"
           test -f "$app_path/Contents/MacOS/libCxMacDragBridge.dylib"
+          test -f "$app_path/Contents/MacOS/libCxPtyBridge.dylib"
 
           if [ -d "$app_path/Contents/MacOS/runtimes/win-x64" ]; then
             echo "Windows native runtime files were copied into the macOS package." >&2
@@ -747,6 +797,7 @@ jobs:
 
           otool -L "$app_path/Contents/MacOS/libCxRdpBridge.dylib"
           otool -L "$app_path/Contents/MacOS/libCxMacDragBridge.dylib"
+          otool -L "$app_path/Contents/MacOS/libCxPtyBridge.dylib"
 
           DYLD_LIBRARY_PATH="$app_path/Contents/MacOS${DYLD_LIBRARY_PATH:+:$DYLD_LIBRARY_PATH}" \
             dotnet run --project tools/RdpSmokeTest/RdpSmokeTest.csproj --configuration Release -- --probe

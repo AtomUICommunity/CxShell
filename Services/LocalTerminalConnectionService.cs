@@ -1,3 +1,4 @@
+using System.Collections;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -798,8 +799,6 @@ public sealed class LocalTerminalConnectionService : ITerminalConnectionService
     {
         private const int SigTerm = 15;
         private const int SigKill = 9;
-        private const ulong LinuxTioCsWinsz = 0x5414;
-        private const ulong MacTioCsWinsz = 0x80487467;
 
         private readonly FileStream _stream;
         private readonly int _processId;
@@ -846,53 +845,41 @@ public sealed class LocalTerminalConnectionService : ITerminalConnectionService
         {
             columns = Math.Clamp(columns, 2, 500);
             rows = Math.Clamp(rows, 2, 500);
-            var argv = new IntPtr[profile.Arguments.Count + 2];
-            var allocatedStrings = new List<IntPtr>(argv.Length + 3);
+            var argv = new List<IntPtr>(profile.Arguments.Count + 1);
+            var environment = BuildEnvironment();
+            var envp = new List<IntPtr>(environment.Count + 1);
+            var allocatedStrings = new List<IntPtr>(argv.Count + envp.Count + 2);
             IntPtr argvPointer = IntPtr.Zero;
-            IntPtr termName = IntPtr.Zero;
-            IntPtr termValue = IntPtr.Zero;
-            IntPtr colorName = IntPtr.Zero;
-            IntPtr colorValue = IntPtr.Zero;
+            IntPtr envpPointer = IntPtr.Zero;
             IntPtr workingDirectory = IntPtr.Zero;
 
             try
             {
-                argv[0] = AllocateUtf8(profile.ExecutablePath, allocatedStrings);
-                for (var index = 0; index < profile.Arguments.Count; index++)
-                    argv[index + 1] = AllocateUtf8(profile.Arguments[index], allocatedStrings);
+                argv.Add(AllocateUtf8(profile.ExecutablePath, allocatedStrings));
+                foreach (var argument in profile.Arguments)
+                    argv.Add(AllocateUtf8(argument, allocatedStrings));
+                argvPointer = WritePointerArray(argv);
 
-                argvPointer = Marshal.AllocHGlobal(argv.Length * IntPtr.Size);
-                for (var index = 0; index < argv.Length; index++)
-                    Marshal.WriteIntPtr(argvPointer, index * IntPtr.Size, argv[index]);
+                foreach (var entry in environment)
+                    envp.Add(AllocateUtf8(entry, allocatedStrings));
+                envpPointer = WritePointerArray(envp);
 
-                termName = AllocateUtf8("TERM", allocatedStrings);
-                termValue = AllocateUtf8("xterm-256color", allocatedStrings);
-                colorName = AllocateUtf8("COLORTERM", allocatedStrings);
-                colorValue = AllocateUtf8("truecolor", allocatedStrings);
                 if (!string.IsNullOrWhiteSpace(profile.WorkingDirectory))
                     workingDirectory = AllocateUtf8(profile.WorkingDirectory, allocatedStrings);
 
-                var windowSize = new UnixNative.WinSize
-                {
-                    Rows = (ushort)rows,
-                    Columns = (ushort)columns
-                };
-                int master;
-                var processId = OperatingSystem.IsMacOS()
-                    ? UnixNativeMac.ForkPty(out master, IntPtr.Zero, IntPtr.Zero, ref windowSize)
-                    : UnixNativeLinux.ForkPty(out master, IntPtr.Zero, IntPtr.Zero, ref windowSize);
+                // The child is started and exec'd entirely inside the native
+                // bridge: returning to managed code after fork() crashes the
+                // child process on both Linux and macOS.
+                var processId = CxPtyBridge.Start(
+                    argv[0],
+                    argvPointer,
+                    envpPointer,
+                    workingDirectory,
+                    rows,
+                    columns,
+                    out var master);
                 if (processId < 0)
-                    throw new InvalidOperationException($"forkpty failed: {Marshal.GetLastWin32Error()}");
-
-                if (processId == 0)
-                {
-                    if (workingDirectory != IntPtr.Zero)
-                        UnixNative.ChDir(workingDirectory);
-                    UnixNative.SetEnv(termName, termValue, 1);
-                    UnixNative.SetEnv(colorName, colorValue, 1);
-                    UnixNative.ExecV(argv[0], argvPointer);
-                    UnixNative.ExitImmediately(127);
-                }
+                    throw new InvalidOperationException($"forkpty failed: errno {Marshal.GetLastPInvokeError()}");
 
                 var stream = new FileStream(
                     new SafeFileHandle((IntPtr)master, ownsHandle: true),
@@ -905,9 +892,33 @@ public sealed class LocalTerminalConnectionService : ITerminalConnectionService
             {
                 if (argvPointer != IntPtr.Zero)
                     Marshal.FreeHGlobal(argvPointer);
+                if (envpPointer != IntPtr.Zero)
+                    Marshal.FreeHGlobal(envpPointer);
                 foreach (var pointer in allocatedStrings)
                     Marshal.FreeHGlobal(pointer);
             }
+        }
+
+        private static List<string> BuildEnvironment()
+        {
+            var environment = new List<string>();
+            foreach (DictionaryEntry entry in Environment.GetEnvironmentVariables())
+            {
+                if (entry.Key is not string name)
+                    continue;
+
+                if (string.Equals(name, "TERM", StringComparison.Ordinal) ||
+                    string.Equals(name, "COLORTERM", StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                environment.Add($"{name}={entry.Value}");
+            }
+
+            environment.Add("TERM=xterm-256color");
+            environment.Add("COLORTERM=truecolor");
+            return environment;
         }
 
         public override void Resize(int columns, int rows)
@@ -917,18 +928,23 @@ public sealed class LocalTerminalConnectionService : ITerminalConnectionService
                 if (_closed)
                     return;
 
-                var windowSize = new UnixNative.WinSize
+                try
                 {
-                    Rows = (ushort)Math.Clamp(rows, 2, 500),
-                    Columns = (ushort)Math.Clamp(columns, 2, 500)
-                };
-                var request = OperatingSystem.IsMacOS() ? MacTioCsWinsz : LinuxTioCsWinsz;
-                var result = UnixNative.Ioctl(
-                    _stream.SafeFileHandle.DangerousGetHandle().ToInt32(),
-                    request,
-                    ref windowSize);
-                if (result != 0)
-                    throw new InvalidOperationException($"ioctl(TIOCSWINSZ) failed: {Marshal.GetLastWin32Error()}");
+                    var fileDescriptor = _stream.SafeFileHandle.DangerousGetHandle().ToInt32();
+                    var result = CxPtyBridge.SetWindowSize(
+                        fileDescriptor,
+                        Math.Clamp(rows, 2, 500),
+                        Math.Clamp(columns, 2, 500));
+                    if (result != 0)
+                        Debug.WriteLine($"ioctl(TIOCSWINSZ) failed: errno {Marshal.GetLastPInvokeError()}");
+                }
+                catch (Exception ex)
+                {
+                    // Window-size negotiation is best effort: a failure only
+                    // leaves full-screen programs with a stale size, whereas a
+                    // throw here would abort the whole local terminal session.
+                    Debug.WriteLine($"ioctl(TIOCSWINSZ) unavailable: {ex.Message}");
+                }
             }
         }
 
@@ -983,59 +999,27 @@ public sealed class LocalTerminalConnectionService : ITerminalConnectionService
             return pointer;
         }
 
+        private static IntPtr WritePointerArray(IReadOnlyList<IntPtr> values)
+        {
+            var pointer = Marshal.AllocHGlobal((values.Count + 1) * IntPtr.Size);
+            for (var index = 0; index < values.Count; index++)
+                Marshal.WriteIntPtr(pointer, index * IntPtr.Size, values[index]);
+            Marshal.WriteIntPtr(pointer, values.Count * IntPtr.Size, IntPtr.Zero);
+            return pointer;
+        }
+
         private static class UnixNative
         {
             public const int NoHang = 1;
 
-            [StructLayout(LayoutKind.Sequential)]
-            public struct WinSize
-            {
-                public ushort Rows;
-                public ushort Columns;
-                public ushort XPixel;
-                public ushort YPixel;
-            }
-
-            [DllImport("libc", SetLastError = true)]
-            public static extern int ChDir(IntPtr path);
-
-            [DllImport("libc", SetLastError = true)]
-            public static extern int SetEnv(IntPtr name, IntPtr value, int overwrite);
-
-            [DllImport("libc", SetLastError = true)]
-            public static extern int ExecV(IntPtr file, IntPtr argv);
-
-            [DllImport("libc", EntryPoint = "_exit")]
-            public static extern void ExitImmediately(int status);
-
-            [DllImport("libc", SetLastError = true)]
-            public static extern int Ioctl(int fileDescriptor, ulong request, ref WinSize windowSize);
-
-            [DllImport("libc", SetLastError = true)]
+            // On Unix the runtime resolves the exported symbol by its exact
+            // name, so every entry point is declared explicitly; leaving it out
+            // makes the method name (Kill, WaitPid, ...) the lookup key.
+            [DllImport("libc", EntryPoint = "kill", SetLastError = true)]
             public static extern int Kill(int processId, int signal);
 
-            [DllImport("libc", SetLastError = true)]
+            [DllImport("libc", EntryPoint = "waitpid", SetLastError = true)]
             public static extern int WaitPid(int processId, out int status, int options);
-        }
-
-        private static class UnixNativeLinux
-        {
-            [DllImport("libutil.so.1", EntryPoint = "forkpty", SetLastError = true)]
-            public static extern int ForkPty(
-                out int master,
-                IntPtr name,
-                IntPtr termios,
-                ref UnixNative.WinSize windowSize);
-        }
-
-        private static class UnixNativeMac
-        {
-            [DllImport("libutil.dylib", EntryPoint = "forkpty", SetLastError = true)]
-            public static extern int ForkPty(
-                out int master,
-                IntPtr name,
-                IntPtr termios,
-                ref UnixNative.WinSize windowSize);
         }
     }
 }

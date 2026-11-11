@@ -115,6 +115,7 @@ public sealed class LocalTerminalProfileTests
         using var service = new LocalTerminalConnectionService();
         var output = new StringBuilder();
         var received = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var resized = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         service.DataReceived += text =>
         {
             lock (output)
@@ -122,6 +123,8 @@ public sealed class LocalTerminalProfileTests
                 output.Append(text);
                 if (output.ToString().Contains("CXSHELL_LOCAL_PTY_TEST", StringComparison.Ordinal))
                     received.TrySetResult(true);
+                if (output.ToString().Contains("30 100", StringComparison.Ordinal))
+                    resized.TrySetResult(true);
             }
         };
 
@@ -132,7 +135,14 @@ public sealed class LocalTerminalProfileTests
         var completed = await Task.WhenAny(received.Task, Task.Delay(TimeSpan.FromSeconds(5)));
         Assert.Same(received.Task, completed);
         Assert.True(service.IsConnected);
+
+        // Resizing goes through ioctl(TIOCSWINSZ); letting the shell report the
+        // size proves the request reached the pty.
         service.ResizeTerminal(100, 30);
+        service.SendData("stty size\n");
+        var resizeCompleted = await Task.WhenAny(resized.Task, Task.Delay(TimeSpan.FromSeconds(5)));
+        Assert.Same(resized.Task, resizeCompleted);
+
         service.Disconnect();
     }
 }

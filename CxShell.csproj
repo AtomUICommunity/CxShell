@@ -96,4 +96,6 @@
     <ItemGroup Condition="'$(RuntimeIdentifier)' != ''">
         <None Include="runtimes/$(RuntimeIdentifier)/native/*" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
     </ItemGroup>
+
+    <Import Project="native\CxPtyBridge\CxPtyBridge.targets" />
 </Project>

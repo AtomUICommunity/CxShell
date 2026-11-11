@@ -1,0 +1,34 @@
+<Project>
+  <!--
+    Builds native/CxPtyBridge next to the managed output on Linux and macOS so
+    local `dotnet run`/`dotnet test` sessions have a working Unix local
+    terminal. Release pipelines build the same library with
+    tools/build-pty-bridge.sh into the publish directory.
+  -->
+  <PropertyGroup Condition="$([MSBuild]::IsOSUnixLike())">
+    <CxPtyBridgeSource>$(MSBuildThisFileDirectory)CxPtyBridge.c</CxPtyBridgeSource>
+    <CxPtyBridgeFileName Condition="$([MSBuild]::IsOSPlatform('OSX'))">libCxPtyBridge.dylib</CxPtyBridgeFileName>
+    <CxPtyBridgeFileName Condition="!$([MSBuild]::IsOSPlatform('OSX'))">libCxPtyBridge.so</CxPtyBridgeFileName>
+    <CxPtyBridgeCompilerFlags Condition="$([MSBuild]::IsOSPlatform('OSX'))">-dynamiclib</CxPtyBridgeCompilerFlags>
+    <CxPtyBridgeCompilerFlags Condition="!$([MSBuild]::IsOSPlatform('OSX'))">-shared -fPIC</CxPtyBridgeCompilerFlags>
+  </PropertyGroup>
+
+  <Target Name="BuildCxPtyBridge"
+          AfterTargets="Build"
+          Condition="$([MSBuild]::IsOSUnixLike()) and '$(DesignTimeBuild)' != 'true'"
+          Inputs="$(CxPtyBridgeSource)"
+          Outputs="$(OutDir)$(CxPtyBridgeFileName)">
+    <Exec Command="cc $(CxPtyBridgeCompilerFlags) -O2 -fvisibility=hidden -o &quot;$(OutDir)$(CxPtyBridgeFileName)&quot; &quot;$(CxPtyBridgeSource)&quot; -lutil"
+          ContinueOnError="true" />
+  </Target>
+
+  <Target Name="IncludeCxPtyBridgeInPublish"
+          BeforeTargets="ComputeFilesToPublish"
+          Condition="$([MSBuild]::IsOSUnixLike()) and Exists('$(OutDir)$(CxPtyBridgeFileName)')">
+    <ItemGroup>
+      <ResolvedFileToPublish Include="$(OutDir)$(CxPtyBridgeFileName)"
+                             RelativePath="$(CxPtyBridgeFileName)"
+                             CopyToPublishDirectory="PreserveNewest" />
+    </ItemGroup>
+  </Target>
+</Project>

@@ -23,4 +23,6 @@
     <ItemGroup>
         <ProjectReference Include="..\CxShell.csproj" />
     </ItemGroup>
+
+    <Import Project="..\native\CxPtyBridge\CxPtyBridge.targets" />
 </Project>
