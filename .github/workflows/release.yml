@@ -447,8 +447,21 @@ jobs:
       - name: Install build tools
         shell: bash
         run: |
-          sudo apt-get update
-          sudo apt-get install -y cmake ninja-build pkg-config
+          set -euo pipefail
+          if command -v cmake >/dev/null && command -v ninja >/dev/null && command -v pkg-config >/dev/null; then
+            echo "Build tools are already available on this runner."
+            exit 0
+          fi
+          for attempt in 1 2 3; do
+            echo "Installing build tools (attempt $attempt/3)"
+            if sudo apt-get update -o Acquire::Retries=3 \
+              && sudo apt-get install -y cmake ninja-build pkg-config; then
+              exit 0
+            fi
+            sleep $((attempt * 15))
+          done
+          echo "Failed to install build tools." >&2
+          exit 1
 
       - name: Bootstrap vcpkg
         shell: bash
