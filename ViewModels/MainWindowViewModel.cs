@@ -225,7 +225,12 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
     public string ChineseLanguageText => _localization.Text("Language.Chinese");
     public string EnglishLanguageText => _localization.Text("Language.English");
 
-    private Window? _sessionManagerWindow;
+    // Keep the concrete AtomUI window type. Show(owner) must bind to AtomUI's
+    // Window.Show override, which primes the theme context and the initial
+    // surface background before the first frame. Typing this as Avalonia's
+    // Window selects Avalonia's Show instead, and the first frame paints the
+    // default white background until the theme resolves.
+    private SessionManagerWindow? _sessionManagerWindow;
     public MainWindowViewModel()
     {
         _sessionTreeVm = new SessionTreeViewModel(this);
