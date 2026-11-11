@@ -292,6 +292,14 @@ export TRIPLET="arm64-osx"
 bash tools/build-rdp-bridge.sh
 ```
 
+The local terminal does not need `vcpkg`. `native/CxPtyBridge` is compiled with `cc`
+during `dotnet build` and `dotnet publish`; build it explicitly when packaging by hand:
+
+```bash
+OUTPUT_DIR="$PWD/artifacts/CxShell-macos-arm64/CxShell.app/Contents/MacOS" \
+  bash tools/build-pty-bridge.sh
+```
+
 Local ad-hoc signing:
 
 ```bash

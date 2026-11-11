@@ -292,6 +292,14 @@ export TRIPLET="arm64-osx"
 bash tools/build-rdp-bridge.sh
 ```
 
+本地终端不需要 `vcpkg`。`native/CxPtyBridge` 会在 `dotnet build` 和 `dotnet publish`
+时用 `cc` 自动编译；手动打包时可以显式构建：
+
+```bash
+OUTPUT_DIR="$PWD/artifacts/CxShell-macos-arm64/CxShell.app/Contents/MacOS" \
+  bash tools/build-pty-bridge.sh
+```
+
 本地 ad-hoc 签名：
 
 ```bash
