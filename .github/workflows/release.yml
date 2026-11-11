@@ -876,8 +876,9 @@ jobs:
           notes="$(cat <<'EOF'
           ## What's Changed
 
-          - Fix the Session Manager briefly flashing a white background when it opens on the dark theme.
-          - Update AtomUI to 6.2.13 and Avalonia to 12.1.6.
+          - Fix local terminals on Linux and macOS. The shell is now started by a small native PTY bridge (forkpty/execve/ioctl) instead of from managed code after fork(), which crashed the child process and surfaced as "Connection failed: Unable to find an entry point named 'ioctl'".
+          - Fix terminal resizing on macOS, including Apple silicon, and keep the session alive when a resize request cannot be applied.
+          - Ship libCxPtyBridge.so / libCxPtyBridge.dylib with the Linux and macOS packages and verify the library in the release pipeline.
           - Publish self-contained packages for Windows, macOS, and Linux.
           EOF
           )"
