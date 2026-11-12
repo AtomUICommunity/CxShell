@@ -800,14 +800,16 @@ public sealed class LocalTerminalConnectionService : ITerminalConnectionService
         private const int SigTerm = 15;
         private const int SigKill = 9;
 
-        private readonly FileStream _stream;
+        private readonly UnixPtyStream _stream;
+        private readonly int _master;
         private readonly int _processId;
         private readonly object _closeGate = new();
         private bool _closed;
 
-        private UnixForkPtySession(FileStream stream, int processId)
+        private UnixForkPtySession(int master, int processId)
         {
-            _stream = stream;
+            _master = master;
+            _stream = new UnixPtyStream(master);
             _processId = processId;
         }
 
@@ -817,8 +819,7 @@ public sealed class LocalTerminalConnectionService : ITerminalConnectionService
         public override Task<int> ReadAsync(byte[] buffer, CancellationToken cancellationToken)
         {
             // A PTY master file descriptor does not support asynchronous I/O.
-            // Use a blocking read on the thread pool instead of FileStream.ReadAsync,
-            // which requires an async-capable handle on macOS.
+            // Use a blocking read on the thread pool instead.
             return Task.Run(() =>
             {
                 if (cancellationToken.IsCancellationRequested)
@@ -835,11 +836,7 @@ public sealed class LocalTerminalConnectionService : ITerminalConnectionService
             }, cancellationToken);
         }
 
-        public override void Write(byte[] data)
-        {
-            _stream.Write(data, 0, data.Length);
-            _stream.Flush();
-        }
+        public override void Write(byte[] data) => _stream.Write(data, 0, data.Length);
 
         public static new UnixForkPtySession Start(LocalTerminalProfile profile, int columns, int rows)
         {
@@ -881,12 +878,7 @@ public sealed class LocalTerminalConnectionService : ITerminalConnectionService
                 if (processId < 0)
                     throw new InvalidOperationException($"forkpty failed: errno {Marshal.GetLastPInvokeError()}");
 
-                var stream = new FileStream(
-                    new SafeFileHandle((IntPtr)master, ownsHandle: true),
-                    FileAccess.ReadWrite,
-                    16 * 1024,
-                    isAsync: false);
-                return new UnixForkPtySession(stream, processId);
+                return new UnixForkPtySession(master, processId);
             }
             finally
             {
@@ -930,9 +922,8 @@ public sealed class LocalTerminalConnectionService : ITerminalConnectionService
 
                 try
                 {
-                    var fileDescriptor = _stream.SafeFileHandle.DangerousGetHandle().ToInt32();
                     var result = CxPtyBridge.SetWindowSize(
-                        fileDescriptor,
+                        _master,
                         Math.Clamp(rows, 2, 500),
                         Math.Clamp(columns, 2, 500));
                     if (result != 0)
@@ -997,6 +988,77 @@ public sealed class LocalTerminalConnectionService : ITerminalConnectionService
             var pointer = Marshal.StringToCoTaskMemUTF8(value);
             allocatedStrings.Add(pointer);
             return pointer;
+        }
+
+        /// <summary>
+        /// Blocking stream over the PTY master descriptor.
+        /// <para>
+        /// A terminal is not a file: wrapping the descriptor in a FileStream
+        /// buffers writes, shares one position between the read and write
+        /// threads, and turns the normal end-of-session conditions (EINTR on
+        /// interrupts, EIO when the slave closes) into exceptions. Direct
+        /// read(2)/write(2) through the native bridge keeps the semantics the
+        /// kernel defines for a terminal, which is what typed input depends on.
+        /// </para>
+        /// </summary>
+        private sealed class UnixPtyStream : Stream
+        {
+            private readonly int _master;
+            private int _disposed;
+
+            public UnixPtyStream(int master)
+            {
+                _master = master;
+            }
+
+            public override bool CanRead => Volatile.Read(ref _disposed) == 0;
+            public override bool CanWrite => Volatile.Read(ref _disposed) == 0;
+            public override bool CanSeek => false;
+            public override long Length => throw new NotSupportedException();
+
+            public override long Position
+            {
+                get => throw new NotSupportedException();
+                set => throw new NotSupportedException();
+            }
+
+            public override void Flush()
+            {
+                // Every write goes straight to the descriptor.
+            }
+
+            public override int Read(byte[] buffer, int offset, int count)
+            {
+                ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+
+                var read = CxPtyBridge.Read(_master, buffer, offset, count);
+                if (read < 0)
+                    throw new IOException($"read(pty master) failed: errno {Marshal.GetLastPInvokeError()}");
+
+                return read;
+            }
+
+            public override void Write(byte[] buffer, int offset, int count)
+            {
+                ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+
+                if (CxPtyBridge.Write(_master, buffer, offset, count) < 0)
+                    throw new IOException($"write(pty master) failed: errno {Marshal.GetLastPInvokeError()}");
+            }
+
+            public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+
+            public override void SetLength(long value) => throw new NotSupportedException();
+
+            protected override void Dispose(bool disposing)
+            {
+                if (Interlocked.Exchange(ref _disposed, 1) == 0)
+                {
+                    try { CxPtyBridge.Close(_master); } catch { }
+                }
+
+                base.Dispose(disposing);
+            }
         }
 
         private static IntPtr WritePointerArray(IReadOnlyList<IntPtr> values)

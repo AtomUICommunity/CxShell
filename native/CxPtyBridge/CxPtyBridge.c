@@ -106,3 +106,75 @@ CX_PTY_EXPORT int cx_pty_resize(int master, unsigned short rows, unsigned short 
     cx_pty_fill_window_size(&window_size, rows, columns);
     return ioctl(master, TIOCSWINSZ, &window_size);
 }
+
+/*
+ * Reads from the master descriptor, retrying on EINTR.
+ *
+ * Returns the byte count, 0 when the child side is gone (end of file), or -1
+ * with errno set. Linux reports a closed slave as EIO while macOS reports it
+ * as a zero-byte read, so EIO is normalised to 0 here: both mean "the session
+ * ended", not "the terminal failed".
+ */
+CX_PTY_EXPORT int cx_pty_read(int master, void *buffer, int length)
+{
+    ssize_t result;
+
+    if (buffer == NULL || length <= 0)
+    {
+        errno = EINVAL;
+        return -1;
+    }
+
+    do
+    {
+        result = read(master, buffer, (size_t)length);
+    } while (result < 0 && errno == EINTR);
+
+    if (result < 0)
+        return errno == EIO ? 0 : -1;
+
+    return (int)result;
+}
+
+/*
+ * Writes every byte of `buffer` to the master descriptor, retrying on EINTR
+ * and on partial writes. Returns `length`, or -1 with errno set.
+ */
+CX_PTY_EXPORT int cx_pty_write(int master, const void *buffer, int length)
+{
+    const char *cursor = (const char *)buffer;
+    int remaining = length;
+
+    if ((buffer == NULL && length > 0) || length < 0)
+    {
+        errno = EINVAL;
+        return -1;
+    }
+
+    while (remaining > 0)
+    {
+        ssize_t written = write(master, cursor, (size_t)remaining);
+
+        if (written < 0)
+        {
+            if (errno == EINTR)
+                continue;
+
+            return -1;
+        }
+
+        cursor += written;
+        remaining -= (int)written;
+    }
+
+    return length;
+}
+
+/*
+ * Releases the master descriptor.
+ */
+CX_PTY_EXPORT int cx_pty_close(int master)
+{
+    return close(master);
+}
+

@@ -25,6 +25,15 @@ internal static class CxPtyBridge
     [DllImport(Library, EntryPoint = "cx_pty_resize", SetLastError = true)]
     private static extern int Resize(int master, ushort rows, ushort columns);
 
+    [DllImport(Library, EntryPoint = "cx_pty_read", SetLastError = true)]
+    private static extern int ReadNative(int master, IntPtr buffer, int length);
+
+    [DllImport(Library, EntryPoint = "cx_pty_write", SetLastError = true)]
+    private static extern int WriteNative(int master, IntPtr buffer, int length);
+
+    [DllImport(Library, EntryPoint = "cx_pty_close", SetLastError = true)]
+    private static extern int CloseNative(int master);
+
     public static int Start(
         IntPtr executable,
         IntPtr argv,
@@ -57,4 +66,42 @@ internal static class CxPtyBridge
 
     public static int SetWindowSize(int master, int rows, int columns)
         => Resize(master, (ushort)rows, (ushort)columns);
+
+    /// <summary>
+    /// Reads into <paramref name="buffer"/>. Returns the byte count, 0 at end of
+    /// file (the shell exited), or -1 on failure.
+    /// </summary>
+    public static int Read(int master, byte[] buffer, int offset, int count)
+    {
+        var handle = GCHandle.Alloc(buffer, GCHandleType.Pinned);
+
+        try
+        {
+            return ReadNative(master, IntPtr.Add(handle.AddrOfPinnedObject(), offset), count);
+        }
+        finally
+        {
+            handle.Free();
+        }
+    }
+
+    /// <summary>
+    /// Writes the whole range, retrying on partial writes. Returns 0 on success
+    /// or -1 on failure.
+    /// </summary>
+    public static int Write(int master, byte[] buffer, int offset, int count)
+    {
+        var handle = GCHandle.Alloc(buffer, GCHandleType.Pinned);
+
+        try
+        {
+            return WriteNative(master, IntPtr.Add(handle.AddrOfPinnedObject(), offset), count) < 0 ? -1 : 0;
+        }
+        finally
+        {
+            handle.Free();
+        }
+    }
+
+    public static void Close(int master) => CloseNative(master);
 }

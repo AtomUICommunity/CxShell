@@ -547,10 +547,10 @@ jobs:
 
       - name: Smoke test local PTY bridge
         shell: bash
-        # Informational on the first runs: the shared test job skips this
-        # integration test under GitHub Actions, so surface its result here
-        # without blocking a release if the runner behaves differently.
-        continue-on-error: true
+        # Runs the real local-terminal integration test, which types text, reads
+        # the shell output, and checks the resized window size. Blocking: a
+        # macOS or Linux package whose local terminal cannot take input must
+        # never reach the release.
         env:
           GITHUB_ACTIONS: ""
         run: |
@@ -757,10 +757,9 @@ jobs:
 
       - name: Smoke test local PTY bridge
         shell: bash
-        # The only place where the Darwin forkpty shim and its
-        # ioctl(TIOCSWINSZ) path are actually executed, so record the result on
-        # both macOS architectures. Kept non-blocking for the first releases.
-        continue-on-error: true
+        # The only place where the Darwin forkpty shim, its ioctl(TIOCSWINSZ)
+        # path, and typed input are actually executed, so keep it blocking on
+        # both macOS architectures.
         env:
           GITHUB_ACTIONS: ""
         run: |
