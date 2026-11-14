@@ -888,9 +888,11 @@ jobs:
           notes="$(cat <<'EOF'
           ## What's Changed
 
-          - Fix local terminals on Linux and macOS. The shell is now started by a small native PTY bridge (forkpty/execve/ioctl) instead of from managed code after fork(), which crashed the child process and surfaced as "Connection failed: Unable to find an entry point named 'ioctl'".
-          - Fix terminal resizing on macOS, including Apple silicon, and keep the session alive when a resize request cannot be applied.
-          - Ship libCxPtyBridge.so / libCxPtyBridge.dylib with the Linux and macOS packages and verify the library in the release pipeline.
+          - Move any tab into its own top-level window. Drag a tab away from the tab strip (a preview card follows the pointer) or pick "Move to new window" from the tab context menu. Dropping the tab back on its strip cancels the move, and closing the window ends that session.
+          - Detached windows support fullscreen from the title-bar button, F11, and Esc, and restore the previous window state when leaving fullscreen.
+          - RDP connections can use the HTTP, SOCKS4, SOCKS4A, or SOCKS5 proxy configured on the session's Proxy page, with the global proxy as a fallback. The RDP SSH tunnel still takes priority over the proxy.
+          - Fix RDP mouse wheel scrolling: every wheel tick now sends one rotation notch instead of a zero-rotation pointer event.
+          - Fix a stack overflow in the session editor that happened when the proxy selection was cleared.
           - Publish self-contained packages for Windows, macOS, and Linux.
           EOF
           )"
