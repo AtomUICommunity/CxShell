@@ -26,6 +26,7 @@ public partial class RdpView : UserControl
     private bool _hasKeyboardFocus;
     private string? _lastSyncedClipboardText;
     private WindowsRdpShortcutHook? _systemShortcutHook;
+    private double _pendingWheelY;
 
     public RdpView()
     {
@@ -46,6 +47,7 @@ public partial class RdpView : UserControl
             _hasKeyboardFocus = false;
             DisposeSystemShortcutHook();
             ReleaseTrackedModifiers();
+            _pendingWheelY = 0;
             UnbindViewModel();
         };
         GotFocus += (_, _) =>
@@ -240,8 +242,17 @@ public partial class RdpView : UserControl
 
     private void OnFramebufferPointerWheelChanged(object? sender, PointerWheelEventArgs e)
     {
-        var wheelFlag = e.Delta.Y > 0 ? (ushort)0x0200 : (ushort)(0x0200 | 0x0100);
-        SendPointer(e, wheelFlag);
+        var notches = RdpWheelInput.TakeNotches(ref _pendingWheelY, e.Delta.Y);
+
+        if (notches != 0)
+        {
+            // Each RDP wheel event carries exactly one notch, so a fast tick of
+            // three notches needs three events.
+            var wheelFlag = RdpWheelInput.GetNotchFlags(notches);
+            for (var i = 0; i < Math.Abs(notches); i++)
+                SendPointer(e, wheelFlag);
+        }
+
         e.Handled = true;
     }
 
