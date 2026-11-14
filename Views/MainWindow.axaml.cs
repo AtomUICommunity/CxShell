@@ -51,6 +51,13 @@ public partial class MainWindow : AtomWindow
     private const double MinimumAgentPanelWidth = 280;
     private const double MaximumAgentPanelWidth = 600;
     private const double AgentSplitterHitSlop = 5;
+    private const double TabTearOutVerticalMargin = 36;
+    private const double TabTearOutDragThreshold = 8;
+    private TerminalTabViewModel? _tearOutTab;
+    private TabStrip? _tearOutStrip;
+    private Point _tearOutStart;
+    private bool _tearOutArmed;
+    private TabDragGhostWindow? _tabDragGhost;
 
     public MainWindow()
         : this(Array.Empty<string>())
@@ -113,12 +120,18 @@ public partial class MainWindow : AtomWindow
         LeftToolbarAddOn.DataContext = vm;
         RightToolbarAddOn.DataContext = vm;
         WriteToolbarDiagnostics("MainWindow initialized; toolbar menus use AtomUI ContextMenu.");
-        Closed += (_, _) => vm.Dispose();
+        Closed += (_, _) =>
+        {
+            CloseTabDragGhost();
+            DetachedTabWindow.CloseAll();
+            vm.Dispose();
+        };
         PropertyChanged += (_, e) =>
         {
             if (e.Property.Name is nameof(WindowState) or nameof(IsVisible))
                 UpdateApplicationSuspension(vm);
         };
+        Deactivated += (_, _) => ResetTabTearOut();
         MainContentGrid.AddHandler(PointerPressedEvent, OnMainContentGridPointerPressed, RoutingStrategies.Tunnel, handledEventsToo: true);
         AddHandler(PointerMovedEvent, OnSftpSplitterPointerMoved, RoutingStrategies.Tunnel, handledEventsToo: true);
         AddHandler(PointerReleasedEvent, OnSftpSplitterPointerReleased, RoutingStrategies.Tunnel, handledEventsToo: true);
@@ -127,6 +140,9 @@ public partial class MainWindow : AtomWindow
         AddHandler(PointerReleasedEvent, OnAgentSplitterPointerReleased, RoutingStrategies.Tunnel, handledEventsToo: true);
         AddHandler(PointerCaptureLostEvent, OnAgentSplitterPointerCaptureLost, RoutingStrategies.Bubble, handledEventsToo: true);
         AddHandler(KeyDownEvent, OnPreviewKeyDown, RoutingStrategies.Tunnel);
+        AddHandler(PointerPressedEvent, OnTabTearOutPointerPressed, RoutingStrategies.Tunnel, handledEventsToo: true);
+        AddHandler(PointerMovedEvent, OnTabTearOutPointerMoved, RoutingStrategies.Tunnel, handledEventsToo: true);
+        AddHandler(PointerReleasedEvent, OnTabTearOutPointerReleased, RoutingStrategies.Tunnel, handledEventsToo: true);
         QueueApplySftpPanelWidth(vm);
     }
 
@@ -631,6 +647,8 @@ public partial class MainWindow : AtomWindow
             return;
 
         var menu = CreatePointerContextMenu(anchor);
+        AddMenuItem(menu, vm.TabMoveToNewWindowText, () => OnTabMoveToNewWindowClick(anchor, new RoutedEventArgs()));
+        menu.Items.Add(new AtomMenuSeparator());
         AddMenuItem(menu, vm.TabDuplicateText, () => OnTabDuplicateClick(anchor, new RoutedEventArgs()));
         menu.Items.Add(new AtomMenuSeparator());
         AddMenuItem(menu, vm.TabCloseText, () => OnTabCloseClick(anchor, new RoutedEventArgs()));
@@ -1078,6 +1096,210 @@ public partial class MainWindow : AtomWindow
 
         vm.RemoveQuickSessionCommand.Execute(_quickSessionContext);
         _quickSessionContext = null;
+    }
+
+    private void OnTabMoveToNewWindowClick(object? sender, RoutedEventArgs e)
+    {
+        if (_tabContext == null)
+            return;
+
+        var tab = _tabContext;
+        _tabContext = null;
+        MoveTabToNewWindow(tab);
+    }
+
+    /// <summary>
+    /// Moves a tab out of the main window and into its own top-level window.
+    /// <paramref name="anchorInWindow"/> is the pointer position that triggered
+    /// the move, used to place the new window under the cursor; the context menu
+    /// path passes <c>null</c> and lets the window center itself.
+    /// </summary>
+    private void MoveTabToNewWindow(TerminalTabViewModel? tab, Point? anchorInWindow = null)
+    {
+        if (tab == null || DataContext is not MainWindowViewModel vm)
+            return;
+
+        var position = anchorInWindow == null ? null : ResolveDetachedWindowPosition(anchorInWindow.Value);
+        if (!vm.DetachTab(tab))
+            return;
+
+        DetachedTabWindow.ShowFor(tab, vm.CloseDetachedTab, position);
+    }
+
+    private PixelPoint? ResolveDetachedWindowPosition(Point anchorInWindow)
+    {
+        var scaling = RenderScaling <= 0 ? 1 : RenderScaling;
+        var screenPoint = new PixelPoint(
+            Position.X + (int)Math.Round(anchorInWindow.X * scaling),
+            Position.Y + (int)Math.Round(anchorInWindow.Y * scaling));
+        var screen = Screens.ScreenFromPoint(screenPoint) ?? Screens.Primary;
+        if (screen == null)
+            return null;
+
+        var area = screen.WorkingArea;
+        var width = (int)(1000 * scaling);
+        var height = (int)(700 * scaling);
+        var x = Math.Clamp(screenPoint.X - width / 4, area.X, Math.Max(area.X, area.Right - width));
+        var y = Math.Clamp(screenPoint.Y - 24, area.Y, Math.Max(area.Y, area.Bottom - height));
+        return new PixelPoint(x, y);
+    }
+
+    private void OnTabTearOutPointerPressed(object? sender, PointerPressedEventArgs e)
+    {
+        ResetTabTearOut();
+
+        if (DataContext is not MainWindowViewModel ||
+            e.GetCurrentPoint(this).Properties.PointerUpdateKind != PointerUpdateKind.LeftButtonPressed)
+        {
+            return;
+        }
+
+        var source = e.Source as Avalonia.Controls.Control;
+        var tab = ResolveTabContext(source, out var anchor);
+        if (tab == null || anchor == null || IsPointerFromButton(source))
+            return;
+
+        _tearOutTab = tab;
+        _tearOutStrip = FindAncestorTabStrip(anchor);
+        _tearOutStart = e.GetPosition(this);
+    }
+
+    private void OnTabTearOutPointerMoved(object? sender, PointerEventArgs e)
+    {
+        if (_tearOutTab == null)
+            return;
+
+        if (!e.GetCurrentPoint(this).Properties.IsLeftButtonPressed)
+        {
+            ResetTabTearOut();
+            return;
+        }
+
+        var position = e.GetPosition(this);
+        var delta = position - _tearOutStart;
+        if (Math.Abs(delta.X) + Math.Abs(delta.Y) < TabTearOutDragThreshold || _tearOutStrip == null)
+            return;
+
+        // AtomUI already owns horizontal drags for tab reordering. Only a drag
+        // that leaves the strip vertically arms the tear-out, so the two
+        // gestures never fight over the same movement. Once armed the preview
+        // stays latched until the pointer is released, even if the pointer
+        // wanders back over the strip or the title bar.
+        var stripOrigin = _tearOutStrip.TranslatePoint(new Point(0, 0), this);
+        if (stripOrigin == null)
+            return;
+
+        var stripTop = stripOrigin.Value.Y;
+        var stripBottom = stripTop + _tearOutStrip.Bounds.Height;
+        if (position.Y > stripBottom + TabTearOutVerticalMargin ||
+            position.Y < stripTop - TabTearOutVerticalMargin)
+        {
+            _tearOutArmed = true;
+        }
+
+        UpdateTabTearOutPreview(_tearOutArmed, e.GetPosition(this));
+    }
+
+    private void OnTabTearOutPointerReleased(object? sender, PointerReleasedEventArgs e)
+    {
+        var tab = _tearOutTab;
+        var strip = _tearOutStrip;
+        var anchor = e.GetPosition(this);
+        // Dropping the tab back onto its own strip cancels the tear-out, which
+        // mirrors the usual "put it back" gesture. Anywhere else creates the
+        // detached window.
+        var shouldDetach = tab != null &&
+                           _tearOutArmed &&
+                           e.InitialPressMouseButton == MouseButton.Left &&
+                           !IsOverTabStrip(strip, anchor);
+        ResetTabTearOut();
+
+        if (!shouldDetach || tab == null)
+            return;
+
+        // Let AtomUI finish its own pointer-release bookkeeping (it may be
+        // mid-reorder-drag) before the tab is pulled out of the strip.
+        Dispatcher.UIThread.Post(
+            () => MoveTabToNewWindow(tab, anchor),
+            DispatcherPriority.Background);
+    }
+
+    private bool IsOverTabStrip(TabStrip? strip, Point positionInWindow)
+    {
+        if (strip == null)
+            return false;
+
+        var origin = strip.TranslatePoint(new Point(0, 0), this);
+        if (origin == null)
+            return false;
+
+        return new Rect(origin.Value, strip.Bounds.Size).Inflate(4).Contains(positionInWindow);
+    }
+
+    private void ResetTabTearOut()
+    {
+        _tearOutTab = null;
+        _tearOutStrip = null;
+        _tearOutArmed = false;
+        HideTabTearOutPreview();
+    }
+
+    /// <summary>
+    /// Shows a small floating card at the pointer while the dragged tab is far
+    /// enough from its strip to become its own window. It is only a preview:
+    /// nothing is detached until the pointer is released. The card lives in its
+    /// own top-level window so it is not clipped by the main window or hidden
+    /// behind its title bar.
+    /// </summary>
+    private void UpdateTabTearOutPreview(bool visible, Point position)
+    {
+        if (!visible)
+        {
+            HideTabTearOutPreview();
+            return;
+        }
+
+        _tabDragGhost ??= new TabDragGhostWindow();
+        _tabDragGhost.ShowAt(_tearOutTab?.Title, this, position);
+    }
+
+    private void HideTabTearOutPreview()
+    {
+        if (_tabDragGhost is { IsVisible: true })
+            _tabDragGhost.Hide();
+    }
+
+    private void CloseTabDragGhost()
+    {
+        if (_tabDragGhost == null)
+            return;
+
+        _tabDragGhost.Close();
+        _tabDragGhost = null;
+    }
+
+    private static TabStrip? FindAncestorTabStrip(Avalonia.Controls.Control anchor)
+    {
+        foreach (var control in EnumerateControlLineage(anchor))
+        {
+            if (control is TabStrip tabStrip)
+                return tabStrip;
+        }
+
+        return null;
+    }
+
+    private static bool IsPointerFromButton(Avalonia.Controls.Control? source)
+    {
+        foreach (var control in EnumerateControlLineage(source))
+        {
+            if (control is Avalonia.Controls.Button)
+                return true;
+            if (control is TabStripItem)
+                return false;
+        }
+
+        return false;
     }
 
     private void OnTabCloseClick(object? sender, RoutedEventArgs e)

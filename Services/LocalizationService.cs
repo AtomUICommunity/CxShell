@@ -39,6 +39,7 @@ public sealed class LocalizationService : INotifyPropertyChanged
         ["Quick.Properties"] = "Properties",
         ["Quick.Delete"] = "Delete",
         ["TabMenu.Duplicate"] = "Duplicate",
+        ["TabMenu.MoveToNewWindow"] = "Move to new window",
         ["TabMenu.Close"] = "Close",
         ["TabMenu.Properties"] = "Properties",
         ["TabMenu.AddQuick"] = "Add to quick bar",
@@ -664,6 +665,7 @@ public sealed class LocalizationService : INotifyPropertyChanged
         AddGeneratedTexts(EnglishTexts, ChineseTexts);
         AddDialogTexts(EnglishTexts, ChineseTexts);
         EnglishTexts["TabMenu.Duplicate"] = "Duplicate";
+        EnglishTexts["TabMenu.MoveToNewWindow"] = "Move to new window";
         EnglishTexts["TabMenu.Close"] = "Close";
         EnglishTexts["TabMenu.Properties"] = "Properties";
         EnglishTexts["TabMenu.AddQuick"] = "Add to quick bar";
@@ -1226,6 +1228,7 @@ public sealed class LocalizationService : INotifyPropertyChanged
         EnglishTexts["PrivateKeyPassphraseDialog.Key"] = "Private key: {0}";
         EnglishTexts["PrivateKeyPassphraseDialog.JumpHost"] = "JumpHost: {0}\nPrivate key: {1}";
         ChineseTexts["TabMenu.Duplicate"] = "\u590d\u5236";
+        ChineseTexts["TabMenu.MoveToNewWindow"] = "\u79fb\u5230\u65b0\u7a97\u53e3";
         ChineseTexts["TabMenu.Close"] = "\u5173\u95ed";
         ChineseTexts["TabMenu.Properties"] = "\u5c5e\u6027";
         ChineseTexts["TabMenu.AddQuick"] = "\u6dfb\u52a0\u5230\u6807\u7b7e";

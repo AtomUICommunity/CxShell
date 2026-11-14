@@ -197,6 +197,7 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
     public string QuickPropertiesText => _localization.Text("Quick.Properties");
     public string QuickDeleteText => _localization.Text("Quick.Delete");
     public string TabDuplicateText => _localization.Text("TabMenu.Duplicate");
+    public string TabMoveToNewWindowText => _localization.Text("TabMenu.MoveToNewWindow");
     public string TabCloseText => _localization.Text("TabMenu.Close");
     public string TabPropertiesText => _localization.Text("TabMenu.Properties");
     public string TabAddQuickText => _localization.Text("TabMenu.AddQuick");
@@ -1236,6 +1237,7 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         OnPropertyChanged(nameof(QuickPropertiesText));
         OnPropertyChanged(nameof(QuickDeleteText));
         OnPropertyChanged(nameof(TabDuplicateText));
+        OnPropertyChanged(nameof(TabMoveToNewWindowText));
         OnPropertyChanged(nameof(TabCloseText));
         OnPropertyChanged(nameof(TabPropertiesText));
         OnPropertyChanged(nameof(TabAddQuickText));
@@ -2865,6 +2867,84 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
                 ActivateTabGroupForSelectedTab(SelectedTab);
             }
         }
+    }
+
+    /// <summary>
+    /// Removes a tab from the main window without closing its session so it can
+    /// be hosted by a detached window. The tab keeps its terminal buffer,
+    /// connections, and view models; only the main-window bookkeeping (tab
+    /// groups, selected tab, companion panels) is unwound.
+    /// </summary>
+    /// <returns><c>true</c> when the tab belonged to this window and was removed.</returns>
+    public bool DetachTab(TerminalTabViewModel tab)
+    {
+        if (tab == null || !Tabs.Contains(tab))
+            return false;
+
+        var wasSelected = SelectedTab == tab;
+        var group = IsTabArrangementEnabled ? FindTabGroup(tab) : null;
+
+        tab.PropertyChanged -= OnTerminalTabPropertyChanged;
+        tab.Terminal.PropertyChanged -= OnActiveTerminalPropertyChanged;
+
+        group?.RemoveTab(tab);
+        if (group is { HasTabs: false })
+            TabGroups.Remove(group);
+
+        Tabs.Remove(tab);
+        if (ReferenceEquals(Sftp, tab.CompanionSftp) ||
+            ReferenceEquals(Sftp, tab.FileTransfer))
+        {
+            Sftp = _emptySftp;
+        }
+
+        if (wasSelected && Tabs.Count > 0)
+        {
+            SelectedTab = group?.SelectedTab ?? SelectedTabGroup?.SelectedTab ?? Tabs.Last();
+        }
+
+        if (Tabs.Count == 0)
+        {
+            IsTerminalFullScreen = false;
+            TabGroups.Clear();
+            SetSelectedTabGroup(null);
+            StopAllMonitors();
+            IsSftpVisible = false;
+            IsMonitorVisible = false;
+            Sftp = _emptySftp;
+            UpdateStatusBar();
+            return true;
+        }
+
+        if (IsTabArrangementEnabled)
+        {
+            if (TabGroups.Count < 2)
+            {
+                MergeTabGroups();
+            }
+            else
+            {
+                ActivateTabGroupForSelectedTab(SelectedTab);
+            }
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Releases a tab that was moved to its own window. It no longer lives in
+    /// <see cref="Tabs"/>, so <see cref="CloseTab"/> would ignore it, but the
+    /// audit trail and agent session bookkeeping still need to hear about the
+    /// close.
+    /// </summary>
+    public void CloseDetachedTab(TerminalTabViewModel tab)
+    {
+        if (tab == null)
+            return;
+
+        RecordAudit(tab.Session, ConnectionAuditEventType.TabClosed);
+        AgentSessionGateway.NotifySessionClosed(tab.AgentSessionId);
+        tab.Dispose();
     }
 
     /// <summary>

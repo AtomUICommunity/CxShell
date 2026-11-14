@@ -1,0 +1,37 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:atom="https://atomui.net"
+        x:Class="CxShell.Views.TabDragGhostWindow"
+        Width="180"
+        Height="34"
+        SystemDecorations="None"
+        WindowStartupLocation="Manual"
+        ShowInTaskbar="False"
+        ShowActivated="False"
+        Topmost="True"
+        CanResize="False"
+        CanMinimize="False"
+        CanMaximize="False"
+        Focusable="False"
+        Background="Transparent">
+    <Border CornerRadius="6"
+            Background="{atom:SharedTokenResource ColorBgContainer}"
+            BorderBrush="{atom:SharedTokenResource ColorPrimary}"
+            BorderThickness="1"
+            Opacity="0.94"
+            BoxShadow="0 8 20 0 #66000000">
+        <StackPanel Orientation="Horizontal"
+                    Spacing="6"
+                    Margin="10,0"
+                    VerticalAlignment="Center">
+            <Ellipse Width="7"
+                     Height="7"
+                     VerticalAlignment="Center"
+                     Fill="{atom:SharedTokenResource ColorPrimary}"/>
+            <TextBlock x:Name="TabDragGhostTitle"
+                       FontSize="12"
+                       VerticalAlignment="Center"
+                       TextTrimming="CharacterEllipsis"/>
+        </StackPanel>
+    </Border>
+</Window>

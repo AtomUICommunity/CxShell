@@ -1,0 +1,27 @@
+<atom:Window xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:atom="https://atomui.net"
+             xmlns:vm="using:CxShell.ViewModels"
+             xmlns:views="using:CxShell.Views"
+             x:Class="CxShell.Views.DetachedTabWindow"
+             x:DataType="vm:TerminalTabViewModel"
+             Title="{Binding Title}"
+             Icon="/Assets/CxShellLogo.png"
+             Width="1000"
+             Height="700"
+             MinWidth="480"
+             MinHeight="320"
+             WindowStartupLocation="CenterScreen"
+             IsFullScreenCaptionButtonVisible="True"
+             Background="{atom:SharedTokenResource ColorBgLayout}">
+    <Grid Background="{atom:SharedTokenResource ColorBgContainer}">
+        <views:TerminalView DataContext="{Binding Terminal, x:CompileBindings=False}"
+                            IsVisible="{Binding $parent[Window].DataContext.IsTerminalSession, x:CompileBindings=False}"/>
+        <views:VncView DataContext="{Binding Vnc, x:CompileBindings=False}"
+                       IsVisible="{Binding $parent[Window].DataContext.IsVncSession, x:CompileBindings=False}"/>
+        <views:RdpView DataContext="{Binding Rdp, x:CompileBindings=False}"
+                       IsVisible="{Binding $parent[Window].DataContext.IsRdpSession, x:CompileBindings=False}"/>
+        <views:SftpPanelView DataContext="{Binding FileTransfer, x:CompileBindings=False}"
+                             IsVisible="{Binding $parent[Window].DataContext.IsFileTransferSession, x:CompileBindings=False}"/>
+    </Grid>
+</atom:Window>
