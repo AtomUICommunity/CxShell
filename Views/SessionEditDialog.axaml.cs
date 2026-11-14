@@ -30,6 +30,7 @@ public partial class SessionEditDialog : AtomUI.Desktop.Controls.Window
     private bool _isLoaded;
     private bool _saveAndConnectRequested;
     private bool _isInitializingSelections;
+    private bool _isUpdatingProxySelection;
     private DispatcherTimer? _appearanceBlinkTimer;
     private SessionEditViewModel? _appearanceBlinkViewModel;
     private bool _appearanceBlinkState = true;
@@ -1618,21 +1619,52 @@ public partial class SessionEditDialog : AtomUI.Desktop.Controls.Window
 
     private void OnProxySelectionChanged(object? sender, SelectSelectionChangedEventArgs e)
     {
-        if (_isInitializingSelections || DataContext is not SessionEditViewModel vm)
+        if (_isInitializingSelections || _isUpdatingProxySelection || DataContext is not SessionEditViewModel vm)
             return;
 
         var selected = ProxySelect.SelectedOption?.Content?.ToString();
         if (Guid.TryParse(selected, out var proxyId))
         {
-            vm.SelectProxy(proxyId);
+            UpdateProxySelection(() =>
+            {
+                vm.SelectProxy(proxyId);
+                // Applying proxy settings rebuilds ProxyOptions with brand new
+                // SelectOption instances, so re-apply the selection afterwards.
+                SelectOption(ProxySelect, proxyId.ToString());
+            });
             return;
         }
 
         if (!string.Equals(selected, "None", StringComparison.OrdinalIgnoreCase))
             return;
 
-        vm.ClearProxy();
-        SelectOption(ProxySelect, "None");
+        UpdateProxySelection(() =>
+        {
+            vm.ClearProxy();
+            SelectOption(ProxySelect, "None");
+        });
+    }
+
+    /// <summary>
+    /// Runs a proxy selection update without letting the resulting
+    /// <see cref="Select.SelectionChanged"/> events re-enter the handler.
+    /// Rebuilding ProxyOptions replaces every SelectOption instance, so without
+    /// this guard the "None" branch keeps re-selecting and overflows the stack.
+    /// </summary>
+    private void UpdateProxySelection(Action update)
+    {
+        if (_isUpdatingProxySelection)
+            return;
+
+        _isUpdatingProxySelection = true;
+        try
+        {
+            update();
+        }
+        finally
+        {
+            _isUpdatingProxySelection = false;
+        }
     }
 
     private async void OnBrowseProxyClick(object? sender, RoutedEventArgs e)
