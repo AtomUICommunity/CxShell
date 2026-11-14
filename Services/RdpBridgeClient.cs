@@ -46,6 +46,7 @@ public sealed class RdpBridgeClient : IDisposable
     private IntPtr _handle;
     private SshClient? _sshTunnelClient;
     private ForwardedPortLocal? _sshTunnelPort;
+    private LoopbackProxyRelay? _proxyRelay;
 
     static RdpBridgeClient()
     {
@@ -98,19 +99,33 @@ public sealed class RdpBridgeClient : IDisposable
         }
 
         var targetDescription = $"{host}:{port}";
+        var transportDescription = "direct";
         if (session.RdpUseSshTunnel)
         {
             port = StartSshTunnel(session);
             host = "127.0.0.1";
             targetDescription = $"{session.Host}:{(session.Port > 0 ? session.Port : 3389)} via SSH tunnel";
+            transportDescription = "ssh-tunnel";
+        }
+        else
+        {
+            var proxy = ProxyConnectionFactory.ResolveEffectiveProxy(session.Proxy);
+            if (proxy != null)
+            {
+                port = StartProxyRelay(session, proxy, host, port);
+                host = "127.0.0.1";
+                targetDescription = $"{session.Host}:{(session.Port > 0 ? session.Port : 3389)} via {proxy.TypeDisplay} proxy {proxy.Host}:{proxy.Port}";
+                transportDescription = "proxy-relay";
+            }
         }
 
         var colorDepth = ResolveColorDepth(session.RdpColorQuality);
-        DebugLog($"connect start host={SanitizeLogValue(host)} port={port} target={SanitizeLogValue(targetDescription)} user={SanitizeLogValue(session.Username)} size={width}x{height} colorDepth={colorDepth} hasPassword={!string.IsNullOrEmpty(password)} useSshTunnel={session.RdpUseSshTunnel}");
+        DebugLog($"connect start host={SanitizeLogValue(host)} port={port} target={SanitizeLogValue(targetDescription)} user={SanitizeLogValue(session.Username)} size={width}x{height} colorDepth={colorDepth} hasPassword={!string.IsNullOrEmpty(password)} transport={transportDescription}");
         _handle = NativeMethods.cxrdp_create();
         if (_handle == IntPtr.Zero)
         {
             DebugLog("connect failed: native create returned null");
+            StopProxyRelay();
             StopSshTunnel();
             throw new InvalidOperationException("Failed to create RDP bridge session.");
         }
@@ -332,6 +347,7 @@ public sealed class RdpBridgeClient : IDisposable
     {
         if (_handle == IntPtr.Zero)
         {
+            StopProxyRelay();
             StopSshTunnel();
             return;
         }
@@ -340,8 +356,69 @@ public sealed class RdpBridgeClient : IDisposable
         NativeMethods.cxrdp_disconnect(_handle);
         NativeMethods.cxrdp_destroy(_handle);
         _handle = IntPtr.Zero;
+        StopProxyRelay();
         StopSshTunnel();
         DebugLog("disconnect completed");
+    }
+
+    /// <summary>
+    /// Starts a loopback relay that forwards to <paramref name="targetHost"/>:
+    /// <paramref name="targetPort"/> through the configured HTTP/SOCKS proxy and
+    /// returns the local port the native bridge should connect to. FreeRDP only
+    /// accepts a plain host and port, so the proxy hop is established in managed
+    /// code and the bridge dials <c>127.0.0.1</c>.
+    /// </summary>
+    private int StartProxyRelay(SessionInfo session, ProxySettings proxy, string targetHost, int targetPort)
+    {
+        if (proxy.Protocol is not (ProxyProtocol.Http or ProxyProtocol.Socks4 or ProxyProtocol.Socks4A or ProxyProtocol.Socks5))
+        {
+            throw new InvalidOperationException(
+                $"{proxy.TypeDisplay} proxies are not supported for RDP. Use an HTTP or SOCKS proxy, or enable the RDP SSH tunnel.");
+        }
+
+        StatusChanged?.Invoke($"Opening {proxy.TypeDisplay} proxy {proxy.Host}:{proxy.Port}...");
+        var ipVersion = string.IsNullOrWhiteSpace(session.AdvancedIpVersion) ? "Auto" : session.AdvancedIpVersion.Trim();
+        LoopbackProxyRelay relay;
+        try
+        {
+            relay = LoopbackProxyRelay.Start(
+                targetHost,
+                targetPort,
+                proxy,
+                ipVersion,
+                ex =>
+                {
+                    DebugLog($"proxy relay failed: {SanitizeLogValue(ex.GetType().Name)}: {SanitizeLogValue(ex.Message)}");
+                    StatusChanged?.Invoke($"RDP proxy connection failed: {ex.Message}");
+                });
+        }
+        catch (Exception ex)
+        {
+            DebugLog($"proxy relay start failed: {SanitizeLogValue(ex.Message)}");
+            throw new InvalidOperationException($"Could not start the RDP proxy relay: {ex.Message}", ex);
+        }
+
+        _proxyRelay = relay;
+        DebugLog($"proxy relay started local=127.0.0.1:{relay.LocalPort} proxy={SanitizeLogValue(proxy.TypeDisplay)} {SanitizeLogValue(proxy.Host)}:{proxy.Port} target={SanitizeLogValue(targetHost)}:{targetPort}");
+        return relay.LocalPort;
+    }
+
+    private void StopProxyRelay()
+    {
+        var relay = _proxyRelay;
+        if (relay == null)
+            return;
+
+        _proxyRelay = null;
+        try
+        {
+            relay.Dispose();
+            DebugLog("proxy relay stopped");
+        }
+        catch (Exception ex)
+        {
+            DebugLog($"proxy relay stop failed: {SanitizeLogValue(ex.Message)}");
+        }
     }
 
     private void StopSshTunnel()

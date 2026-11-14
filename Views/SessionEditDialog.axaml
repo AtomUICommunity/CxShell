@@ -1490,11 +1490,16 @@
                                                Content="{Binding UseRdpSshTunnelText}"
                                                IsChecked="{Binding RdpUseSshTunnel, Mode=TwoWay}"/>
 
-                                <TextBlock Grid.Row="4"
-                                           Grid.ColumnSpan="2"
-                                           Text="{Binding RdpSshTunnelDescriptionText}"
-                                           TextWrapping="Wrap"
-                                           Foreground="{atom:SharedTokenResource ColorTextTertiary}"/>
+                                <StackPanel Grid.Row="4"
+                                            Grid.ColumnSpan="2"
+                                            Spacing="6">
+                                    <TextBlock Text="{Binding RdpSshTunnelDescriptionText}"
+                                               TextWrapping="Wrap"
+                                               Foreground="{atom:SharedTokenResource ColorTextTertiary}"/>
+                                    <TextBlock Text="{Binding RdpProxyHintText}"
+                                               TextWrapping="Wrap"
+                                               Foreground="{atom:SharedTokenResource ColorTextTertiary}"/>
+                                </StackPanel>
 
                                 <TextBlock Grid.Row="6"
                                            Text="{Binding SshHostText}"

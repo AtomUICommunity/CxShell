@@ -86,6 +86,7 @@ public partial class SessionEditViewModel : ObservableObject
     public string VncSshTunnelDescriptionText => L.Text("SessionEdit.VncSshTunnelDescription");
     public string UseRdpSshTunnelText => L.Text("SessionEdit.UseRdpSshTunnel");
     public string RdpSshTunnelDescriptionText => L.Text("SessionEdit.RdpSshTunnelDescription");
+    public string RdpProxyHintText => L.Text("SessionEdit.RdpProxyHint");
     public string AutoRestoreSshTunnelsText => L.Text("SessionEdit.AutoRestoreSshTunnels");
     public string AutoRestoreSshTunnelsDescriptionText => L.Text("SessionEdit.AutoRestoreSshTunnelsDescription");
     public string X11BuiltinServerText => L.Text("SessionEdit.X11BuiltinServer");
@@ -1144,6 +1145,7 @@ public partial class SessionEditViewModel : ObservableObject
         OnPropertyChanged(nameof(VncSshTunnelDescriptionText));
         OnPropertyChanged(nameof(UseRdpSshTunnelText));
         OnPropertyChanged(nameof(RdpSshTunnelDescriptionText));
+        OnPropertyChanged(nameof(RdpProxyHintText));
         OnPropertyChanged(nameof(AutoRestoreSshTunnelsText));
         OnPropertyChanged(nameof(AutoRestoreSshTunnelsDescriptionText));
         OnPropertyChanged(nameof(X11BuiltinServerText));

@@ -111,6 +111,15 @@ public static class ProxyConnectionFactory
         return globalProxy?.IsEnabled == true ? globalProxy : null;
     }
 
+    /// <summary>
+    /// Returns the proxy that would be used for a session: the session proxy
+    /// when it is enabled, otherwise the global application proxy. Callers that
+    /// cannot hand a proxy to their transport (for example the RDP bridge) use
+    /// this to decide whether they need a loopback relay.
+    /// </summary>
+    public static ProxySettings? ResolveEffectiveProxy(ProxySettings? sessionProxy)
+        => ResolveProxy(sessionProxy);
+
     private static async Task ConnectClientAsync(
         TcpClient client,
         string host,
