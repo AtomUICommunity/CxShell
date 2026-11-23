@@ -1,0 +1,138 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:atom="https://atomui.net"
+             xmlns:antdicons="https://atomui.net/icons/antdesign"
+             x:Class="CxShell.Views.FullScreenConnectionBar"
+             HorizontalAlignment="Center"
+             VerticalAlignment="Top"
+             Margin="0,6,0,0"
+             IsHitTestVisible="False"
+             Opacity="0"
+             Focusable="False"
+             Cursor="Arrow">
+    <UserControl.Transitions>
+        <Transitions>
+            <DoubleTransition Property="Opacity" Duration="0:0:0.13"/>
+        </Transitions>
+    </UserControl.Transitions>
+    <!-- Floating connection bar for full screen. Kept visually close to the
+         mstsc bar: pin, link quality, endpoint, then the window controls. -->
+    <Border x:Name="BarRoot"
+            Height="34"
+            MinWidth="380"
+            CornerRadius="8"
+            Padding="5,0"
+            Background="{atom:SharedTokenResource ColorBgElevated}"
+            BorderBrush="{atom:SharedTokenResource ColorBorderSecondary}"
+            BorderThickness="1"
+            BoxShadow="0 6 18 0 #40000000">
+        <Grid ColumnDefinitions="Auto,Auto,*,Auto,Auto,Auto"
+              VerticalAlignment="Stretch">
+            <!-- Two pin buttons, only one visible: an outline pushpin while the
+                 bar auto-hides, a filled pushpin while it is pinned. Shape
+                 change reads far better than the old opacity change. -->
+            <Panel Grid.Column="0"
+                   Width="28"
+                   Height="26"
+                   VerticalAlignment="Center">
+                <atom:Button x:Name="PinButton"
+                             Width="28"
+                             Height="26"
+                             Padding="0"
+                             ButtonType="Default"
+                             Background="Transparent"
+                             BorderBrush="Transparent"
+                             BorderThickness="0"
+                             Focusable="False"
+                             Icon="{antdicons:AntDesignIconProvider Kind=PushpinOutlined}"
+                             Click="OnPinClick"/>
+
+                <atom:Button x:Name="PinnedButton"
+                             Width="28"
+                             Height="26"
+                             Padding="0"
+                             IsVisible="False"
+                             ButtonType="Default"
+                             Background="Transparent"
+                             BorderBrush="Transparent"
+                             BorderThickness="0"
+                             Focusable="False"
+                             Icon="{antdicons:AntDesignIconProvider Kind=PushpinFilled}"
+                             Click="OnPinClick"/>
+            </Panel>
+
+            <Panel x:Name="SignalPanel"
+                   Grid.Column="1"
+                   Width="24"
+                   Height="16"
+                   Margin="2,0,4,0"
+                   VerticalAlignment="Center">
+                <StackPanel Orientation="Horizontal"
+                            Spacing="2"
+                            HorizontalAlignment="Center"
+                            VerticalAlignment="Bottom">
+                    <Rectangle x:Name="SignalBar1" Width="3" Height="4" RadiusX="1" RadiusY="1"
+                               Fill="{atom:SharedTokenResource ColorSuccess}"/>
+                    <Rectangle x:Name="SignalBar2" Width="3" Height="7" RadiusX="1" RadiusY="1"
+                               Fill="{atom:SharedTokenResource ColorSuccess}"/>
+                    <Rectangle x:Name="SignalBar3" Width="3" Height="10" RadiusX="1" RadiusY="1"
+                               Fill="{atom:SharedTokenResource ColorSuccess}"/>
+                    <Rectangle x:Name="SignalBar4" Width="3" Height="13" RadiusX="1" RadiusY="1"
+                               Fill="{atom:SharedTokenResource ColorSuccess}"/>
+                </StackPanel>
+            </Panel>
+
+            <TextBlock x:Name="EndpointText"
+                       Grid.Column="2"
+                       Margin="6,0"
+                       FontSize="12"
+                       MaxLines="1"
+                       TextTrimming="CharacterEllipsis"
+                       HorizontalAlignment="Center"
+                       VerticalAlignment="Center"
+                       Foreground="{atom:SharedTokenResource ColorText}"/>
+
+            <atom:Button x:Name="MinimizeButton"
+                         Grid.Column="3"
+                         Width="30"
+                         Height="26"
+                         Padding="0"
+                         ButtonType="Default"
+                         Background="Transparent"
+                         BorderBrush="Transparent"
+                         BorderThickness="0"
+                         Focusable="False"
+                         VerticalAlignment="Center"
+                         Icon="{antdicons:AntDesignIconProvider Kind=MinusOutlined}"
+                         Click="OnMinimizeClick"/>
+
+            <atom:Button x:Name="RestoreButton"
+                         Grid.Column="4"
+                         Width="30"
+                         Height="26"
+                         Padding="0"
+                         ButtonType="Default"
+                         Background="Transparent"
+                         BorderBrush="Transparent"
+                         BorderThickness="0"
+                         Focusable="False"
+                         VerticalAlignment="Center"
+                         Icon="{antdicons:AntDesignIconProvider Kind=FullscreenExitOutlined}"
+                         Click="OnRestoreClick"/>
+
+            <atom:Button x:Name="CloseButton"
+                         Grid.Column="5"
+                         Width="30"
+                         Height="26"
+                         Padding="0"
+                         ButtonType="Default"
+                         Background="Transparent"
+                         BorderBrush="Transparent"
+                         BorderThickness="0"
+                         Focusable="False"
+                         VerticalAlignment="Center"
+                         Icon="{antdicons:AntDesignIconProvider Kind=CloseOutlined}"
+                         Click="OnCloseClick"/>
+        </Grid>
+    </Border>
+</UserControl>

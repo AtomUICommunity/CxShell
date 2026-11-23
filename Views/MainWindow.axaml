@@ -243,6 +243,34 @@
                 <atom:TextBlock Text="{Binding ThemeIcon}" FontSize="14"
                                 TextAlignment="Center" VerticalAlignment="Center"/>
             </atom:Button>
+            <!-- Full screen that keeps the local taskbar visible: a screen
+                 outline with a filled bar along its bottom edge. -->
+            <atom:Button x:Name="KeepTaskbarFullScreenButton"
+                         Width="32"
+                         Height="30"
+                         Padding="0"
+                         Background="Transparent"
+                         BorderBrush="Transparent"
+                         BorderThickness="0"
+                         Command="{Binding ToggleTerminalFullScreenKeepTaskbarCommand}"
+                         atom:ToolTip.Tip="{Binding FullScreenKeepTaskbarToolTip}"
+                         atom:ToolTip.Placement="Bottom">
+                <Panel Width="16"
+                       Height="16"
+                       HorizontalAlignment="Center"
+                       VerticalAlignment="Center">
+                    <Border Margin="0.5,1.5,0.5,1.5"
+                            BorderThickness="1.2"
+                            CornerRadius="2"
+                            BorderBrush="{Binding $parent[atom:Button].Foreground}"/>
+                    <Rectangle Height="2.6"
+                               Margin="3,0,3,3.2"
+                               VerticalAlignment="Bottom"
+                               RadiusX="0.7"
+                               RadiusY="0.7"
+                               Fill="{Binding $parent[atom:Button].Foreground}"/>
+                </Panel>
+            </atom:Button>
             <atom:Button ButtonType="Default"
                          Width="32"
                          Height="30"
@@ -1014,34 +1042,6 @@
                                 </ItemsControl.ItemTemplate>
                             </ItemsControl>
                         </Grid>
-                        <Grid Grid.RowSpan="2"
-                              IsVisible="{Binding IsTerminalFullScreen}"
-                              HorizontalAlignment="Stretch"
-                              VerticalAlignment="Top"
-                              Height="44"
-                              Background="Transparent"
-                              PointerEntered="FullScreenHintArea_OnPointerEntered"
-                              PointerExited="FullScreenHintArea_OnPointerExited">
-                            <Border Height="3"
-                                    Width="180"
-                                    HorizontalAlignment="Center"
-                                    VerticalAlignment="Top"
-                                    Background="#64D8FF"
-                                    BoxShadow="0 0 12 0 #9964D8FF"/>
-                            <Border IsVisible="{Binding IsFullScreenHintVisible}"
-                                    HorizontalAlignment="Center"
-                                    VerticalAlignment="Top"
-                                    Margin="0,8,0,0"
-                                    Padding="14,6"
-                                    CornerRadius="6"
-                                    Background="#CC1F2933"
-                                    BorderBrush="#4464D8FF"
-                                    BorderThickness="1">
-                                <atom:TextBlock Text="{Binding FullScreenEscBackText}"
-                                                Foreground="White"
-                                                FontSize="13"/>
-                            </Border>
-                        </Grid>
                     </Grid>
                 </Grid>
 
@@ -1072,6 +1072,16 @@
             </Grid>
 
         </Grid>
+        <!-- Floating connection bar. It lives above the session content but
+             below the command palette, stays transparent until the pointer
+             rests in the top strip, and can be pinned open. -->
+        <views:FullScreenConnectionBar x:Name="FullScreenConnectionBar"
+                                       Grid.RowSpan="3"
+                                       ZIndex="250"
+                                       IsFullScreenActive="{Binding IsTerminalFullScreen}"
+                                       Endpoint="{Binding SelectedTab.Session.Host}"
+                                       QualityLevel="{Binding SelectedTab.Rdp.LinkQualityLevel}"
+                                       IsQualityVisible="{Binding SelectedTab.IsRdpSession}"/>
         <Grid Grid.RowSpan="4"
               ZIndex="300"
               IsVisible="{Binding CommandPalette.IsOpen}">

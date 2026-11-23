@@ -79,7 +79,7 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
     [ObservableProperty] private string _connectedHostInfo = string.Empty;
     [ObservableProperty] private bool _isDarkMode;
     [ObservableProperty] private bool _isTerminalFullScreen;
-    [ObservableProperty] private bool _isFullScreenHintVisible;
+    [ObservableProperty] private bool _isTerminalFullScreenKeepTaskbar;
     [ObservableProperty] private bool _isCheckingForUpdates;
     [ObservableProperty] private string? _updateProgressText;
     [ObservableProperty] private TabArrangementMode _tabArrangementMode = TabArrangementMode.Single;
@@ -170,6 +170,7 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
     public string TunnelsToolTip => _localization.Text("Toolbar.TunnelsTip");
     public string ThemeToolTip => _localization.Text("Toolbar.ThemeTip");
     public string FullScreenToolTip => _localization.Text("Toolbar.FullScreenTip");
+    public string FullScreenKeepTaskbarToolTip => _localization.Text("Toolbar.FullScreenKeepTaskbarTip");
     public string ArrangeText => _localization.Text("Toolbar.Arrange");
     public string ArrangeToolTip => _localization.Text("Toolbar.ArrangeTip");
     public string LanguageToolTip => _localization.Text("Toolbar.LanguageTip");
@@ -222,7 +223,6 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
     public string ConnectRecentSessionText => _localization.Text("Welcome.ConnectRecentSession");
     public string WelcomeNewSessionText => _localization.Text("Welcome.NewSession");
     public string WelcomeSessionManagerText => _localization.Text("Welcome.SessionManager");
-    public string FullScreenEscBackText => _localization.Text("FullScreen.EscBack");
     public string ChineseLanguageText => _localization.Text("Language.Chinese");
     public string EnglishLanguageText => _localization.Text("Language.English");
 
@@ -334,6 +334,7 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
             if (Tabs.Count == 0)
                 RefreshRecentSessions();
             ToggleTerminalFullScreenCommand.NotifyCanExecuteChanged();
+            ToggleTerminalFullScreenKeepTaskbarCommand.NotifyCanExecuteChanged();
             ArrangeTabsVerticalCommand.NotifyCanExecuteChanged();
             ArrangeTabsHorizontalCommand.NotifyCanExecuteChanged();
             ArrangeTabsTileCommand.NotifyCanExecuteChanged();
@@ -1261,7 +1262,7 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         OnPropertyChanged(nameof(WelcomeNewSessionText));
         OnPropertyChanged(nameof(WelcomeSessionManagerText));
         RefreshRecentSessions();
-        OnPropertyChanged(nameof(FullScreenEscBackText));
+        OnPropertyChanged(nameof(FullScreenKeepTaskbarToolTip));
         OnPropertyChanged(nameof(ChineseLanguageText));
         OnPropertyChanged(nameof(EnglishLanguageText));
         AgentPanel.NotifyLocalizationChanged();
@@ -1312,6 +1313,7 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         CurrentDisconnectCommand.NotifyCanExecuteChanged();
         AddCurrentSessionToQuickBarCommand.NotifyCanExecuteChanged();
         ToggleTerminalFullScreenCommand.NotifyCanExecuteChanged();
+        ToggleTerminalFullScreenKeepTaskbarCommand.NotifyCanExecuteChanged();
         ShowSshTunnelCenterCommand.NotifyCanExecuteChanged();
     }
 
@@ -1384,6 +1386,13 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
 
     partial void OnIsTerminalFullScreenChanged(bool value)
     {
+        // Leaving full screen always returns to the normal window presentation,
+        // even when some other path only cleared the full screen flag.
+        if (!value)
+        {
+            IsTerminalFullScreenKeepTaskbar = false;
+        }
+
         OnPropertyChanged(nameof(IsMainChromeVisible));
         OnPropertyChanged(nameof(IsQuickSessionBarVisible));
         OnPropertyChanged(nameof(IsSftpPanelVisible));
@@ -1400,7 +1409,6 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
             CollapseSftpPanelWidth();
         else if (IsSftpVisible)
             RestoreSftpPanelWidth();
-        IsFullScreenHintVisible = value;
     }
 
     partial void OnIsAgentPanelVisibleChanged(bool value)
@@ -1807,7 +1815,7 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         AddCommand(items, commandsCategory, MonitorText, null, ToggleMonitorCommand);
         AddCommand(items, commandsCategory, TabBarText, null, ToggleTabBarCommand);
         AddCommand(items, commandsCategory, _localization.Text("Palette.ToggleTheme"), null, ToggleThemeCommand);
-        AddCommand(items, commandsCategory, FullScreenToolTip, "Esc", ToggleTerminalFullScreenCommand);
+        AddCommand(items, commandsCategory, FullScreenToolTip, null, ToggleTerminalFullScreenCommand);
         AddCommand(items, commandsCategory, ArrangeVerticalText, null, ArrangeTabsVerticalCommand);
         AddCommand(items, commandsCategory, ArrangeHorizontalText, null, ArrangeTabsHorizontalCommand);
         AddCommand(items, commandsCategory, ArrangeTileText, null, ArrangeTabsTileCommand);
@@ -1907,11 +1915,37 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
     [RelayCommand(CanExecute = nameof(CanToggleTerminalFullScreen))]
     private void ToggleTerminalFullScreen()
     {
-        IsTerminalFullScreen = !IsTerminalFullScreen;
+        // Reaching the immersive mode from the taskbar-visible mode switches the
+        // presentation instead of leaving full screen, so the toolbar button
+        // keeps meaning "full screen".
+        if (IsTerminalFullScreen && !IsTerminalFullScreenKeepTaskbar)
+        {
+            ExitTerminalFullScreen();
+            return;
+        }
+
+        IsTerminalFullScreenKeepTaskbar = false;
+        IsTerminalFullScreen = true;
+    }
+
+    [RelayCommand(CanExecute = nameof(CanToggleTerminalFullScreen))]
+    private void ToggleTerminalFullScreenKeepTaskbar()
+    {
+        if (IsTerminalFullScreen && IsTerminalFullScreenKeepTaskbar)
+        {
+            ExitTerminalFullScreen();
+            return;
+        }
+
+        IsTerminalFullScreenKeepTaskbar = true;
+        IsTerminalFullScreen = true;
     }
 
     public void ExitTerminalFullScreen()
     {
+        // Clear the presentation flag first so the window restores its chrome
+        // using the immersive full screen state it is currently in.
+        IsTerminalFullScreenKeepTaskbar = false;
         IsTerminalFullScreen = false;
     }
 
@@ -2928,6 +2962,26 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
             }
         }
 
+        return true;
+    }
+
+    /// <summary>
+    /// Puts a tab that was detached into its own window back into this window,
+    /// restoring the bookkeeping <see cref="DetachTab"/> unwound. The tab keeps
+    /// its terminal buffer and connections, so nothing reconnects.
+    /// </summary>
+    /// <returns><c>true</c> when the tab was added back.</returns>
+    public bool AttachTab(TerminalTabViewModel tab)
+    {
+        if (tab == null || tab.IsDisposed || Tabs.Contains(tab))
+            return false;
+
+        tab.PropertyChanged += OnTerminalTabPropertyChanged;
+        AddTabToActiveGroup(tab);
+        SelectedTab = tab;
+        tab.Terminal.PropertyChanged += OnActiveTerminalPropertyChanged;
+
+        UpdateStatusBar();
         return true;
     }
 

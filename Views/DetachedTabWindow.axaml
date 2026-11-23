@@ -14,14 +14,52 @@
              WindowStartupLocation="CenterScreen"
              IsFullScreenCaptionButtonVisible="True"
              Background="{atom:SharedTokenResource ColorBgLayout}">
-    <Grid Background="{atom:SharedTokenResource ColorBgContainer}">
-        <views:TerminalView DataContext="{Binding Terminal, x:CompileBindings=False}"
-                            IsVisible="{Binding $parent[Window].DataContext.IsTerminalSession, x:CompileBindings=False}"/>
-        <views:VncView DataContext="{Binding Vnc, x:CompileBindings=False}"
-                       IsVisible="{Binding $parent[Window].DataContext.IsVncSession, x:CompileBindings=False}"/>
-        <views:RdpView DataContext="{Binding Rdp, x:CompileBindings=False}"
-                       IsVisible="{Binding $parent[Window].DataContext.IsRdpSession, x:CompileBindings=False}"/>
-        <views:SftpPanelView DataContext="{Binding FileTransfer, x:CompileBindings=False}"
-                             IsVisible="{Binding $parent[Window].DataContext.IsFileTransferSession, x:CompileBindings=False}"/>
+    <!-- Sits immediately left of the AtomUI caption buttons. The icon is a
+         screen outline whose bottom edge is filled like a taskbar, which is the
+         difference between this mode and the immersive full screen button. -->
+    <atom:Window.RightAddOn>
+        <atom:Button x:Name="KeepTaskbarFullScreenButton"
+                     Width="34"
+                     Height="30"
+                     Padding="0"
+                     Background="Transparent"
+                     BorderBrush="Transparent"
+                     BorderThickness="0"
+                     VerticalAlignment="Center"
+                     Click="OnKeepTaskbarFullScreenClick"
+                     atom:ToolTip.Placement="Bottom">
+            <Panel Width="16"
+                   Height="16"
+                   HorizontalAlignment="Center"
+                   VerticalAlignment="Center">
+                <Border Margin="0.5,1.5,0.5,1.5"
+                        BorderThickness="1.2"
+                        CornerRadius="2"
+                        BorderBrush="{Binding $parent[atom:Button].Foreground}"/>
+                <Rectangle Height="2.6"
+                           Margin="3,0,3,3.2"
+                           VerticalAlignment="Bottom"
+                           RadiusX="0.7"
+                           RadiusY="0.7"
+                           Fill="{Binding $parent[atom:Button].Foreground}"/>
+            </Panel>
+        </atom:Button>
+    </atom:Window.RightAddOn>
+    <Grid>
+        <Grid Background="{atom:SharedTokenResource ColorBgContainer}">
+            <views:TerminalView DataContext="{Binding Terminal, x:CompileBindings=False}"
+                                IsVisible="{Binding $parent[Window].DataContext.IsTerminalSession, x:CompileBindings=False}"/>
+            <views:VncView DataContext="{Binding Vnc, x:CompileBindings=False}"
+                           IsVisible="{Binding $parent[Window].DataContext.IsVncSession, x:CompileBindings=False}"/>
+            <views:RdpView DataContext="{Binding Rdp, x:CompileBindings=False}"
+                           IsVisible="{Binding $parent[Window].DataContext.IsRdpSession, x:CompileBindings=False}"/>
+            <views:SftpPanelView DataContext="{Binding FileTransfer, x:CompileBindings=False}"
+                                 IsVisible="{Binding $parent[Window].DataContext.IsFileTransferSession, x:CompileBindings=False}"/>
+        </Grid>
+        <views:FullScreenConnectionBar x:Name="FullScreenConnectionBar"
+                                       ZIndex="250"
+                                       Endpoint="{Binding Session.Host}"
+                                       QualityLevel="{Binding Rdp.LinkQualityLevel}"
+                                       IsQualityVisible="{Binding IsRdpSession}"/>
     </Grid>
 </atom:Window>

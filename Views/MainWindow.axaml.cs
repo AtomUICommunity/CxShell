@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using Avalonia;
 using AtomUI.Desktop.Controls;
 using Avalonia.Input;
@@ -15,17 +16,19 @@ using AtomContextMenu = AtomUI.Desktop.Controls.ContextMenu;
 using AtomMenuItem = AtomUI.Desktop.Controls.MenuItem;
 using AtomMenuSeparator = AtomUI.Desktop.Controls.MenuSeparator;
 using AtomWindow = AtomUI.Desktop.Controls.Window;
+using AvaloniaBorder = Avalonia.Controls.Border;
+using AvaloniaControl = Avalonia.Controls.Control;
+using AvaloniaPanel = Avalonia.Controls.Panel;
+using AvaloniaTemplatedControl = Avalonia.Controls.Primitives.TemplatedControl;
 
 namespace CxShell.Views;
 
 public partial class MainWindow : AtomWindow
 {
     protected override Type StyleKeyOverride { get; } = typeof(AtomWindow);
-    private readonly DispatcherTimer _fullScreenHintTimer;
     private readonly string[] _startupArgs;
     private readonly CommandLineLaunchOptions _startupLaunchOptions;
     private IDisposable? _commandLineHandoffServer;
-    private bool _isPointerOverFullScreenHintArea;
     private bool _tabReorderHandlersAttached;
     private SessionInfo? _quickSessionContext;
     private readonly HashSet<Guid> _quickSessionActivationsPending = [];
@@ -53,11 +56,15 @@ public partial class MainWindow : AtomWindow
     private const double AgentSplitterHitSlop = 5;
     private const double TabTearOutVerticalMargin = 36;
     private const double TabTearOutDragThreshold = 8;
+    private const double TabDropHitSlop = 10;
     private TerminalTabViewModel? _tearOutTab;
     private TabStrip? _tearOutStrip;
     private Point _tearOutStart;
     private bool _tearOutArmed;
     private TabDragGhostWindow? _tabDragGhost;
+    private readonly KeepTaskbarFullScreen _keepTaskbarFullScreen;
+    private Avalonia.Controls.WindowState _windowStateBeforeFullScreen = Avalonia.Controls.WindowState.Normal;
+    private bool _restoreFullScreenAfterMinimize;
 
     public MainWindow()
         : this(Array.Empty<string>())
@@ -79,27 +86,24 @@ public partial class MainWindow : AtomWindow
         if (selectionModeProperty != null)
             QuickSessionTabStrip.SetValue(selectionModeProperty, Avalonia.Controls.SelectionMode.Single);
         QuickSessionTabStrip.SelectedIndex = -1;
-        _fullScreenHintTimer = new DispatcherTimer
-        {
-            Interval = TimeSpan.FromSeconds(3)
-        };
-        _fullScreenHintTimer.Tick += (_, _) => HideFullScreenHintIfNeeded();
+        _keepTaskbarFullScreen = new KeepTaskbarFullScreen(this);
+
+        FullScreenConnectionBar.IsPinned = SessionTreeViewModel.SharedSettings?.FullScreenConnectionBarPinned == true;
+        FullScreenConnectionBar.MinimizeRequested += OnFullScreenBarMinimize;
+        FullScreenConnectionBar.RestoreRequested += OnFullScreenBarRestore;
+        FullScreenConnectionBar.CloseRequested += OnFullScreenBarClose;
+        FullScreenConnectionBar.PinnedChanged += OnFullScreenBarPinnedChanged;
+        PropertyChanged += OnMainWindowPropertyChanged;
 
         var vm = new MainWindowViewModel();
         AgentPanelHost.CloseRequested += OnAgentPanelCloseRequested;
         ApplyAgentPanelLayout(vm);
         vm.PropertyChanged += (_, e) =>
         {
-            if (e.PropertyName == nameof(MainWindowViewModel.IsTerminalFullScreen))
+            if (e.PropertyName is nameof(MainWindowViewModel.IsTerminalFullScreen) or
+                nameof(MainWindowViewModel.IsTerminalFullScreenKeepTaskbar))
             {
-                WindowState = vm.IsTerminalFullScreen
-                    ? Avalonia.Controls.WindowState.FullScreen
-                    : Avalonia.Controls.WindowState.Normal;
-                _isPointerOverFullScreenHintArea = false;
-                if (vm.IsTerminalFullScreen)
-                    RestartFullScreenHintTimer();
-                else
-                    _fullScreenHintTimer.Stop();
+                ApplyTerminalFullScreenState(vm);
             }
 
             if (e.PropertyName == nameof(MainWindowViewModel.SftpPanelWidth) ||
@@ -260,17 +264,10 @@ public partial class MainWindow : AtomWindow
         if (TryHandleQuickCommandShortcut(e))
             return;
 
-        if (TryHandleVncPasteShortcut(e))
-            return;
-
-        if (e.Key != Key.Escape)
-            return;
-
-        if (DataContext is MainWindowViewModel { IsTerminalFullScreen: true } fullScreenVm)
-        {
-            fullScreenVm.ExitTerminalFullScreen();
-            e.Handled = true;
-        }
+        // Escape is deliberately not bound to leaving full screen: the key is
+        // forwarded to the remote session, and the connection bar's button is
+        // the way out (mstsc behaves the same way).
+        TryHandleVncPasteShortcut(e);
     }
 
     private void OnCommandPaletteBackdropPressed(object? sender, PointerPressedEventArgs e)
@@ -718,6 +715,7 @@ public partial class MainWindow : AtomWindow
         }
     }
 
+
     private static void WriteToolbarDiagnostics(string message)
     {
         try
@@ -740,6 +738,104 @@ public partial class MainWindow : AtomWindow
     }
 
     private static readonly object ToolbarDiagnosticsLock = new();
+
+    /// <summary>
+    /// Reports which layer paints the top edge of the screen while the window is
+    /// in <see cref="Avalonia.Controls.WindowState.FullScreen"/>.
+    /// <para>
+    /// Three different layers can paint a band there - AtomUI's drawn title bar,
+    /// the window background showing through a content margin, and Avalonia's
+    /// hover-revealed popover (a <b>sibling</b> of the window inside
+    /// <c>TopLevelHost</c>, so it is invisible to a search started at the
+    /// window). The walk therefore starts at the visual root and reports the
+    /// root's children first, then every visible control sitting on the top edge
+    /// inside both the host layers and this window.
+    /// </para>
+    /// </summary>
+    private void WriteFullScreenChromeDump()
+    {
+        var dump = BuildFullScreenChromeDump();
+        if (dump is not null)
+            WriteToolbarDiagnostics("Full screen chrome dump || " + dump);
+    }
+
+    private string? BuildFullScreenChromeDump()
+    {
+        try
+        {
+            Visual root = this;
+            while (root.GetVisualParent() is { } parent)
+                root = parent;
+
+            var parts = new List<string>
+            {
+                $"root={root.GetType().Name} decor={WindowDecorations} client={ClientSize.Width:0}x{ClientSize.Height:0}",
+            };
+
+            if (root is AvaloniaControl rootControl)
+            {
+                foreach (var child in rootControl.GetVisualChildren().OfType<AvaloniaControl>())
+                {
+                    parts.Add(
+                        $"child {child.GetType().Name}#{child.Name}" +
+                        $" aid={Avalonia.Automation.AutomationProperties.GetAutomationId(child)}" +
+                        $" vis={child.IsVisible} bounds={child.Bounds.Width:0}x{child.Bounds.Height:0}");
+
+                    if (!child.IsVisible || ReferenceEquals(child, this))
+                        continue;
+
+                    foreach (var band in DescribeTopBands(child, (AvaloniaControl)root, limit: 6))
+                        parts.Add($"  layer>{band}");
+                }
+            }
+
+            parts.Add("window bands: " + string.Join(", ", DescribeTopBands(this, this, limit: 8)));
+            return string.Join(" || ", parts);
+        }
+        catch (Exception ex)
+        {
+            return $"dump failed: {ex.GetType().Name}: {ex.Message}";
+        }
+    }
+
+    /// <summary>
+    /// Describes the visible descendants of <paramref name="scope"/> whose top
+    /// edge sits on the top edge of <paramref name="relativeTo"/> and whose
+    /// height is band sized (a short strip, not a full page).
+    /// </summary>
+    private static IEnumerable<string> DescribeTopBands(AvaloniaControl scope, AvaloniaControl relativeTo, int limit)
+    {
+        var results = new List<string>();
+        foreach (var control in scope.GetVisualDescendants().OfType<AvaloniaControl>())
+        {
+            if (!control.IsVisible)
+                continue;
+
+            if (control.TranslatePoint(new Point(0, 0), relativeTo) is not { Y: <= 1.5 } origin)
+                continue;
+
+            var height = control.Bounds.Height;
+            if (height is < 6 or > 60)
+                continue;
+
+            results.Add(
+                $"{control.GetType().Name}#{control.Name} x={origin.X:0} " +
+                $"{control.Bounds.Width:0}x{height:0} bg={DescribeBackground(control)}");
+
+            if (results.Count >= limit)
+                break;
+        }
+
+        return results;
+    }
+
+    private static string DescribeBackground(AvaloniaControl control) => control switch
+    {
+        AvaloniaBorder border => border.Background?.ToString() ?? "none",
+        AvaloniaPanel panel => panel.Background?.ToString() ?? "none",
+        AvaloniaTemplatedControl templated => templated.Background?.ToString() ?? "none",
+        _ => "-",
+    };
 
     private async void OnSendRemoteClipboardClick(object? sender, RoutedEventArgs e)
     {
@@ -1123,7 +1219,98 @@ public partial class MainWindow : AtomWindow
         if (!vm.DetachTab(tab))
             return;
 
-        DetachedTabWindow.ShowFor(tab, vm.CloseDetachedTab, position);
+        DetachedTabWindow.ShowFor(tab, vm.CloseDetachedTab, position, TryReattachDetachedTab);
+    }
+
+    /// <summary>
+    /// Accepts a detached tab that was dropped on this window. Only the tab bar
+    /// counts as a drop target, so dragging a detached window across the main
+    /// window by accident leaves it detached.
+    /// </summary>
+    private bool TryReattachDetachedTab(TerminalTabViewModel tab, PixelPoint screenPoint)
+    {
+        if (DataContext is not MainWindowViewModel vm ||
+            tab == null ||
+            tab.IsDisposed ||
+            !IsScreenPointOverTabBar(screenPoint))
+        {
+            return false;
+        }
+
+        if (!vm.AttachTab(tab))
+            return false;
+
+        Activate();
+        return true;
+    }
+
+    private bool IsScreenPointOverTabBar(PixelPoint screenPoint)
+    {
+        if (!IsVisible || WindowState == Avalonia.Controls.WindowState.Minimized)
+            return false;
+
+        var foundStrip = false;
+        foreach (var visual in this.GetVisualDescendants())
+        {
+            // Only the workspace tab strips count; the quick-session strip in
+            // the sidebar is a session list, not a drop target for tabs.
+            if (visual is not Avalonia.Controls.Control control ||
+                control is not (AtomUI.Desktop.Controls.TabStrip or AtomUI.Desktop.Controls.CardTabStrip) ||
+                !control.Classes.Contains("session-tab-strip") ||
+                !control.IsEffectivelyVisible ||
+                control.Bounds.Width <= 0 ||
+                control.Bounds.Height <= 0)
+            {
+                continue;
+            }
+
+            foundStrip = true;
+            if (IsPointInside(control, screenPoint))
+                return true;
+        }
+
+        if (foundStrip)
+            return false;
+
+        // With no tabs left the header row is hidden, but the strip position is
+        // still where a user expects to drop; use a band at the top instead.
+        var bandTopLeft = ToScreenPoint(new Point(0, 0));
+        var bandBottomRight = ToScreenPoint(new Point(Bounds.Width, 44));
+        return screenPoint.X >= bandTopLeft.X &&
+               screenPoint.X <= bandBottomRight.X &&
+               screenPoint.Y >= bandTopLeft.Y &&
+               screenPoint.Y <= bandBottomRight.Y;
+    }
+
+    /// <summary>
+    /// Avalonia 12 exposes screen coordinates only through the platform
+    /// implementation, which the compile-time Avalonia reference here does not
+    /// surface, so the window origin plus a DIP offset scaled by
+    /// <see cref="TopLevel.RenderScaling"/> reproduces the same mapping.
+    /// </summary>
+    private PixelPoint ToScreenPoint(Point pointInWindow)
+    {
+        var scaling = RenderScaling <= 0 ? 1 : RenderScaling;
+        return new PixelPoint(
+            Position.X + (int)Math.Round(pointInWindow.X * scaling),
+            Position.Y + (int)Math.Round(pointInWindow.Y * scaling));
+    }
+
+    private bool IsPointInside(Avalonia.Controls.Control control, PixelPoint screenPoint)
+    {
+        var topLeft = control.TranslatePoint(new Point(0, 0), this);
+        var bottomRight = control.TranslatePoint(
+            new Point(control.Bounds.Width, control.Bounds.Height),
+            this);
+        if (topLeft == null || bottomRight == null)
+            return false;
+
+        var screenTopLeft = ToScreenPoint(topLeft.Value);
+        var screenBottomRight = ToScreenPoint(bottomRight.Value);
+        return screenPoint.X >= screenTopLeft.X - TabDropHitSlop &&
+               screenPoint.X <= screenBottomRight.X + TabDropHitSlop &&
+               screenPoint.Y >= screenTopLeft.Y - TabDropHitSlop &&
+               screenPoint.Y <= screenBottomRight.Y + TabDropHitSlop;
     }
 
     private PixelPoint? ResolveDetachedWindowPosition(Point anchorInWindow)
@@ -1443,39 +1630,171 @@ public partial class MainWindow : AtomWindow
         return null;
     }
 
-    private void FullScreenHintArea_OnPointerEntered(object? sender, PointerEventArgs e)
+    private void OnMainWindowPropertyChanged(object? sender, AvaloniaPropertyChangedEventArgs e)
     {
-        _isPointerOverFullScreenHintArea = true;
-        _fullScreenHintTimer.Stop();
-
-        if (DataContext is MainWindowViewModel { IsTerminalFullScreen: true } vm)
-            vm.IsFullScreenHintVisible = true;
-    }
-
-    private void FullScreenHintArea_OnPointerExited(object? sender, PointerEventArgs e)
-    {
-        _isPointerOverFullScreenHintArea = false;
-        RestartFullScreenHintTimer();
-    }
-
-    private void RestartFullScreenHintTimer()
-    {
-        _fullScreenHintTimer.Stop();
-
-        if (DataContext is not MainWindowViewModel { IsTerminalFullScreen: true })
+        if (e.Property != WindowStateProperty)
             return;
 
-        _fullScreenHintTimer.Start();
-    }
+        // Avalonia shows its own full screen popover (a title bar high strip
+        // with the window logo, title and the full screen/close caption
+        // buttons) whenever the pointer touches the top edge of a full screen
+        // window. It lives in a top level layer above the client area, so it is
+        // hidden explicitly; the vendor hover handler runs on every pointer
+        // move, hence the post and the retry once the template has settled.
+        if (WindowState == Avalonia.Controls.WindowState.FullScreen)
+        {
+            Dispatcher.UIThread.Post(
+                () => _keepTaskbarFullScreen.SuppressFullscreenPopover(),
+                DispatcherPriority.Loaded);
+        }
 
-    private void HideFullScreenHintIfNeeded()
-    {
-        _fullScreenHintTimer.Stop();
+        // A path we do not control (window manager shortcut, native caption
+        // button) may end the immersive mode; never leave the window without a
+        // caption because the chrome was hidden for full screen.
+        if (!_restoreFullScreenAfterMinimize &&
+            WindowState != Avalonia.Controls.WindowState.FullScreen &&
+            WindowState != Avalonia.Controls.WindowState.Minimized &&
+            !_keepTaskbarFullScreen.IsActive)
+        {
+            _keepTaskbarFullScreen.RestoreDecorations();
+            _keepTaskbarFullScreen.RestoreTitleBar();
+            _keepTaskbarFullScreen.ReleaseFullscreenPopoverSuppression();
+        }
 
-        if (_isPointerOverFullScreenHintArea)
+        if (!_restoreFullScreenAfterMinimize)
             return;
 
+        if (WindowState == Avalonia.Controls.WindowState.Minimized)
+            return;
+
+        _restoreFullScreenAfterMinimize = false;
         if (DataContext is MainWindowViewModel { IsTerminalFullScreen: true } vm)
-            vm.IsFullScreenHintVisible = false;
+            ApplyTerminalFullScreenState(vm);
     }
+
+    private void OnFullScreenBarMinimize(object? sender, EventArgs e)
+    {
+        if (DataContext is MainWindowViewModel { IsTerminalFullScreen: true })
+        {
+            // Minimizing leaves the presentation state, so remember to re-apply
+            // it when the window comes back from the taskbar.
+            _restoreFullScreenAfterMinimize = true;
+            _keepTaskbarFullScreen.Abandon();
+        }
+
+        WindowState = Avalonia.Controls.WindowState.Minimized;
+    }
+
+    private void OnFullScreenBarRestore(object? sender, EventArgs e)
+    {
+        if (DataContext is MainWindowViewModel vm)
+            vm.ExitTerminalFullScreen();
+    }
+
+    private void OnFullScreenBarClose(object? sender, EventArgs e)
+    {
+        if (DataContext is MainWindowViewModel { SelectedTab: { } tab } vm)
+            vm.CloseTab(tab);
+    }
+
+    private void OnFullScreenBarPinnedChanged(object? sender, EventArgs e)
+    {
+        if (SessionTreeViewModel.SharedSettings is not { } settings)
+            return;
+
+        settings.FullScreenConnectionBarPinned = FullScreenConnectionBar.IsPinned;
+        SessionTreeViewModel.PersistSharedSettings();
+    }
+
+    /// <summary>
+    /// Applies the full screen presentation requested by the view model. The
+    /// immersive mode uses the full screen window state and covers the taskbar;
+    /// the taskbar-visible mode maximizes the window so the working area is
+    /// filled while the taskbar stays usable. Both modes hide the drawn title
+    /// bar: <see cref="Avalonia.Controls.WindowState.FullScreen"/> removes only
+    /// the native frame, while AtomUI renders its title bar inside the client
+    /// area, which would otherwise leave the caption row on screen.
+    /// </summary>
+    private void ApplyTerminalFullScreenState(MainWindowViewModel vm)
+    {
+        if (!vm.IsTerminalFullScreen)
+        {
+            _keepTaskbarFullScreen.Leave();
+            if (WindowState == Avalonia.Controls.WindowState.FullScreen)
+            {
+                WindowState = _windowStateBeforeFullScreen == Avalonia.Controls.WindowState.FullScreen
+                    ? Avalonia.Controls.WindowState.Normal
+                    : _windowStateBeforeFullScreen;
+            }
+
+            // Restore the chrome only after the window is back to its normal
+            // state, so the fullscreen popover can never flash on the way out.
+            _keepTaskbarFullScreen.RestoreDecorations();
+            _keepTaskbarFullScreen.RestoreTitleBar();
+            _keepTaskbarFullScreen.ReleaseFullscreenPopoverSuppression();
+
+            WriteToolbarDiagnostics(
+                $"Full screen left: state={WindowState} decorations={WindowDecorations} " +
+                $"titleBar={IsTitleBarVisible} " +
+                $"popoverSuppressed={_keepTaskbarFullScreen.IsFullscreenPopoverSuppressed}");
+
+            return;
+        }
+
+        if (vm.IsTerminalFullScreenKeepTaskbar)
+        {
+            _keepTaskbarFullScreen.Enter();
+        }
+        else
+        {
+            _keepTaskbarFullScreen.Leave();
+            // Drop the drawn decoration layers first: in full screen Avalonia
+            // reveals a hover popover (logo, title, full screen/close buttons)
+            // from them, which duplicates our own connection bar.
+            _keepTaskbarFullScreen.HideDecorations();
+            _keepTaskbarFullScreen.HideTitleBar();
+            if (WindowState != Avalonia.Controls.WindowState.FullScreen)
+            {
+                _windowStateBeforeFullScreen = WindowState;
+                WindowState = Avalonia.Controls.WindowState.FullScreen;
+            }
+
+            // Re-assert after the state change: the platform can restore the
+            // decorations while entering full screen, which revives the popover.
+            _keepTaskbarFullScreen.HideDecorations();
+            _keepTaskbarFullScreen.SuppressFullscreenPopover();
+        }
+
+        WriteToolbarDiagnostics(
+            $"Full screen applied: keepTaskbar={vm.IsTerminalFullScreenKeepTaskbar} state={WindowState} " +
+            $"decorations={WindowDecorations} titleBar={IsTitleBarVisible} " +
+            $"popoverSuppressed={_keepTaskbarFullScreen.IsFullscreenPopoverSuppressed}");
+
+        // The decoration layers are built right after the state change, so the
+        // popover layer may not exist yet on the first attempt. Retry once the
+        // template has settled instead of walking the tree on a timer.
+        if (!vm.IsTerminalFullScreenKeepTaskbar)
+        {
+            DispatcherTimer.RunOnce(
+                () =>
+                {
+                    if (WindowState != Avalonia.Controls.WindowState.FullScreen)
+                        return;
+
+                    var suppressed = _keepTaskbarFullScreen.SuppressFullscreenPopover();
+                    WriteToolbarDiagnostics(
+                        $"Full screen chrome settled: popoverSuppressed={suppressed}");
+
+                    // The dump is only worth its noise when the suppression did
+                    // not take: the layer is then still painting and the layer
+                    // list is what identifies it next time.
+                    if (!suppressed)
+                    {
+                        WriteFullScreenChromeDump();
+                    }
+                },
+                TimeSpan.FromMilliseconds(800));
+        }
+    }
+
 }
