@@ -327,8 +327,13 @@ public partial class SessionEditViewModel : ObservableObject
     [ObservableProperty] private string _rdpDesktopHeight = "1080";
     [ObservableProperty] private string _rdpResizeMode = "SmartReconnect";
     [ObservableProperty] private string _rdpScreenScale = "Auto";
+    [ObservableProperty] private string _rdpDpiPolicy = "FollowLocal";
+    [ObservableProperty] private string _rdpFrameStrategy = "Auto";
     [ObservableProperty] private string _rdpColorQuality = "32";
     [ObservableProperty] private bool _rdpApplyKeyCombinations = true;
+    [ObservableProperty] private bool _rdpClipboardEnabled = true;
+    [ObservableProperty] private bool _rdpDisableWallpaper = true;
+    [ObservableProperty] private bool _rdpGraphicsPipelineEnabled;
     [ObservableProperty] private bool _rdpRedirectDrives;
     [ObservableProperty] private string _rdpDriveName = "CxShell";
     [ObservableProperty] private string _rdpDrivePath = string.Empty;
@@ -1011,6 +1016,19 @@ public partial class SessionEditViewModel : ObservableObject
         new SelectOption { Header = "475%", Content = "475" },
         new SelectOption { Header = "500%", Content = "500" }
     ];
+    public ObservableCollection<ISelectOption> RdpDpiPolicyOptions { get; } =
+    [
+        new SelectOption { Header = "Follow local", Content = "FollowLocal" },
+        new SelectOption { Header = "Keep remote", Content = "KeepRemote" },
+        new SelectOption { Header = "Fixed 100%", Content = "Fixed100" }
+    ];
+    public ObservableCollection<ISelectOption> RdpFrameStrategyOptions { get; } =
+    [
+        new SelectOption { Header = "Auto (frame markers, fallback to coalescing)", Content = "Auto" },
+        new SelectOption { Header = "Coalesce batches", Content = "Coalesce" },
+        new SelectOption { Header = "Server frame markers only", Content = "FrameMarker" },
+        new SelectOption { Header = "Legacy (show every batch)", Content = "Legacy" }
+    ];
     public ObservableCollection<ISelectOption> RdpColorQualityOptions { get; } =
     [
         new SelectOption { Header = "High Color (15 bit)", Content = "15" },
@@ -1229,6 +1247,13 @@ public partial class SessionEditViewModel : ObservableObject
         SetOptionHeader(RdpAudioModeOptions, "PlayLocal", "Option.RdpAudioPlayLocal");
         SetOptionHeader(RdpAudioModeOptions, "DoNotPlay", "Option.RdpAudioDoNotPlay");
         SetOptionHeader(RdpAudioModeOptions, "PlayRemote", "Option.RdpAudioPlayRemote");
+        SetOptionHeader(RdpDpiPolicyOptions, "FollowLocal", "Option.RdpDpiFollowLocal");
+        SetOptionHeader(RdpDpiPolicyOptions, "KeepRemote", "Option.RdpDpiKeepRemote");
+        SetOptionHeader(RdpDpiPolicyOptions, "Fixed100", "Option.RdpDpiFixed100");
+        SetOptionHeader(RdpFrameStrategyOptions, "Auto", "Option.RdpFrameStrategyAuto");
+        SetOptionHeader(RdpFrameStrategyOptions, "Coalesce", "Option.RdpFrameStrategyCoalesce");
+        SetOptionHeader(RdpFrameStrategyOptions, "FrameMarker", "Option.RdpFrameStrategyFrameMarker");
+        SetOptionHeader(RdpFrameStrategyOptions, "Legacy", "Option.RdpFrameStrategyLegacy");
         SetOptionHeader(AdvancedIpVersionOptions, "Auto", "Option.Auto");
 
         OnPropertyChanged(nameof(ProxyOptions));
@@ -1247,6 +1272,8 @@ public partial class SessionEditViewModel : ObservableObject
         OnPropertyChanged(nameof(SerialFlowControlOptions));
         OnPropertyChanged(nameof(RdpResizeModeOptions));
         OnPropertyChanged(nameof(RdpAudioModeOptions));
+        OnPropertyChanged(nameof(RdpDpiPolicyOptions));
+        OnPropertyChanged(nameof(RdpFrameStrategyOptions));
         OnPropertyChanged(nameof(AdvancedIpVersionOptions));
     }
 
@@ -1502,8 +1529,15 @@ public partial class SessionEditViewModel : ObservableObject
         RdpDesktopHeight = Math.Max(1, session.RdpDesktopHeight).ToString();
         RdpResizeMode = string.IsNullOrWhiteSpace(session.RdpResizeMode) ? "SmartReconnect" : session.RdpResizeMode;
         RdpScreenScale = string.IsNullOrWhiteSpace(session.RdpScreenScale) ? "Auto" : session.RdpScreenScale;
+        RdpDpiPolicy = Enum.TryParse<RdpDpiPolicy>(session.RdpDpiPolicy, true, out var dpiPolicy)
+            ? dpiPolicy.ToString()
+            : "FollowLocal";
+        RdpFrameStrategy = RdpFramePresentationModes.Normalize(session.RdpFrameStrategy);
         RdpColorQuality = string.IsNullOrWhiteSpace(session.RdpColorQuality) ? "32" : session.RdpColorQuality;
         RdpApplyKeyCombinations = session.RdpApplyKeyCombinations;
+        RdpClipboardEnabled = session.RdpClipboardEnabled;
+        RdpDisableWallpaper = session.RdpDisableWallpaper;
+        RdpGraphicsPipelineEnabled = session.RdpGraphicsPipelineEnabled;
         RdpRedirectDrives = session.RdpRedirectDrives;
         RdpDriveName = string.IsNullOrWhiteSpace(session.RdpDriveName) ? "CxShell" : session.RdpDriveName;
         RdpDrivePath = session.RdpDrivePath ?? string.Empty;
@@ -1805,8 +1839,15 @@ public partial class SessionEditViewModel : ObservableObject
         session.RdpDesktopHeight = int.TryParse(RdpDesktopHeight, out var rdpHeight) ? Math.Max(1, rdpHeight) : 1080;
         session.RdpResizeMode = RdpResizeMode;
         session.RdpScreenScale = RdpScreenScale;
+        session.RdpDpiPolicy = Enum.TryParse<RdpDpiPolicy>(RdpDpiPolicy, true, out var dpiPolicy)
+            ? dpiPolicy.ToString()
+            : "FollowLocal";
+        session.RdpFrameStrategy = RdpFramePresentationModes.Normalize(RdpFrameStrategy);
         session.RdpColorQuality = RdpColorQuality;
         session.RdpApplyKeyCombinations = RdpApplyKeyCombinations;
+        session.RdpClipboardEnabled = RdpClipboardEnabled;
+        session.RdpDisableWallpaper = RdpDisableWallpaper;
+        session.RdpGraphicsPipelineEnabled = RdpGraphicsPipelineEnabled;
         session.RdpRedirectDrives = RdpRedirectDrives;
         session.RdpDriveName = string.IsNullOrWhiteSpace(RdpDriveName) ? "CxShell" : RdpDriveName.Trim();
         session.RdpDrivePath = RdpRedirectDrives ? RdpDrivePath.Trim() : string.Empty;

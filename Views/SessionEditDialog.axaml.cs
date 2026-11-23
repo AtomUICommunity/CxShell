@@ -448,6 +448,8 @@ public partial class SessionEditDialog : AtomUI.Desktop.Controls.Window
             vm.RdpDesktopHeight = RdpHeightBox?.Text ?? vm.RdpDesktopHeight;
             vm.RdpResizeMode = GetSelectedOptionText(RdpResizeModeSelect, vm.RdpResizeMode);
             vm.RdpScreenScale = GetSelectedOptionText(RdpScreenScaleSelect, vm.RdpScreenScale);
+            vm.RdpDpiPolicy = GetSelectedOptionText(RdpDpiPolicySelect, vm.RdpDpiPolicy);
+            vm.RdpFrameStrategy = GetSelectedOptionText(RdpFrameStrategySelect, vm.RdpFrameStrategy);
             vm.RdpColorQuality = GetSelectedOptionText(RdpColorQualitySelect, vm.RdpColorQuality);
             vm.RdpAudioMode = GetSelectedOptionText(RdpAudioModeSelect, vm.RdpAudioMode);
             vm.VncDisplayMode = GetSelectedOptionText(VncDisplayModeSelect, vm.VncDisplayMode);
@@ -2758,6 +2760,8 @@ public partial class SessionEditDialog : AtomUI.Desktop.Controls.Window
         SelectOption(RdpWindowSizeSelect, vm.RdpWindowSize);
         SelectOption(RdpResizeModeSelect, vm.RdpResizeMode);
         SelectOption(RdpScreenScaleSelect, vm.RdpScreenScale);
+        SelectOption(RdpDpiPolicySelect, vm.RdpDpiPolicy);
+        SelectOption(RdpFrameStrategySelect, vm.RdpFrameStrategy);
         SelectOption(RdpColorQualitySelect, vm.RdpColorQuality);
         SelectOption(RdpAudioModeSelect, vm.RdpAudioMode);
     }

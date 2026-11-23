@@ -171,6 +171,17 @@ public partial class SessionTreeViewModel : ObservableObject
         _settingsStore.Save(settings);
     }
 
+    /// <summary>
+    /// Persists the settings already shared through <see cref="SharedSettings"/>.
+    /// Used by UI that lives outside a session tree (for example the full screen
+    /// connection bar) and therefore has no tree view model to call.
+    /// </summary>
+    public static void PersistSharedSettings()
+    {
+        if (SharedSettings is { } settings)
+            new ApplicationSettingsStore().Save(settings);
+    }
+
     public static void CopySessionValues(SessionInfo target, SessionInfo source)
     {
         target.Proxy = CloneProxy(source.Proxy);
@@ -245,8 +256,13 @@ public partial class SessionTreeViewModel : ObservableObject
         target.RdpDesktopHeight = source.RdpDesktopHeight;
         target.RdpResizeMode = source.RdpResizeMode;
         target.RdpScreenScale = source.RdpScreenScale;
+        target.RdpDpiPolicy = source.RdpDpiPolicy;
+        target.RdpFrameStrategy = source.RdpFrameStrategy;
         target.RdpColorQuality = source.RdpColorQuality;
         target.RdpApplyKeyCombinations = source.RdpApplyKeyCombinations;
+        target.RdpClipboardEnabled = source.RdpClipboardEnabled;
+        target.RdpDisableWallpaper = source.RdpDisableWallpaper;
+        target.RdpGraphicsPipelineEnabled = source.RdpGraphicsPipelineEnabled;
         target.RdpRedirectDrives = source.RdpRedirectDrives;
         target.RdpDriveName = source.RdpDriveName;
         target.RdpDrivePath = source.RdpDrivePath;
@@ -1161,8 +1177,13 @@ public partial class SessionTreeViewModel : ObservableObject
             RdpDesktopHeight = source.RdpDesktopHeight,
             RdpResizeMode = source.RdpResizeMode,
             RdpScreenScale = source.RdpScreenScale,
+            RdpDpiPolicy = source.RdpDpiPolicy,
+            RdpFrameStrategy = source.RdpFrameStrategy,
             RdpColorQuality = source.RdpColorQuality,
             RdpApplyKeyCombinations = source.RdpApplyKeyCombinations,
+            RdpClipboardEnabled = source.RdpClipboardEnabled,
+            RdpDisableWallpaper = source.RdpDisableWallpaper,
+            RdpGraphicsPipelineEnabled = source.RdpGraphicsPipelineEnabled,
             RdpRedirectDrives = source.RdpRedirectDrives,
             RdpDriveName = source.RdpDriveName,
             RdpDrivePath = source.RdpDrivePath,

@@ -1590,7 +1590,7 @@
                                 BorderThickness="1"
                                 CornerRadius="4"
                                 Padding="18">
-                            <Grid RowDefinitions="Auto,14,Auto,10,Auto,12,Auto,12,Auto,12,Auto,10,Auto"
+                            <Grid RowDefinitions="Auto,14,Auto,10,Auto,12,Auto,12,Auto,12,Auto,10,Auto,12,Auto,12,Auto,10,Auto"
                                   ColumnDefinitions="150,420,*"
                                   ColumnSpacing="8">
                                 <TextBlock Grid.ColumnSpan="3"
@@ -1658,6 +1658,34 @@
                                            Text="{Binding [SessionEdit.Unsupported.RdpDisplayPartial], Source={x:Static services:LocalizationService.Shared}}"
                                            TextWrapping="Wrap"
                                            Foreground="{atom:SharedTokenResource ColorTextTertiary}"/>
+
+                                <TextBlock Grid.Row="14"
+                                           Text="{Binding [SessionEdit.RdpDpiPolicy], Source={x:Static services:LocalizationService.Shared}}"
+                                           VerticalAlignment="Center"
+                                           Foreground="{atom:SharedTokenResource ColorTextSecondary}"/>
+                                <atom:Select Grid.Row="14" Grid.Column="1"
+                                             x:Name="RdpDpiPolicySelect"
+                                             Mode="Single"
+                                             Width="220"
+                                             HorizontalAlignment="Left"
+                                             OptionsSource="{Binding RdpDpiPolicyOptions}"/>
+
+                                <TextBlock Grid.Row="16"
+                                           Text="{Binding [SessionEdit.RdpFrameStrategy], Source={x:Static services:LocalizationService.Shared}}"
+                                           VerticalAlignment="Center"
+                                           Foreground="{atom:SharedTokenResource ColorTextSecondary}"/>
+                                <atom:Select Grid.Row="16" Grid.Column="1"
+                                             x:Name="RdpFrameStrategySelect"
+                                             Mode="Single"
+                                             Width="320"
+                                             HorizontalAlignment="Left"
+                                             OptionsSource="{Binding RdpFrameStrategyOptions}"/>
+                                <TextBlock Grid.Row="18"
+                                           Grid.Column="1"
+                                           Grid.ColumnSpan="2"
+                                           Text="{Binding [SessionEdit.RdpFrameStrategyHint], Source={x:Static services:LocalizationService.Shared}}"
+                                           TextWrapping="Wrap"
+                                           Foreground="{atom:SharedTokenResource ColorTextTertiary}"/>
                             </Grid>
                         </Border>
 
@@ -1666,7 +1694,7 @@
                                 BorderThickness="1"
                                 CornerRadius="4"
                                 Padding="18">
-                            <Grid RowDefinitions="Auto,14,Auto,10,Auto,12,Auto,10,Auto,10,Auto"
+                            <Grid RowDefinitions="Auto,14,Auto,10,Auto,12,Auto,10,Auto,10,Auto,10,Auto,10,Auto,10,Auto"
                                   ColumnDefinitions="150,420,*"
                                   ColumnSpacing="8">
                                 <TextBlock Grid.ColumnSpan="3"
@@ -1720,6 +1748,24 @@
                                            Text="{Binding [SessionEdit.RdpDriveHint], Source={x:Static services:LocalizationService.Shared}}"
                                            TextWrapping="Wrap"
                                            Foreground="{atom:SharedTokenResource ColorTextTertiary}"/>
+
+                                <atom:CheckBox Grid.Row="12"
+                                               Grid.ColumnSpan="3"
+                                               Content="{Binding [SessionEdit.RdpClipboard], Source={x:Static services:LocalizationService.Shared}}"
+                                               atom:ToolTip.Tip="{Binding [SessionEdit.RdpClipboardHint], Source={x:Static services:LocalizationService.Shared}}"
+                                               IsChecked="{Binding RdpClipboardEnabled, Mode=TwoWay}"/>
+
+                                <atom:CheckBox Grid.Row="14"
+                                               Grid.ColumnSpan="3"
+                                               Content="{Binding [SessionEdit.RdpDisableWallpaper], Source={x:Static services:LocalizationService.Shared}}"
+                                               atom:ToolTip.Tip="{Binding [SessionEdit.RdpDisableWallpaperHint], Source={x:Static services:LocalizationService.Shared}}"
+                                               IsChecked="{Binding RdpDisableWallpaper, Mode=TwoWay}"/>
+
+                                <atom:CheckBox Grid.Row="16"
+                                               Grid.ColumnSpan="3"
+                                               Content="{Binding [SessionEdit.RdpGraphicsPipeline], Source={x:Static services:LocalizationService.Shared}}"
+                                               atom:ToolTip.Tip="{Binding [SessionEdit.RdpGraphicsPipelineHint], Source={x:Static services:LocalizationService.Shared}}"
+                                               IsChecked="{Binding RdpGraphicsPipelineEnabled, Mode=TwoWay}"/>
                             </Grid>
                         </Border>
 
