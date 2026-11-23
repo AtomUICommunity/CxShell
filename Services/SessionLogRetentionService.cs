@@ -23,7 +23,7 @@ public static class SessionLogRetentionService
         try
         {
             retentionDays = Math.Min(retentionDays, 3650);
-            var activePath = SessionLogWriter.ResolveLogPath(session, chosenPath);
+            var activePath = SessionLogWriter.ResolveLogPath(session, chosenPath, nowUtc);
             var directory = Path.GetDirectoryName(activePath);
             if (string.IsNullOrWhiteSpace(directory) || !Directory.Exists(directory))
                 return 0;

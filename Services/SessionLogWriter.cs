@@ -139,7 +139,14 @@ public sealed class SessionLogWriter : IDisposable
         _writer.Dispose();
     }
 
-    public static string ResolveLogPath(SessionInfo session, string? chosenPath = null)
+    /// <summary>
+    /// Resolves the log path for a session. <paramref name="timestamp"/> pins the
+    /// date/time tokens (defaults to now); retention cleanup must pass the same
+    /// instant it uses for the age cutoff, otherwise a template holding seconds
+    /// (<c>%t</c>) can resolve to a different name than the live file and the
+    /// cleanup would consider that live file a candidate for deletion.
+    /// </summary>
+    public static string ResolveLogPath(SessionInfo session, string? chosenPath = null, DateTimeOffset? timestamp = null)
     {
         var template = string.IsNullOrWhiteSpace(chosenPath)
             ? session.AdvancedLogFilePath
@@ -147,7 +154,7 @@ public sealed class SessionLogWriter : IDisposable
         if (string.IsNullOrWhiteSpace(template))
             template = "%n_%Y-%m-%d_%t.log";
 
-        var expanded = ExpandTemplate(template, session, DateTime.Now, 1);
+        var expanded = ExpandTemplate(template, session, timestamp?.LocalDateTime ?? DateTime.Now, 1);
         expanded = SanitizePath(expanded);
         if (!Path.IsPathRooted(expanded))
         {

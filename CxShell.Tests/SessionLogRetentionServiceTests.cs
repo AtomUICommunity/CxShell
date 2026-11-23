@@ -28,7 +28,12 @@ public sealed class SessionLogRetentionServiceTests
                     now.LocalDateTime.AddDays(-10),
                     1));
             var unrelatedPath = Path.Combine(directory, "other_2026-08-01_120000.log");
-            var activePath = SessionLogWriter.ResolveLogPath(session);
+
+            // Pinned to the same instant as the cleanup call: the template holds
+            // %t with second precision, so resolving it from the live clock here
+            // would name a different file whenever a second ticks over and the
+            // "active file is skipped" assertion would fail intermittently.
+            var activePath = SessionLogWriter.ResolveLogPath(session, timestamp: now);
 
             WriteFileWithTimestamp(expiredPath, now.UtcDateTime.AddDays(-40));
             WriteFileWithTimestamp(recentPath, now.UtcDateTime.AddDays(-10));
