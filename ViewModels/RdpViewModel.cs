@@ -1,4 +1,5 @@
 using System;
+using System.Net.Sockets;
 using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
@@ -17,9 +18,30 @@ public partial class RdpViewModel : ObservableObject, IDisposable
 {
     private readonly RdpBridgeClient _client = new();
     private bool _started;
+    private bool _hadSession;
+    private bool _suppressLostOverlay;
+    private RdpReconnectPhase _reconnectPhase = RdpReconnectPhase.None;
+    private int _reconnectAttempt;
+    private double _renderScaling = 1;
     private CancellationTokenSource? _resizeReconnectCts;
+    private CancellationTokenSource? _connectWatchdogCts;
     private int? _runtimeDesktopWidth;
     private int? _runtimeDesktopHeight;
+    private WriteableBitmap? _bitmapA;
+    private WriteableBitmap? _bitmapB;
+    private bool _useBitmapA;
+    private int _bitmapWidth;
+    private int _bitmapHeight;
+    private static readonly int ConnectTimeoutSeconds = ResolveConnectTimeoutSeconds();
+
+    private static int ResolveConnectTimeoutSeconds()
+    {
+        // The native bridge bounds each TCP handshake; this watchdog is a
+        // backstop for a host that ignores the abort entirely. Set to 0 to
+        // disable it.
+        var raw = Environment.GetEnvironmentVariable("CXSHELL_RDP_CONNECT_TIMEOUT_SECONDS");
+        return int.TryParse(raw, out var seconds) && seconds >= 0 ? seconds : 45;
+    }
 
     [ObservableProperty] private WriteableBitmap? _framebuffer;
     [ObservableProperty] private string _statusText = "RDP disconnected";
@@ -30,6 +52,42 @@ public partial class RdpViewModel : ObservableObject, IDisposable
     [ObservableProperty] private int _screenScalePercent = 100;
     [ObservableProperty] private bool _isClipboardChannelReady;
     [ObservableProperty] private string _remoteClipboardText = string.Empty;
+
+    /// <summary>
+    /// Rough link quality for the full screen connection bar: 0 unknown,
+    /// 1 poor, 2 acceptable, 3 good, 4 excellent. RDP does not expose a signal
+    /// strength, so a bare TCP handshake to the session endpoint is timed.
+    /// </summary>
+    [ObservableProperty] private int _linkQualityLevel;
+
+    private DispatcherTimer? _linkQualityTimer;
+    private bool _linkQualityProbeRunning;
+
+    /// <summary>
+    /// Covers the viewport until the first complete desktop frame arrives.
+    /// Legacy RDP sends a multi-second top-to-bottom repaint wave; showing the
+    /// half-painted buffer is what makes the screen appear to fill in slowly.
+    /// </summary>
+    [ObservableProperty] private bool _isDesktopLoading = true;
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(IsConnectionOverlayVisible))]
+    [NotifyPropertyChangedFor(nameof(IsCancelRetryVisible))]
+    private bool _isReconnecting;
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(IsConnectionOverlayVisible))]
+    private bool _isConnectionLost;
+
+    [ObservableProperty] private string _reconnectStatusText = string.Empty;
+
+    public bool IsConnectionOverlayVisible => IsReconnecting || IsConnectionLost;
+    public bool IsCancelRetryVisible => IsReconnecting;
+    public string ReconnectLabel => Text("Rdp.Reconnect.Button");
+    public string CancelRetryLabel => Text("Rdp.Reconnect.StopRetrying");
+    public string DesktopLoadingText => Text("Rdp.LoadingDesktop");
+
+    private static string Text(string key) => LocalizationService.Shared.Text(key);
 
     public SessionInfo Session { get; }
     public string? Password { get; }
@@ -47,12 +105,34 @@ public partial class RdpViewModel : ObservableObject, IDisposable
         _client.FramebufferUpdated += OnFramebufferUpdated;
         _client.StatusChanged += message => Dispatcher.UIThread.Post(() => HandleStatus(message));
         _client.ClipboardTextReceived += OnClipboardTextReceived;
+        LocalizationService.Shared.LanguageChanged += OnLanguageChanged;
         _client.Disconnected += () => Dispatcher.UIThread.Post(() =>
         {
+            // A disconnect we asked for (tab close, manual reconnect, resize)
+            // must not raise the "connection lost" overlay. Bail out before
+            // touching state, because a manual reconnect may already have
+            // started a new session on this view model.
+            if (_suppressLostOverlay)
+            {
+                _suppressLostOverlay = false;
+                return;
+            }
+
             _started = false;
             IsConnected = false;
             IsClipboardChannelReady = false;
+            IsReconnecting = false;
+            IsDesktopLoading = true;
+            _hadSession = true;
             StatusText = "RDP disconnected";
+
+            if (string.IsNullOrWhiteSpace(ReconnectStatusText))
+            {
+                _reconnectPhase = RdpReconnectPhase.Failed;
+                _reconnectAttempt = 0;
+                ReconnectStatusText = Text("Rdp.Reconnect.Failed");
+            }
+            IsConnectionLost = true;
         });
     }
 
@@ -62,44 +142,184 @@ public partial class RdpViewModel : ObservableObject, IDisposable
             return;
 
         _started = true;
+        IsDesktopLoading = true;
         StatusText = "Starting RDP bridge...";
+        StartConnectWatchdog();
 
         _ = Task.Run(() =>
         {
             try
             {
-                _client.Connect(Session, Password, _runtimeDesktopWidth, _runtimeDesktopHeight);
-                Dispatcher.UIThread.Post(() => IsConnected = false);
+                _client.Connect(
+                    Session,
+                    Password,
+                    _runtimeDesktopWidth,
+                    _runtimeDesktopHeight,
+                    RdpDpiScale.ResolveScalePercent(ResolveDpiPolicy(), _renderScaling));
+                // Do not reset IsConnected here: Connect() only starts the
+                // native worker. A posted "false" used to race the "RDP
+                // connected." status and clear the state right after the
+                // first frame arrived.
             }
             catch (DllNotFoundException ex)
             {
-                Dispatcher.UIThread.Post(() =>
-                {
-                    _started = false;
-                    StatusText = $"RDP native library load failed: {RdpBridgeClient.GetNativeLibraryLoadErrorMessage(ex)}";
-                });
+                Dispatcher.UIThread.Post(() => ReportFailure(
+                    $"RDP native library load failed: {RdpBridgeClient.GetNativeLibraryLoadErrorMessage(ex)}"));
             }
             catch (EntryPointNotFoundException ex)
             {
-                Dispatcher.UIThread.Post(() =>
-                {
-                    _started = false;
-                    StatusText = $"CxRdpBridge API mismatch: {ex.Message}";
-                });
+                Dispatcher.UIThread.Post(() => ReportFailure($"CxRdpBridge API mismatch: {ex.Message}"));
             }
             catch (Exception ex)
             {
-                Dispatcher.UIThread.Post(() =>
-                {
-                    _started = false;
-                    StatusText = $"RDP failed: {ex.Message}";
-                });
+                Dispatcher.UIThread.Post(() => ReportFailure($"RDP failed: {ex.Message}"));
             }
         });
     }
 
+    private void StartConnectWatchdog()
+    {
+        CancelConnectWatchdog();
+        if (ConnectTimeoutSeconds <= 0)
+            return;
+
+        var cts = new CancellationTokenSource();
+        _connectWatchdogCts = cts;
+        _ = WatchConnectAsync(cts.Token);
+    }
+
+    private async Task WatchConnectAsync(CancellationToken token)
+    {
+        try
+        {
+            await Task.Delay(TimeSpan.FromSeconds(ConnectTimeoutSeconds), token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            return;
+        }
+
+        await Dispatcher.UIThread.InvokeAsync(() =>
+        {
+            if (token.IsCancellationRequested || IsConnected || !_started)
+                return;
+
+            ReportFailure(Text("Rdp.Connect.Timeout"));
+            // Disconnect() joins the native connection thread, so keep that
+            // (potentially blocking) call off the UI thread.
+            _ = Task.Run(() => _client.Disconnect());
+        });
+    }
+
+    private void CancelConnectWatchdog()
+    {
+        var cts = _connectWatchdogCts;
+        _connectWatchdogCts = null;
+        if (cts == null)
+            return;
+
+        try
+        {
+            cts.Cancel();
+        }
+        catch (ObjectDisposedException)
+        {
+            // Already torn down by another path.
+        }
+        cts.Dispose();
+    }
+
+    /// <summary>
+    /// Surfaces a failed (re)connect. Once the view has shown a live session, a
+    /// failure also raises the overlay so the Reconnect button stays reachable.
+    /// </summary>
+    private void ReportFailure(string message)
+    {
+        CancelConnectWatchdog();
+        _started = false;
+        StatusText = message;
+
+        if (!_hadSession)
+            return;
+
+        IsConnected = false;
+        IsClipboardChannelReady = false;
+        IsReconnecting = false;
+        IsConnectionLost = true;
+        ReconnectStatusText = message;
+    }
+
     private void HandleStatus(string message)
     {
+        switch (RdpReconnectStatus.Classify(message))
+        {
+            case RdpReconnectPhase.ConnectionLost:
+                _reconnectPhase = RdpReconnectPhase.ConnectionLost;
+                _reconnectAttempt = 0;
+                IsReconnecting = true;
+                IsConnectionLost = false;
+                RefreshReconnectText();
+                StatusText = ReconnectStatusText;
+                return;
+
+            case RdpReconnectPhase.Reconnecting:
+                _reconnectPhase = RdpReconnectPhase.Reconnecting;
+                _reconnectAttempt = RdpReconnectStatus.ParseAttempt(message);
+                IsReconnecting = true;
+                IsConnectionLost = false;
+                RefreshReconnectText();
+                StatusText = ReconnectStatusText;
+                return;
+
+            case RdpReconnectPhase.Reconnected:
+                CancelConnectWatchdog();
+                _reconnectPhase = RdpReconnectPhase.None;
+                _reconnectAttempt = 0;
+                IsReconnecting = false;
+                IsConnectionLost = false;
+                ReconnectStatusText = string.Empty;
+                IsConnected = true;
+                _started = true;
+                _hadSession = true;
+                _suppressLostOverlay = false;
+                StatusText = "RDP ready";
+                return;
+
+            case RdpReconnectPhase.Failed:
+                CancelConnectWatchdog();
+                _reconnectPhase = RdpReconnectPhase.Failed;
+                _reconnectAttempt = 0;
+                IsReconnecting = false;
+                IsConnectionLost = true;
+                IsConnected = false;
+                _started = false;
+                _hadSession = true;
+                IsClipboardChannelReady = false;
+                RefreshReconnectText();
+                StatusText = "RDP disconnected";
+                return;
+
+            default:
+                break;
+        }
+
+        // A single failed security profile, a queued resize or a clipboard
+        // retry is not a disconnect. Keep showing "connecting" instead of
+        // tearing the view down while the bridge is still working.
+        if (RdpReconnectStatus.IsTransientFailure(message))
+        {
+            StatusText = "Connecting RDP...";
+            return;
+        }
+
+        // The bridge emits exactly one terminal line after all fallbacks are
+        // exhausted; show the real error instead of leaving "Connecting...".
+        if (message.StartsWith("RDP connection failed.", StringComparison.OrdinalIgnoreCase))
+        {
+            ReportFailure(message);
+            return;
+        }
+
         StatusText = GetDisplayStatusText(message);
 
         if (message.StartsWith("RDP clipboard channel ready", StringComparison.OrdinalIgnoreCase))
@@ -111,8 +331,14 @@ public partial class RdpViewModel : ObservableObject, IDisposable
         if (string.Equals(message, "RDP connected.", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(message, "RDP connected", StringComparison.OrdinalIgnoreCase))
         {
+            CancelConnectWatchdog();
             IsConnected = true;
             _started = true;
+            _hadSession = true;
+            _suppressLostOverlay = false;
+            IsReconnecting = false;
+            IsConnectionLost = false;
+            ReconnectStatusText = string.Empty;
             return;
         }
 
@@ -126,6 +352,24 @@ public partial class RdpViewModel : ObservableObject, IDisposable
         }
     }
 
+    private void RefreshReconnectText()
+    {
+        if (_reconnectPhase == RdpReconnectPhase.ConnectionLost)
+            ReconnectStatusText = Text("Rdp.Reconnect.Lost");
+        else if (_reconnectPhase == RdpReconnectPhase.Reconnecting)
+            ReconnectStatusText = string.Format(Text("Rdp.Reconnect.Attempt"), _reconnectAttempt);
+        else if (_reconnectPhase == RdpReconnectPhase.Failed)
+            ReconnectStatusText = Text("Rdp.Reconnect.Failed");
+    }
+
+    private void OnLanguageChanged(object? sender, EventArgs e) => Dispatcher.UIThread.Post(() =>
+    {
+        RefreshReconnectText();
+        OnPropertyChanged(nameof(ReconnectLabel));
+        OnPropertyChanged(nameof(CancelRetryLabel));
+        OnPropertyChanged(nameof(DesktopLoadingText));
+    });
+
     private static string GetDisplayStatusText(string message)
     {
         if (string.Equals(message, "RDP clipboard waiting for server MonitorReady.", StringComparison.OrdinalIgnoreCase))
@@ -137,17 +381,48 @@ public partial class RdpViewModel : ObservableObject, IDisposable
         return message;
     }
 
+    [RelayCommand]
     public void Reconnect()
     {
         _resizeReconnectCts?.Cancel();
+        CancelConnectWatchdog();
+        _reconnectPhase = RdpReconnectPhase.None;
+        _reconnectAttempt = 0;
+        IsReconnecting = false;
+        IsConnectionLost = false;
+        ReconnectStatusText = string.Empty;
         Disconnect();
         _started = false;
         Start();
     }
 
+    /// <summary>
+    /// Stops the automatic reconnect loop before it gives up on its own so the
+    /// tab falls back to the manual Reconnect button.
+    /// </summary>
+    [RelayCommand]
+    public void CancelReconnect()
+    {
+        // Disconnect suppresses the native teardown notification because this
+        // shutdown is deliberate; set the lost state here instead.
+        CancelConnectWatchdog();
+        Disconnect();
+        _reconnectPhase = RdpReconnectPhase.Failed;
+        _reconnectAttempt = 0;
+        IsReconnecting = false;
+        IsConnectionLost = true;
+        RefreshReconnectText();
+        StatusText = "RDP disconnected";
+    }
+
     public void Disconnect()
     {
         _resizeReconnectCts?.Cancel();
+        CancelConnectWatchdog();
+        // The native bridge only reports a disconnect while it believes the
+        // transport is live, so remember whether this teardown can produce one.
+        _suppressLostOverlay = _started || IsConnected;
+
         _client.Disconnect();
         _started = false;
         IsConnected = false;
@@ -157,6 +432,8 @@ public partial class RdpViewModel : ObservableObject, IDisposable
 
     public void ConfigureInitialDisplay(Size viewportSize, PixelSize? monitorPixelSize, double renderScaling)
     {
+        _renderScaling = renderScaling > 0 ? renderScaling : 1;
+
         if (_started || IsConnected)
             return;
 
@@ -193,21 +470,76 @@ public partial class RdpViewModel : ObservableObject, IDisposable
         if (Math.Abs(width - currentWidth) < 32 && Math.Abs(height - currentHeight) < 32)
             return;
 
+        var scale = RdpDpiScale.ResolveScalePercent(ResolveDpiPolicy(), renderScaling);
+        if (_client.UpdateDisplay(width, height, scale))
+        {
+            _runtimeDesktopWidth = width;
+            _runtimeDesktopHeight = height;
+            StatusText = $"RDP display updated to {width}x{height} @ {scale}%.";
+            return;
+        }
+
+        // The bridge cannot resize in place (older native build or the display
+        // control channel was not negotiated) - fall back to a full reconnect.
         _resizeReconnectCts?.Cancel();
         var cts = new CancellationTokenSource();
         _resizeReconnectCts = cts;
         _ = ReconnectAfterResizeDelayAsync(width, height, cts.Token);
     }
 
+    /// <summary>
+    /// Handles a render-scaling change that did not change the viewport size,
+    /// such as moving the window to a monitor with a different DPI.
+    /// </summary>
+    public void UpdateDpiScaling(double renderScaling)
+    {
+        _renderScaling = renderScaling > 0 ? renderScaling : 1;
+        if (!IsConnected || ResolveDpiPolicy() != RdpDpiPolicy.FollowLocal)
+            return;
+
+        var width = _runtimeDesktopWidth ?? Math.Max(1, Session.RdpDesktopWidth);
+        var height = _runtimeDesktopHeight ?? Math.Max(1, Session.RdpDesktopHeight);
+        var scale = RdpDpiScale.ResolveScalePercent(RdpDpiPolicy.FollowLocal, _renderScaling);
+
+        if (_client.UpdateDisplay(width, height, scale))
+        {
+            StatusText = $"RDP display updated to {width}x{height} @ {scale}%.";
+            return;
+        }
+
+        _runtimeDesktopWidth = width;
+        _runtimeDesktopHeight = height;
+        Reconnect();
+    }
+
+    private RdpDpiPolicy ResolveDpiPolicy()
+    {
+        return Enum.TryParse<RdpDpiPolicy>(Session.RdpDpiPolicy, true, out var policy)
+            ? policy
+            : RdpDpiPolicy.FollowLocal;
+    }
+
     private async Task ReconnectAfterResizeDelayAsync(int width, int height, CancellationToken cancellationToken)
     {
         try
         {
-            await Task.Delay(TimeSpan.FromMilliseconds(900), cancellationToken).ConfigureAwait(false);
+            // The display-control DVC is negotiated ~1s after the connection.
+            // Wait for it, then try an in-place resize once more before
+            // falling back to the (expensive) full reconnect.
+            await Task.Delay(TimeSpan.FromMilliseconds(1200), cancellationToken).ConfigureAwait(false);
             await Dispatcher.UIThread.InvokeAsync(() =>
             {
                 if (cancellationToken.IsCancellationRequested || !IsConnected)
                     return;
+
+                var scale = RdpDpiScale.ResolveScalePercent(ResolveDpiPolicy(), _renderScaling);
+                if (_client.UpdateDisplay(width, height, scale))
+                {
+                    _runtimeDesktopWidth = width;
+                    _runtimeDesktopHeight = height;
+                    StatusText = $"RDP display updated to {width}x{height} @ {scale}%.";
+                    return;
+                }
 
                 _runtimeDesktopWidth = width;
                 _runtimeDesktopHeight = height;
@@ -353,40 +685,150 @@ public partial class RdpViewModel : ObservableObject, IDisposable
 
     private void OnFramebufferUpdated(object? sender, RdpFramebufferEventArgs e)
     {
-        var pixels = new byte[e.Pixels.Length];
-        Buffer.BlockCopy(e.Pixels, 0, pixels, 0, pixels.Length);
-
         Dispatcher.UIThread.Post(() =>
         {
-            var bitmap = new WriteableBitmap(
-                new PixelSize(e.Width, e.Height),
-                new Vector(96, 96),
-                PixelFormat.Bgra8888,
-                AlphaFormat.Opaque);
-
-            using (var locked = bitmap.Lock())
+            try
             {
-                var copyBytes = Math.Min(pixels.Length, locked.RowBytes * locked.Size.Height);
-                Marshal.Copy(pixels, 0, locked.Address, copyBytes);
-            }
+                var target = GetTargetBitmap(e.Width, e.Height);
+                using (var locked = target.Lock())
+                {
+                    var copyBytes = Math.Min(e.PixelLength, locked.RowBytes * locked.Size.Height);
+                    Marshal.Copy(e.Pixels, 0, locked.Address, copyBytes);
+                }
 
-            Framebuffer = bitmap;
-            RemoteWidth = e.Width;
-            RemoteHeight = e.Height;
+                // Alternating two persistent bitmaps keeps allocations at zero
+                // per frame while still giving the Image a new source instance,
+                // which is what forces Avalonia to upload the changed pixels.
+                Framebuffer = target;
+                RemoteWidth = e.Width;
+                RemoteHeight = e.Height;
+                IsDesktopLoading = false;
+            }
+            finally
+            {
+                e.ReleasePixels();
+            }
         });
     }
+
+    private WriteableBitmap GetTargetBitmap(int width, int height)
+    {
+        if (_bitmapA is null || _bitmapB is null || _bitmapWidth != width || _bitmapHeight != height)
+        {
+            var previousA = _bitmapA;
+            var previousB = _bitmapB;
+            _bitmapA = CreateFrameBitmap(width, height);
+            _bitmapB = CreateFrameBitmap(width, height);
+            _bitmapWidth = width;
+            _bitmapHeight = height;
+            _useBitmapA = false;
+
+            if (previousA is not null || previousB is not null)
+            {
+                // The old instances may still be bound to the Image; dispose
+                // them only after the next frame has replaced that binding.
+                Dispatcher.UIThread.Post(() =>
+                {
+                    previousA?.Dispose();
+                    previousB?.Dispose();
+                });
+            }
+        }
+
+        var target = _useBitmapA ? _bitmapA : _bitmapB;
+        _useBitmapA = !_useBitmapA;
+        return target!;
+    }
+
+    private static WriteableBitmap CreateFrameBitmap(int width, int height) =>
+        new(new PixelSize(width, height), new Vector(96, 96), PixelFormat.Bgra8888, AlphaFormat.Opaque);
 
     private void OnClipboardTextReceived(string text)
     {
         Dispatcher.UIThread.Post(() => RemoteClipboardText = text);
     }
 
+    partial void OnIsConnectedChanged(bool value)
+    {
+        if (value)
+        {
+            StartLinkQualityProbe();
+            return;
+        }
+
+        StopLinkQualityProbe();
+        LinkQualityLevel = 0;
+    }
+
+    private void StartLinkQualityProbe()
+    {
+        if (_linkQualityTimer == null)
+        {
+            _linkQualityTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(10) };
+            _linkQualityTimer.Tick += (_, _) => _ = ProbeLinkQualityAsync();
+        }
+
+        _linkQualityTimer.Start();
+        _ = ProbeLinkQualityAsync();
+    }
+
+    private void StopLinkQualityProbe()
+    {
+        _linkQualityTimer?.Stop();
+    }
+
+    /// <summary>
+    /// Times a bare TCP connect to the RDP endpoint. RDP exposes no signal
+    /// strength of its own, and a full reconnect would disturb the session, so
+    /// the handshake round trip is used as the quality proxy for the bar.
+    /// </summary>
+    private async Task ProbeLinkQualityAsync()
+    {
+        if (_linkQualityProbeRunning || !IsConnected || string.IsNullOrWhiteSpace(Session.Host))
+            return;
+
+        _linkQualityProbeRunning = true;
+        try
+        {
+            var port = Session.Port is > 0 and <= 65535 ? Session.Port : 3389;
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+            using var client = new TcpClient();
+            var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+            await client.ConnectAsync(Session.Host, port, timeout.Token).ConfigureAwait(true);
+            stopwatch.Stop();
+
+            var latency = stopwatch.Elapsed.TotalMilliseconds;
+            LinkQualityLevel = latency switch
+            {
+                <= 50 => 4,
+                <= 100 => 3,
+                <= 200 => 2,
+                _ => 1
+            };
+        }
+        catch
+        {
+            LinkQualityLevel = 1;
+        }
+        finally
+        {
+            _linkQualityProbeRunning = false;
+        }
+    }
+
     public void Dispose()
     {
+        StopLinkQualityProbe();
         _resizeReconnectCts?.Cancel();
         _resizeReconnectCts?.Dispose();
+        CancelConnectWatchdog();
         _client.FramebufferUpdated -= OnFramebufferUpdated;
         _client.ClipboardTextReceived -= OnClipboardTextReceived;
+        LocalizationService.Shared.LanguageChanged -= OnLanguageChanged;
         _client.Dispose();
+        _bitmapA?.Dispose();
+        _bitmapB?.Dispose();
+        _bitmapA = null;
+        _bitmapB = null;
     }
 }

@@ -130,12 +130,17 @@ finally
 
 static int ProbeNativeBridge(bool requireAudio)
 {
-    const uint minimumApiVersion = 4;
+    const uint minimumApiVersion = 6;
     const uint clipboardCapability = 0x00000001;
     const uint driveRedirectionCapability = 0x00000002;
     const uint audioPlaybackCapability = 0x00000004;
     const uint microphoneCapability = 0x00000008;
     const uint keyboardHookCapability = 0x00000010;
+    const uint autoReconnectCapability = 0x00000020;
+    const uint runtimeResizeCapability = 0x00000040;
+    const uint performanceFlagsCapability = 0x00000200;
+    const uint dirtyRectCapability = 0x00000400;
+    const uint gfxCapability = 0x00000800;
 
     try
     {
@@ -143,9 +148,17 @@ static int ProbeNativeBridge(bool requireAudio)
         var capabilities = Native.cxrdp_get_capabilities();
         var requiredCapabilities = clipboardCapability |
                                    driveRedirectionCapability |
-                                   keyboardHookCapability;
+                                   keyboardHookCapability |
+                                   autoReconnectCapability |
+                                   runtimeResizeCapability;
         if (requireAudio)
             requiredCapabilities |= audioPlaybackCapability | microphoneCapability;
+        if (apiVersion >= 9)
+            requiredCapabilities |= performanceFlagsCapability;
+        if (apiVersion >= 10)
+            requiredCapabilities |= dirtyRectCapability;
+        if (apiVersion >= 11)
+            requiredCapabilities |= gfxCapability;
 
         Console.WriteLine($"Native bridge API {apiVersion}, capabilities 0x{capabilities:X8}");
         if (apiVersion < minimumApiVersion)
@@ -174,7 +187,10 @@ static int ProbeNativeBridge(bool requireAudio)
             {
                 if (Native.cxrdp_set_drive_redirection(probeHandle, 0, "CxShellProbe", string.Empty) != 0 ||
                     Native.cxrdp_set_audio_redirection(probeHandle, 2, 0) != 0 ||
-                    Native.cxrdp_set_keyboard_options(probeHandle, 1) != 0)
+                    Native.cxrdp_set_keyboard_options(probeHandle, 1) != 0 ||
+                    (apiVersion >= 9 && Native.cxrdp_set_disable_wallpaper(probeHandle, 1) != 0) ||
+                    (apiVersion >= 10 && Native.cxrdp_get_frame_dirty_rect(probeHandle, out _, out _, out _, out _) != 1) ||
+                    (apiVersion >= 11 && Native.cxrdp_set_graphics_pipeline(probeHandle, 1) != 0))
                 {
                     Console.Error.WriteLine($"Native session configuration failed on attempt {attempt}.");
                     return 1;
@@ -234,6 +250,15 @@ internal static partial class Native
 
     [DllImport("CxRdpBridge", CallingConvention = CallingConvention.Cdecl)]
     public static extern int cxrdp_set_keyboard_options(IntPtr handle, int applyKeyCombinationsRemotely);
+
+    [DllImport("CxRdpBridge", CallingConvention = CallingConvention.Cdecl)]
+    public static extern int cxrdp_set_disable_wallpaper(IntPtr handle, int enabled);
+
+    [DllImport("CxRdpBridge", CallingConvention = CallingConvention.Cdecl)]
+    public static extern int cxrdp_get_frame_dirty_rect(IntPtr handle, out int x, out int y, out int width, out int height);
+
+    [DllImport("CxRdpBridge", CallingConvention = CallingConvention.Cdecl)]
+    public static extern int cxrdp_set_graphics_pipeline(IntPtr handle, int enabled);
 
     [DllImport("CxRdpBridge", CallingConvention = CallingConvention.Cdecl)]
     public static extern void cxrdp_disconnect(IntPtr handle);

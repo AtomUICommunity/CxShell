@@ -21,12 +21,35 @@ typedef void (*cxrdp_status_callback)(void* user_data, const char* message);
 typedef void (*cxrdp_disconnect_callback)(void* user_data);
 typedef void (*cxrdp_clipboard_text_callback)(void* user_data, const char* text);
 
-#define CX_RDP_BRIDGE_API_VERSION 4u
+#define CX_RDP_BRIDGE_API_VERSION 11u
 #define CX_RDP_CAPABILITY_CLIPBOARD 0x00000001u
 #define CX_RDP_CAPABILITY_DRIVE_REDIRECTION 0x00000002u
 #define CX_RDP_CAPABILITY_AUDIO_PLAYBACK 0x00000004u
 #define CX_RDP_CAPABILITY_MICROPHONE 0x00000008u
 #define CX_RDP_CAPABILITY_KEYBOARD_HOOK 0x00000010u
+/* The bridge keeps an idle session alive with TCP keepalive probes and resumes
+   a dropped transport through the RDP auto reconnect cookie (ARC). */
+#define CX_RDP_CAPABILITY_AUTO_RECONNECT 0x00000020u
+/* The bridge can resize the remote desktop and change its advertised DPI in
+   place through the RDP display-control channel, without a reconnect. */
+#define CX_RDP_CAPABILITY_RUNTIME_RESIZE 0x00000040u
+/* The bridge starts with the negotiated security layer, remembers the profile
+   that worked for a host, and exposes per-session clipboard/profile options. */
+#define CX_RDP_CAPABILITY_FAST_CONNECT 0x00000080u
+/* The bridge understands RDP surface frame markers: it buffers the GDI surface
+   while a frame is open and publishes the complete frame on its END marker. */
+#define CX_RDP_CAPABILITY_FRAME_MARKER 0x00000100u
+/* The bridge exposes RDP client performance flags (currently the desktop
+   wallpaper flag) as per-session options and sends them on connect. */
+#define CX_RDP_CAPABILITY_PERFORMANCE_FLAGS 0x00000200u
+/* The bridge reports the dirty rectangle of every GDI paint batch, so the host
+   can wait until the server has actually painted the whole desktop instead of
+   guessing a frame boundary from idle time alone. */
+#define CX_RDP_CAPABILITY_DIRTY_RECT 0x00000400u
+/* The bridge negotiates the RDP graphics pipeline (MS-RDPEGFX): the server
+   groups surface commands between START_FRAME/END_FRAME and FreeRDP's GDI
+   backend calls EndPaint exactly once per complete frame, just like MSTSC. */
+#define CX_RDP_CAPABILITY_GFX 0x00000800u
 
 #define CX_RDP_AUDIO_PLAY_LOCAL 0
 #define CX_RDP_AUDIO_PLAY_REMOTE 1
@@ -70,6 +93,54 @@ CX_RDP_API int cxrdp_set_audio_redirection(
 CX_RDP_API int cxrdp_set_keyboard_options(
     void* handle,
     int apply_key_combinations_remotely);
+
+/* Set the advertised RDP DPI scale percentage before connecting.
+   0 keeps the remote session's own scaling; 100/125/150/175/200 are typical. */
+CX_RDP_API int cxrdp_set_display_scale(void* handle, int scalePercent);
+
+/* Queue a resolution + DPI change on a live session. Returns 0 when accepted.
+   The worker applies it through the display-control channel; the host must
+   keep framebuffer dimensions from the frame callback. */
+CX_RDP_API int cxrdp_update_display(void* handle, int width, int height, int scalePercent);
+
+/* Prefer the security profile that succeeded on a previous connection to this
+   host: "negotiate", "nla", "tls" or "rdp". An empty/NULL name restores
+   automatic negotiation. Call before cxrdp_connect(). */
+CX_RDP_API int cxrdp_set_security_profile(void* handle, const char* profileName);
+
+/* Enable or disable the RDP clipboard (cliprdr) channel for this session.
+   Call before cxrdp_connect(). Default: enabled. */
+CX_RDP_API int cxrdp_set_clipboard_channel(void* handle, int enabled);
+
+/* Enable server frame-marker based presentation before connecting.
+   With markers the bridge only publishes a framebuffer at a frame END marker;
+   without them it publishes after every paint batch. Default: enabled.
+   Requires CX_RDP_CAPABILITY_FRAME_MARKER (API 8). */
+CX_RDP_API int cxrdp_set_frame_marker_enabled(void* handle, int enabled);
+
+/* Ask the server to hide the remote desktop wallpaper (RDP performance flag
+   PERF_DISABLE_WALLPAPER). Call before cxrdp_connect(). Default: enabled.
+   Requires CX_RDP_CAPABILITY_PERFORMANCE_FLAGS (API 9). */
+CX_RDP_API int cxrdp_set_disable_wallpaper(void* handle, int enabled);
+
+/* Returns the dirty rectangle of the most recent paint batch in desktop
+   coordinates. Returns 0 and fills the out parameters when valid, or 1 when
+   the region is unknown (older servers / non-GDI updates). Must be called
+   from inside the frame callback; the values belong to that callback only.
+   Requires CX_RDP_CAPABILITY_DIRTY_RECT (API 10). */
+CX_RDP_API int cxrdp_get_frame_dirty_rect(
+    void* handle,
+    int* x,
+    int* y,
+    int* width,
+    int* height);
+
+/* Enable the RDP graphics pipeline (EGFX) for this session. Call before
+   cxrdp_connect(). When negotiated, frame boundaries come from the protocol
+   instead of host-side heuristics. Default: enabled.
+   Requires CX_RDP_CAPABILITY_GFX (API 11). */
+CX_RDP_API int cxrdp_set_graphics_pipeline(void* handle, int enabled);
+
 CX_RDP_API const char* cxrdp_get_last_error(void* handle);
 
 #ifdef __cplusplus

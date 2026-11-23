@@ -1,10 +1,12 @@
 using System;
+using System.Buffers;
 using System.IO;
 using System.Net;
 using System.Net.Sockets;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Threading;
 using CxShell.Models;
 using Renci.SshNet;
 
@@ -12,18 +14,40 @@ namespace CxShell.Services;
 
 public sealed class RdpFramebufferEventArgs : EventArgs
 {
-    public RdpFramebufferEventArgs(int width, int height, int stride, byte[] pixels)
+    private Action? _release;
+
+    public RdpFramebufferEventArgs(
+        int width,
+        int height,
+        int stride,
+        byte[] pixels,
+        int? pixelLength = null,
+        Action? release = null)
     {
         Width = width;
         Height = height;
         Stride = stride;
         Pixels = pixels;
+        PixelLength = pixelLength ?? pixels.Length;
+        _release = release;
     }
 
     public int Width { get; }
     public int Height { get; }
     public int Stride { get; }
     public byte[] Pixels { get; }
+
+    /// <summary>
+    /// Valid byte count in <see cref="Pixels"/>. A pooled array may be larger
+    /// than the frame, so callers must use this instead of Pixels.Length.
+    /// </summary>
+    public int PixelLength { get; }
+
+    /// <summary>Returns the pooled buffer once the UI has copied the pixels.</summary>
+    public void ReleasePixels()
+    {
+        Interlocked.Exchange(ref _release, null)?.Invoke();
+    }
 }
 
 public sealed class RdpBridgeClient : IDisposable
@@ -33,20 +57,72 @@ public sealed class RdpBridgeClient : IDisposable
     private const uint AudioPlaybackCapability = 0x00000004;
     private const uint MicrophoneCapability = 0x00000008;
     private const uint KeyboardHookCapability = 0x00000010;
+    private const uint AutoReconnectCapability = 0x00000020;
+    private const uint RuntimeResizeCapability = 0x00000040;
     private const uint AudioRedirectionApiVersion = 3;
     private const uint KeyboardOptionsApiVersion = 4;
+    private const uint RuntimeResizeApiVersion = 6;
+    private const uint FastConnectApiVersion = 7;
+    private const uint FastConnectCapability = 0x00000080;
+    private const uint FrameMarkerApiVersion = 8;
+    private const uint FrameMarkerCapability = 0x00000100;
+    private const uint PerformanceFlagsApiVersion = 9;
+    private const uint PerformanceFlagsCapability = 0x00000200;
+    private const uint DirtyRectApiVersion = 10;
+    private const uint DirtyRectCapability = 0x00000400;
+    private const uint GfxApiVersion = 11;
+    private const uint GfxCapability = 0x00000800;
     private static readonly object DebugLogLock = new();
     private static readonly object NativeLoadFailureLock = new();
     private static readonly bool DetailedDebugLogEnabled = IsEnvironmentFlagEnabled("CXSHELL_RDP_DEBUG_LOG");
+    private static readonly bool FrameCoalescingEnabled = !IsEnvironmentFlagDisabled("CXSHELL_RDP_FRAME_COALESCE");
+    private static readonly bool FrameCoverageEnabled = !IsEnvironmentFlagDisabled("CXSHELL_RDP_COVERAGE");
+    // EGFX is on by default (verified against a real server): the graphics DVC
+    // is registered by its addin name "rdpgfx", RdpgfxClientContext is bound to
+    // the GDI backend and one EndPaint now equals one complete frame. The
+    // native side still refuses to advertise the pipeline when the addin does
+    // not resolve, and retries the profile without EGFX after a post-connect
+    // abort, so a server that dislikes it cannot leave the tab dead.
+    // CXSHELL_RDP_GFX=1 forces it on globally; the per-session setting decides
+    // otherwise.
+    private static readonly bool GraphicsPipelineForcedOn = IsEnvironmentFlagEnabled("CXSHELL_RDP_GFX");
     private static string? _lastNativeLoadFailure;
     private readonly FrameCallback _frameCallback;
     private readonly StatusCallback _statusCallback;
     private readonly DisconnectCallback _disconnectCallback;
     private readonly ClipboardTextCallback _clipboardTextCallback;
+    private readonly object _frameSync = new();
+    private readonly RdpFrameComposer _frameComposer = new(enabled: FrameCoalescingEnabled, useCoverage: FrameCoverageEnabled);
+    private RdpFramePresentationMode _frameMode = RdpFramePresentationMode.Auto;
+    private bool _frameMarkerSupported;
+    private bool _dirtyRectSupported;
+    private bool _gfxFrameMode;
+    private byte[] _frameBuffer = Array.Empty<byte>();
+    private byte[] _previousFrameBuffer = Array.Empty<byte>();
+    private int _previousFrameWidth;
+    private int _previousFrameHeight;
+    private int _previousFrameStride;
+    private string _dirtyRectSource = "none";
+    // Input arrives on the UI thread. Only a single atomic write is done there;
+    // the presentation timer folds it into the composer under _frameSync, so
+    // sending a mouse event never has to wait for a frame-copy lock.
+    private long _lastInteractionTicks;
+    private DateTime _lastFrameLogAt;
+    private static readonly TimeSpan FrameLogInterval = TimeSpan.FromSeconds(2);
+    private int _frameWidth;
+    private int _frameHeight;
+    private int _frameStride;
+    private bool _frameDirty;
+    private bool _loggedFirstFrame;
+    private Timer? _presentTimer;
     private IntPtr _handle;
+    private uint _nativeApiVersion;
+    private uint _nativeCapabilities;
     private SshClient? _sshTunnelClient;
     private ForwardedPortLocal? _sshTunnelPort;
     private LoopbackProxyRelay? _proxyRelay;
+    private string _profileCacheHost = string.Empty;
+    private int _profileCachePort;
 
     static RdpBridgeClient()
     {
@@ -77,9 +153,17 @@ public sealed class RdpBridgeClient : IDisposable
         _clipboardTextCallback = OnClipboardText;
     }
 
-    public void Connect(SessionInfo session, string? password, int? desktopWidth = null, int? desktopHeight = null)
+    public void Connect(
+        SessionInfo session,
+        string? password,
+        int? desktopWidth = null,
+        int? desktopHeight = null,
+        int dpiScalePercent = 0)
     {
         Disconnect();
+
+        _frameMode = RdpFramePresentationModes.Resolve(session.RdpFrameStrategy);
+        DebugLog($"frame presentation mode={_frameMode}");
 
         var host = session.Host ?? string.Empty;
         var port = session.Port > 0 ? session.Port : 3389;
@@ -97,6 +181,11 @@ public sealed class RdpBridgeClient : IDisposable
             if (!Directory.Exists(drivePath))
                 throw new DirectoryNotFoundException($"The RDP redirected folder does not exist: {drivePath}");
         }
+
+        // The security-profile cache is keyed by the real target, not by the
+        // loopback endpoint that a tunnel or proxy relay substitutes below.
+        _profileCacheHost = host;
+        _profileCachePort = port;
 
         var targetDescription = $"{host}:{port}";
         var transportDescription = "direct";
@@ -135,7 +224,84 @@ public sealed class RdpBridgeClient : IDisposable
 
         var nativeApiVersion = GetNativeApiVersion();
         var nativeCapabilities = GetNativeCapabilities();
-        DebugLog($"native bridge apiVersion={nativeApiVersion} capabilities=0x{nativeCapabilities:X8}");
+        _nativeApiVersion = nativeApiVersion;
+        _nativeCapabilities = nativeCapabilities;
+        DebugLog($"native bridge apiVersion={nativeApiVersion} capabilities=0x{nativeCapabilities:X8} dpiScale={dpiScalePercent}");
+        if ((nativeCapabilities & AutoReconnectCapability) == 0)
+        {
+            // Older bridges reconnect by tearing the session down; the UI still
+            // handles it, it just cannot resume the same remote session.
+            DebugLog("native bridge does not expose RDP auto reconnect (ARC).");
+        }
+
+        _frameMarkerSupported = nativeApiVersion >= FrameMarkerApiVersion &&
+                                (nativeCapabilities & FrameMarkerCapability) != 0;
+        if (nativeApiVersion >= GfxApiVersion && (nativeCapabilities & GfxCapability) != 0)
+        {
+            var gfxRequested = GraphicsPipelineForcedOn || session.RdpGraphicsPipelineEnabled;
+            var gfxResult = NativeMethods.cxrdp_set_graphics_pipeline(_handle, gfxRequested ? 1 : 0);
+            DebugLog($"graphics pipeline requested={gfxRequested} session={session.RdpGraphicsPipelineEnabled} env={GraphicsPipelineForcedOn} result={gfxResult}");
+        }
+        else
+        {
+            DebugLog("native bridge lacks EGFX support; using legacy bitmap updates.");
+        }
+        _dirtyRectSupported = nativeApiVersion >= DirtyRectApiVersion &&
+                              (nativeCapabilities & DirtyRectCapability) != 0 &&
+                              FrameCoverageEnabled;
+        DebugLog($"dirty rect frame boundary={_dirtyRectSupported}");
+        // Surface frame markers are a protocol-level frame boundary, strictly
+        // better than any host-side timing heuristic. Probe for them on every
+        // strategy except Legacy; if the server does not send them the bridge
+        // reports back and we stay on pure debounce. The RDP strategy only
+        // controls what happens when markers really arrive.
+        var useFrameMarkers = _frameMode != RdpFramePresentationMode.Legacy;
+        if (_frameMarkerSupported)
+        {
+            var markerResult = NativeMethods.cxrdp_set_frame_marker_enabled(_handle, useFrameMarkers ? 1 : 0);
+            DebugLog($"frame markers enabled={useFrameMarkers} result={markerResult}");
+        }
+        else if (useFrameMarkers)
+        {
+            // Old bridge: keep the host-side time coalescing as the fallback.
+            DebugLog("native bridge lacks frame markers; using time coalescing only.");
+        }
+
+        if (nativeApiVersion >= FastConnectApiVersion &&
+            (nativeCapabilities & FastConnectCapability) != 0)
+        {
+            var cachedProfile = RdpSecurityProfileCache.Get(_profileCacheHost, _profileCachePort);
+            if (!string.IsNullOrEmpty(cachedProfile))
+            {
+                var profileResult = NativeMethods.cxrdp_set_security_profile(_handle, cachedProfile);
+                DebugLog($"security profile hint={cachedProfile} result={profileResult}");
+            }
+
+            // Environment override CXSHELL_RDP_CLIPBOARD_CHANNEL=0 still wins
+            // inside the bridge, so it remains a global troubleshooting switch.
+            var clipboardResult = NativeMethods.cxrdp_set_clipboard_channel(
+                _handle,
+                session.RdpClipboardEnabled ? 1 : 0);
+            DebugLog($"clipboard channel requested={session.RdpClipboardEnabled} result={clipboardResult}");
+        }
+        else
+        {
+            DebugLog("native bridge does not expose fast connect options; using auto negotiation.");
+        }
+
+        if (nativeApiVersion >= PerformanceFlagsApiVersion &&
+            (nativeCapabilities & PerformanceFlagsCapability) != 0)
+        {
+            var wallpaperResult = NativeMethods.cxrdp_set_disable_wallpaper(
+                _handle,
+                session.RdpDisableWallpaper ? 1 : 0);
+            DebugLog($"disable wallpaper requested={session.RdpDisableWallpaper} result={wallpaperResult}");
+        }
+        else
+        {
+            DebugLog("native bridge does not expose RDP performance flags; wallpaper setting ignored.");
+        }
+
         if (session.RdpRedirectDrives)
         {
             if ((nativeCapabilities & DriveRedirectionCapability) == 0)
@@ -218,6 +384,23 @@ public sealed class RdpBridgeClient : IDisposable
             }
         }
 
+        if (dpiScalePercent > 0 &&
+            nativeApiVersion >= RuntimeResizeApiVersion &&
+            (nativeCapabilities & RuntimeResizeCapability) != 0)
+        {
+            var scaleResult = NativeMethods.cxrdp_set_display_scale(_handle, dpiScalePercent);
+            if (scaleResult != 0)
+                throw new InvalidOperationException($"RDP display scale configuration failed: {scaleResult}");
+        }
+        else if (dpiScalePercent > 0)
+        {
+            DebugLog("native bridge cannot advertise DPI; keeping the remote session's scaling.");
+        }
+
+        // Prepare the frame pipeline before the worker starts so the very first
+        // paint batches are captured rather than cleared by a late reset.
+        StartFramePresentation();
+
         var result = NativeMethods.cxrdp_connect(
             _handle,
             host,
@@ -236,7 +419,155 @@ public sealed class RdpBridgeClient : IDisposable
             throw new InvalidOperationException(string.IsNullOrWhiteSpace(error) ? $"RDP bridge connect failed: {result}" : error);
         }
 
-        DebugLog("connect worker started");
+        DebugLog($"connect worker started frameCoalescing={FrameCoalescingEnabled}");
+    }
+
+    private void StartFramePresentation()
+    {
+        lock (_frameSync)
+        {
+            _frameComposer.Reset();
+            _frameDirty = false;
+            _loggedFirstFrame = false;
+            _gfxFrameMode = false;
+            Interlocked.Exchange(ref _lastInteractionTicks, 0);
+            _lastFrameLogAt = default;
+
+            // Auto starts in time-coalescing mode and switches to frame
+            // boundaries as soon as the first server marker arrives.
+            switch (_frameMode)
+            {
+                case RdpFramePresentationMode.Coalesce:
+                    _frameComposer.Configure(FrameCoalescingEnabled, false);
+                    break;
+                case RdpFramePresentationMode.FrameMarker:
+                    // Start in coalescing mode too: switching straight to
+                    // boundary mode would publish every half-painted batch if
+                    // this server turns out not to send markers.
+                    _frameComposer.Configure(FrameCoalescingEnabled, false);
+                    break;
+                case RdpFramePresentationMode.Legacy:
+                    _frameComposer.Configure(false, false);
+                    break;
+                default:
+                    _frameComposer.Configure(FrameCoalescingEnabled, false);
+                    break;
+            }
+        }
+
+        _presentTimer?.Dispose();
+        // The timer runs off the UI thread. Frames arriving from the native
+        // callback are copied into a reusable buffer; the timer decides when a
+        // complete-enough snapshot is worth rendering.
+        _presentTimer = new Timer(
+            TryPresentFrame,
+            null,
+            TimeSpan.Zero,
+            TimeSpan.FromMilliseconds(16));
+    }
+
+    private void StopFramePresentation()
+    {
+        _presentTimer?.Dispose();
+        _presentTimer = null;
+        lock (_frameSync)
+        {
+            _frameDirty = false;
+            _frameComposer.Reset();
+        }
+    }
+
+    private void TryPresentFrame(object? state)
+    {
+        byte[] snapshot;
+        int width;
+        int height;
+        int stride;
+        int length;
+        int merged;
+        bool first;
+        double coverage;
+        bool hasDirtyRects;
+        bool wave;
+        long collectMs;
+        string dirtySource;
+        bool interactive;
+        bool settling;
+        bool logFrame;
+
+        lock (_frameSync)
+        {
+            var now = DateTime.UtcNow;
+            // Fold the lock-free input timestamp into the composer. The timer
+            // runs every 16 ms, so this adds at most one tick of latency.
+            var interactionTicks = Interlocked.Read(ref _lastInteractionTicks);
+            if (interactionTicks != 0)
+                _frameComposer.NoteInteraction(new DateTime(interactionTicks, DateTimeKind.Utc));
+
+            if (!_frameDirty || !_frameComposer.ShouldPresent(now))
+                return;
+
+            length = checked(_frameStride * _frameHeight);
+            if (length <= 0 || _frameBuffer.Length < length)
+                return;
+
+            // Snapshot the decision metrics before MarkPresented clears them.
+            coverage = _frameComposer.Coverage;
+            hasDirtyRects = _frameComposer.HasDirtyRect;
+            wave = _frameComposer.InRepaintWave;
+            collectMs = (long)_frameComposer.FirstFrameAge(now).TotalMilliseconds;
+            dirtySource = _dirtyRectSource;
+            snapshot = ArrayPool<byte>.Shared.Rent(length);
+            Buffer.BlockCopy(_frameBuffer, 0, snapshot, 0, length);
+            width = _frameWidth;
+            height = _frameHeight;
+            stride = _frameStride;
+            _frameDirty = false;
+            interactive = _frameComposer.IsInteractive(now);
+            settling = _frameComposer.InSettlingWindow(now);
+            merged = _frameComposer.MarkPresented(now);
+            first = !_loggedFirstFrame;
+            _loggedFirstFrame = true;
+            // Interactive mode publishes up to ~60 times a second; writing a
+            // log line per frame would turn file I/O into input latency.
+            logFrame = first || now - _lastFrameLogAt >= FrameLogInterval;
+            if (logFrame)
+                _lastFrameLogAt = now;
+        }
+
+        var handlers = FramebufferUpdated;
+        if (handlers is null)
+        {
+            ArrayPool<byte>.Shared.Return(snapshot);
+            return;
+        }
+
+        // Throttled sampling: one line every couple of seconds is enough to
+        // diagnose a "top to bottom" or a laggy-pointer report, and it keeps
+        // the interactive presentation path free of synchronous file I/O.
+        if (first)
+            DebugLog($"frame composer first frame presented mergedBatches={merged} coverage={coverage:0.00} wave={wave} dirtyRects={hasDirtyRects} dirtySource={dirtySource} collectMs={collectMs} interactive={interactive} size={width}x{height}");
+        else if (logFrame)
+            DebugLog($"frame composer presented mergedBatches={merged} coverage={coverage:0.00} wave={wave} interactive={interactive} settling={settling}");
+
+        var args = new RdpFramebufferEventArgs(
+            width,
+            height,
+            stride,
+            snapshot,
+            length,
+            () => ArrayPool<byte>.Shared.Return(snapshot));
+
+        try
+        {
+            handlers(this, args);
+        }
+        catch
+        {
+            // A subscriber that throws must not leak the rented buffer.
+            args.ReleasePixels();
+            throw;
+        }
     }
 
     private int StartSshTunnel(SessionInfo session)
@@ -256,6 +587,10 @@ public sealed class RdpBridgeClient : IDisposable
         var connectionInfo = new ConnectionInfo(sshHost, sshPort, sshUser, CreateRdpSshAuthMethods(session, sshUser));
         connectionInfo.Timeout = TimeSpan.FromSeconds(12);
         _sshTunnelClient = new SshClient(connectionInfo);
+        // An idle SSH channel is dropped by NAT devices and by sshd keepalive
+        // limits, which silently kills the tunneled RDP transport. Probe it so
+        // the tunnel lives as long as the desktop session does.
+        _sshTunnelClient.KeepAliveInterval = TimeSpan.FromSeconds(30);
         SshHostKeyTrustService.Shared.Attach(
             _sshTunnelClient,
             sshHost,
@@ -320,21 +655,38 @@ public sealed class RdpBridgeClient : IDisposable
 
     public void SendPointer(ushort flags, ushort x, ushort y)
     {
-        if (_handle != IntPtr.Zero)
-            NativeMethods.cxrdp_send_pointer(_handle, flags, x, y);
+        if (_handle == IntPtr.Zero)
+            return;
+
+        NoteUserInteraction();
+        NativeMethods.cxrdp_send_pointer(_handle, flags, x, y);
     }
 
     public void SendKey(uint key, bool down)
     {
-        if (_handle != IntPtr.Zero)
-            NativeMethods.cxrdp_send_key(_handle, key, down ? 1 : 0);
+        if (_handle == IntPtr.Zero)
+            return;
+
+        NoteUserInteraction();
+        NativeMethods.cxrdp_send_key(_handle, key, down ? 1 : 0);
     }
 
     public void SendUnicodeKey(char key, bool down)
     {
-        if (_handle != IntPtr.Zero)
-            NativeMethods.cxrdp_send_unicode_key(_handle, key, down ? 1 : 0);
+        if (_handle == IntPtr.Zero)
+            return;
+
+        NoteUserInteraction();
+        NativeMethods.cxrdp_send_unicode_key(_handle, key, down ? 1 : 0);
     }
+
+    /// <summary>
+    /// Marks the session as interactive so the next presentation tick publishes
+    /// the pending framebuffer immediately instead of waiting out a repaint
+    /// wave. Kept lock-free: pointer events must never block on frame copying.
+    /// </summary>
+    private void NoteUserInteraction() =>
+        Interlocked.Exchange(ref _lastInteractionTicks, DateTime.UtcNow.Ticks);
 
     public void SetClipboardText(string text)
     {
@@ -343,8 +695,29 @@ public sealed class RdpBridgeClient : IDisposable
             NativeMethods.cxrdp_set_clipboard_text(_handle, text ?? string.Empty);
     }
 
+    /// <summary>
+    /// Requests a resolution/DPI change on a live session without reconnecting.
+    /// Returns false when the native bridge cannot do it (then callers should
+    /// fall back to a full reconnect).
+    /// </summary>
+    public bool UpdateDisplay(int width, int height, int dpiScalePercent)
+    {
+        if (_handle == IntPtr.Zero ||
+            _nativeApiVersion < RuntimeResizeApiVersion ||
+            (_nativeCapabilities & RuntimeResizeCapability) == 0)
+        {
+            return false;
+        }
+
+        var result = NativeMethods.cxrdp_update_display(_handle, width, height, dpiScalePercent);
+        DebugLog($"display update requested size={width}x{height} dpi={dpiScalePercent} result={result}");
+        return result == 0;
+    }
+
     public void Disconnect()
     {
+        StopFramePresentation();
+
         if (_handle == IntPtr.Zero)
         {
             StopProxyRelay();
@@ -599,20 +972,197 @@ public sealed class RdpBridgeClient : IDisposable
         if (width <= 0 || height <= 0 || stride <= 0 || data == IntPtr.Zero)
             return;
 
+        // The GDI dirty rectangle is only valid for this callback, so read it
+        // from the bridge before copying the pixels into the reusable buffer.
+        RdpFrameDirtyRect? dirty = null;
+        var dirtySource = "none";
+        if (_dirtyRectSupported && _handle != IntPtr.Zero)
+        {
+            try
+            {
+                if (NativeMethods.cxrdp_get_frame_dirty_rect(
+                        _handle, out var dx, out var dy, out var dw, out var dh) == 0)
+                {
+                    dirty = new RdpFrameDirtyRect(dx, dy, dw, dh);
+                    dirtySource = "gdi";
+                }
+            }
+            catch (DllNotFoundException) { }
+            catch (EntryPointNotFoundException) { }
+        }
+
         var length = checked(stride * height);
-        var pixels = new byte[length];
-        Marshal.Copy(data, pixels, 0, length);
-        FramebufferUpdated?.Invoke(this, new RdpFramebufferEventArgs(width, height, stride, pixels));
+        lock (_frameSync)
+        {
+            var now = DateTime.UtcNow;
+            var classifyWave = _frameComposer.NeedsDirtyRect(now);
+
+            // The native pointer is only valid for the duration of this
+            // callback, so copy into a reusable managed buffer immediately.
+            // No allocation per update: the buffer is rebuilt only on resize.
+            var sizeChanged = width != _previousFrameWidth ||
+                              height != _previousFrameHeight ||
+                              stride != _previousFrameStride;
+            if (_frameBuffer.Length < length)
+                _frameBuffer = new byte[length];
+            if (_previousFrameBuffer.Length < length || sizeChanged)
+            {
+                _previousFrameBuffer = new byte[length];
+                _previousFrameWidth = width;
+                _previousFrameHeight = height;
+                _previousFrameStride = stride;
+            }
+
+            Marshal.Copy(data, _frameBuffer, 0, length);
+
+            // Most Windows servers leave FreeRDP's GDI invalid region empty on
+            // the legacy bitmap-update path. Diffing against the previous batch
+            // gives a server-independent dirty region: the first batch only
+            // covers the strip that was actually painted, so the composer can
+            // hold the frame until the whole desktop has arrived.
+            // Wave classification is only needed for the first frame and the
+            // settling window. In interactive/settled mode every snapshot is
+            // published as-is, so skip the sampled full-surface diff (thousands
+            // of cache-missing reads per mouse-move batch).
+            if (dirty is null && classifyWave && FrameCoverageEnabled && FrameCoalescingEnabled)
+            {
+                var diff = ComputeDirtyRectFromDiff(width, height, stride);
+                if (diff.HasValue)
+                {
+                    dirty = diff;
+                    dirtySource = "diff";
+                }
+            }
+
+            // Keep the diff baseline fresh even when classification is idle,
+            // so switching back to wave mode never sees a stale full-screen
+            // difference. This is a plain sequential copy and stays cheap.
+            Buffer.BlockCopy(_frameBuffer, 0, _previousFrameBuffer, 0, length);
+            _dirtyRectSource = dirtySource;
+            _frameWidth = width;
+            _frameHeight = height;
+            _frameStride = stride;
+            _frameDirty = true;
+            _frameComposer.NoteFrame(now, dirty, width, height);
+        }
+    }
+
+    /// <summary>
+    /// Samples a 16x9 grid and returns the bounding box of cells that changed
+    /// since the previous native batch. Cheap enough to run on every update:
+    /// only a few hundred pixels are compared, not the whole framebuffer.
+    /// </summary>
+    private RdpFrameDirtyRect? ComputeDirtyRectFromDiff(int width, int height, int stride)
+    {
+        const int columns = 16;
+        const int rows = 9;
+        const int samples = 8;
+        var minColumn = columns;
+        var maxColumn = -1;
+        var minRow = rows;
+        var maxRow = -1;
+
+        for (var row = 0; row < rows; row++)
+        {
+            var y0 = row * height / rows;
+            var y1 = Math.Max(y0 + 1, (row + 1) * height / rows);
+            for (var column = 0; column < columns; column++)
+            {
+                var x0 = column * width / columns;
+                var x1 = Math.Max(x0 + 1, (column + 1) * width / columns);
+                var changed = false;
+                for (var sy = 0; sy < samples && !changed; sy++)
+                {
+                    var y = y0 + (y1 - y0) * sy / samples;
+                    var rowOffset = y * stride;
+                    for (var sx = 0; sx < samples; sx++)
+                    {
+                        var x = x0 + (x1 - x0) * sx / samples;
+                        var offset = rowOffset + x * 4;
+                        if (offset + 3 >= _frameBuffer.Length)
+                            break;
+                        if (_frameBuffer[offset] != _previousFrameBuffer[offset] ||
+                            _frameBuffer[offset + 1] != _previousFrameBuffer[offset + 1] ||
+                            _frameBuffer[offset + 2] != _previousFrameBuffer[offset + 2] ||
+                            _frameBuffer[offset + 3] != _previousFrameBuffer[offset + 3])
+                        {
+                            changed = true;
+                            break;
+                        }
+                    }
+                }
+
+                if (!changed)
+                    continue;
+                minColumn = Math.Min(minColumn, column);
+                maxColumn = Math.Max(maxColumn, column);
+                minRow = Math.Min(minRow, row);
+                maxRow = Math.Max(maxRow, row);
+            }
+        }
+
+        if (maxColumn < 0)
+            return null;
+
+        var left = minColumn * width / columns;
+        var top = minRow * height / rows;
+        var right = (maxColumn + 1) * width / columns;
+        var bottom = (maxRow + 1) * height / rows;
+        return new RdpFrameDirtyRect(left, top, Math.Max(1, right - left), Math.Max(1, bottom - top));
     }
 
     private void OnStatus(IntPtr userData, IntPtr message)
     {
         var text = message == IntPtr.Zero ? string.Empty : Marshal.PtrToStringUTF8(message) ?? string.Empty;
-        if (!string.IsNullOrWhiteSpace(text))
+        if (string.IsNullOrWhiteSpace(text))
+            return;
+
+        // Internal one-shot signals from the frame-marker path. They are not
+        // user-facing status lines, so they never reach the UI overlay.
+        if (text.StartsWith("RDP GFX frame mode active", StringComparison.OrdinalIgnoreCase))
         {
-            DebugLogStatus(text);
-            StatusChanged?.Invoke(text);
+            lock (_frameSync)
+            {
+                _gfxFrameMode = true;
+                // EGFX groups surface commands between START_FRAME/END_FRAME;
+                // FreeRDP's GDI backend calls EndPaint exactly once at END_FRAME,
+                // after copying the whole frame into the primary buffer. No
+                // coalescing or hold is needed - this is MSTSC's frame model.
+                _frameComposer.Configure(false, true);
+            }
+            DebugLog("GFX frame mode active; publishing one complete frame per EndPaint");
+            return;
         }
+        if (text.StartsWith("RDP frame markers active", StringComparison.OrdinalIgnoreCase))
+        {
+            lock (_frameSync)
+            {
+                if (_frameMode != RdpFramePresentationMode.Legacy)
+                    _frameComposer.SetBoundaryMode(true);
+            }
+            DebugLog("frame markers active; switched to frame-boundary presentation");
+            return;
+        }
+        if (text.StartsWith("RDP frame markers unavailable", StringComparison.OrdinalIgnoreCase))
+        {
+            if (_gfxFrameMode)
+            {
+                DebugLog("ignoring frame-marker fallback while GFX frames are active");
+                return;
+            }
+            lock (_frameSync)
+            {
+                if (_frameMode != RdpFramePresentationMode.Legacy)
+                    _frameComposer.Configure(FrameCoalescingEnabled, false);
+            }
+            DebugLog("frame markers unavailable; staying on coalescing");
+            return;
+        }
+
+        DebugLogStatus(text);
+        if (RdpSecurityProfileCache.TryParseProfile(text, out var profile))
+            RdpSecurityProfileCache.Store(_profileCacheHost, _profileCachePort, profile);
+        StatusChanged?.Invoke(text);
     }
 
     private void OnDisconnected(IntPtr userData)
@@ -684,6 +1234,16 @@ public sealed class RdpBridgeClient : IDisposable
                !string.Equals(value, "false", StringComparison.OrdinalIgnoreCase) &&
                !string.Equals(value, "off", StringComparison.OrdinalIgnoreCase) &&
                !string.Equals(value, "no", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool IsEnvironmentFlagDisabled(string name)
+    {
+        var value = Environment.GetEnvironmentVariable(name);
+        return !string.IsNullOrWhiteSpace(value) &&
+               (string.Equals(value, "0", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(value, "false", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(value, "off", StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(value, "no", StringComparison.OrdinalIgnoreCase));
     }
 
     private static string SanitizeLogValue(string? value)
@@ -816,6 +1376,41 @@ public sealed class RdpBridgeClient : IDisposable
         public static extern int cxrdp_set_keyboard_options(
             IntPtr handle,
             int applyKeyCombinationsRemotely);
+
+        [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+        public static extern int cxrdp_set_display_scale(IntPtr handle, int scalePercent);
+
+        [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+        public static extern int cxrdp_update_display(
+            IntPtr handle,
+            int width,
+            int height,
+            int scalePercent);
+
+        [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+        public static extern int cxrdp_set_security_profile(
+            IntPtr handle,
+            [MarshalAs(UnmanagedType.LPUTF8Str)] string profileName);
+
+        [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+        public static extern int cxrdp_set_clipboard_channel(IntPtr handle, int enabled);
+
+        [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+        public static extern int cxrdp_set_frame_marker_enabled(IntPtr handle, int enabled);
+
+        [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+        public static extern int cxrdp_set_disable_wallpaper(IntPtr handle, int enabled);
+
+        [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+        public static extern int cxrdp_get_frame_dirty_rect(
+            IntPtr handle,
+            out int x,
+            out int y,
+            out int width,
+            out int height);
+
+        [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+        public static extern int cxrdp_set_graphics_pipeline(IntPtr handle, int enabled);
 
         [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
         public static extern IntPtr cxrdp_get_last_error(IntPtr handle);

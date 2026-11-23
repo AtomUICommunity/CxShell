@@ -18,7 +18,84 @@ public sealed class SessionInfoCompatibilityTests
         Assert.False(session.TerminalAdvancedAllowTitleChange);
         Assert.False(session.TerminalAdvancedAllowOsc52Clipboard);
         Assert.False(session.RdpMicrophoneEnabled);
+        Assert.Equal("FollowLocal", session.RdpDpiPolicy);
+        Assert.True(session.RdpClipboardEnabled);
+        Assert.Equal("Auto", session.RdpFrameStrategy);
+        Assert.True(session.RdpDisableWallpaper);
+        Assert.True(session.RdpGraphicsPipelineEnabled);
         Assert.Equal(SessionTabIconCatalog.Default, session.AppearanceTabIcon);
+    }
+
+    [Fact]
+    public void RdpFrameStrategy_RoundTripsAndDefaultsForLegacySessions()
+    {
+        var legacy = JsonSerializer.Deserialize<SessionInfo>("""{"Host":"example"}""");
+        Assert.NotNull(legacy);
+        Assert.Equal("Auto", legacy.RdpFrameStrategy);
+        Assert.Equal(RdpFramePresentationMode.Auto, RdpFramePresentationModes.Resolve(legacy.RdpFrameStrategy));
+
+        var json = JsonSerializer.Serialize(new SessionInfo { RdpFrameStrategy = "FrameMarker" });
+        var restored = JsonSerializer.Deserialize<SessionInfo>(json);
+        Assert.NotNull(restored);
+        Assert.Equal(RdpFramePresentationMode.FrameMarker, RdpFramePresentationModes.Resolve(restored.RdpFrameStrategy));
+        Assert.True(RdpFramePresentationModes.UsesFrameMarkers(RdpFramePresentationModes.Resolve(restored.RdpFrameStrategy)));
+    }
+
+    [Fact]
+    public void RdpClipboardEnabled_RoundTripsAndStaysOnForLegacySessions()
+    {
+        var legacy = JsonSerializer.Deserialize<SessionInfo>("""{"Host":"example"}""");
+        Assert.NotNull(legacy);
+        Assert.True(legacy.RdpClipboardEnabled);
+
+        var json = JsonSerializer.Serialize(new SessionInfo { RdpClipboardEnabled = false });
+        var restored = JsonSerializer.Deserialize<SessionInfo>(json);
+        Assert.NotNull(restored);
+        Assert.False(restored.RdpClipboardEnabled);
+    }
+
+    [Fact]
+    public void RdpDisableWallpaper_DefaultsToEnabledAndRoundTrips()
+    {
+        // Older session files have no wallpaper setting; the performance flag
+        // must stay on for them instead of silently restoring the wallpaper.
+        var legacy = JsonSerializer.Deserialize<SessionInfo>("""{"Host":"example"}""");
+        Assert.NotNull(legacy);
+        Assert.True(legacy.RdpDisableWallpaper);
+
+        var json = JsonSerializer.Serialize(new SessionInfo { RdpDisableWallpaper = false });
+        var restored = JsonSerializer.Deserialize<SessionInfo>(json);
+        Assert.NotNull(restored);
+        Assert.False(restored.RdpDisableWallpaper);
+    }
+
+    [Fact]
+    public void RdpGraphicsPipelineEnabled_IsOnByDefaultAndRoundTrips()
+    {
+        // EGFX is the default now that the graphics DVC is registered by its
+        // addin name. Session files that never stored the key adopt it, and a
+        // server that rejects the pipeline falls back without dropping the tab.
+        var legacy = JsonSerializer.Deserialize<SessionInfo>("""{"Host":"example"}""");
+        Assert.NotNull(legacy);
+        Assert.True(legacy.RdpGraphicsPipelineEnabled);
+
+        var json = JsonSerializer.Serialize(new SessionInfo { RdpGraphicsPipelineEnabled = false });
+        var restored = JsonSerializer.Deserialize<SessionInfo>(json);
+        Assert.NotNull(restored);
+        Assert.False(restored.RdpGraphicsPipelineEnabled);
+    }
+
+    [Fact]
+    public void RdpDpiPolicy_RoundTripsAndDefaultsForLegacySessions()
+    {
+        var legacy = JsonSerializer.Deserialize<SessionInfo>("""{"Host":"example"}""");
+        Assert.NotNull(legacy);
+        Assert.Equal("FollowLocal", legacy.RdpDpiPolicy);
+
+        var json = JsonSerializer.Serialize(new SessionInfo { RdpDpiPolicy = "KeepRemote" });
+        var restored = JsonSerializer.Deserialize<SessionInfo>(json);
+        Assert.NotNull(restored);
+        Assert.Equal("KeepRemote", restored.RdpDpiPolicy);
     }
 
     [Fact]

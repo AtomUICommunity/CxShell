@@ -25,5 +25,63 @@
                    PointerReleased="OnFramebufferPointerReleased"
                    PointerWheelChanged="OnFramebufferPointerWheelChanged"/>
         </Border>
+        <!-- Opaque loading layer: legacy RDP paints the first desktop over
+             several seconds, top to bottom. Showing those half-finished
+             buffers is exactly the visible "tile by tile" artefact, so the
+             viewport stays covered until the composer releases one complete
+             frame. -->
+        <Border IsVisible="{Binding IsDesktopLoading}"
+                Background="#FF111111"
+                Cursor="Arrow">
+            <StackPanel Spacing="12"
+                        HorizontalAlignment="Center"
+                        VerticalAlignment="Center"
+                        MaxWidth="420">
+                <TextBlock Text="{Binding DesktopLoadingText}"
+                           FontSize="15"
+                           TextAlignment="Center"
+                           TextWrapping="Wrap"
+                           Foreground="{atom:SharedTokenResource ColorText}"/>
+                <ProgressBar IsIndeterminate="True"
+                             Height="3"
+                             MinWidth="240"
+                             Margin="0,8,0,0"/>
+            </StackPanel>
+        </Border>
+        <Border IsVisible="{Binding IsConnectionOverlayVisible}"
+                Background="#66000000"
+                Cursor="Arrow">
+            <Border Background="{atom:SharedTokenResource ColorBgContainer}"
+                    BorderBrush="{atom:SharedTokenResource ColorBorderSecondary}"
+                    BorderThickness="1"
+                    CornerRadius="10"
+                    Padding="28,22"
+                    MaxWidth="380"
+                    HorizontalAlignment="Center"
+                    VerticalAlignment="Center"
+                    BoxShadow="0 8 24 0 #40000000">
+                <StackPanel Spacing="14" HorizontalAlignment="Center">
+                    <TextBlock Text="{Binding ReconnectStatusText}"
+                               FontSize="14"
+                               TextAlignment="Center"
+                               TextWrapping="Wrap"
+                               Foreground="{atom:SharedTokenResource ColorText}"/>
+                    <ProgressBar IsIndeterminate="True"
+                                 Height="3"
+                                 MinWidth="200"
+                                 IsVisible="{Binding IsReconnecting}"/>
+                    <atom:Button ButtonType="Primary"
+                                 Content="{Binding ReconnectLabel}"
+                                 HorizontalAlignment="Center"
+                                 Command="{Binding ReconnectCommand}"
+                                 IsVisible="{Binding IsConnectionLost}"/>
+                    <atom:Button ButtonType="Default"
+                                 Content="{Binding CancelRetryLabel}"
+                                 HorizontalAlignment="Center"
+                                 Command="{Binding CancelReconnectCommand}"
+                                 IsVisible="{Binding IsCancelRetryVisible}"/>
+                </StackPanel>
+            </Border>
+        </Border>
     </Grid>
 </UserControl>

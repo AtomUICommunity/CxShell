@@ -27,6 +27,8 @@ public partial class RdpView : UserControl
     private string? _lastSyncedClipboardText;
     private WindowsRdpShortcutHook? _systemShortcutHook;
     private double _pendingWheelY;
+    private double _lastRenderScaling = 1;
+    private DispatcherTimer? _scalingTimer;
 
     public RdpView()
     {
@@ -36,6 +38,7 @@ public partial class RdpView : UserControl
         AttachedToVisualTree += (_, _) =>
         {
             _isAttached = true;
+            _lastRenderScaling = GetRenderScaling();
             Focus();
             if (DataContext is RdpViewModel vm)
                 ScheduleStart(vm);
@@ -45,6 +48,7 @@ public partial class RdpView : UserControl
         {
             _isAttached = false;
             _hasKeyboardFocus = false;
+            StopScalingTimer();
             DisposeSystemShortcutHook();
             ReleaseTrackedModifiers();
             _pendingWheelY = 0;
@@ -73,6 +77,8 @@ public partial class RdpView : UserControl
 
         _boundVm = vm;
         vm.PropertyChanged += OnViewModelPropertyChanged;
+        if (vm.IsConnected)
+            StartScalingTimer();
         ApplyScaleMode(vm);
         UpdateSystemShortcutHook();
         if (_isAttached)
@@ -97,6 +103,43 @@ public partial class RdpView : UserControl
             _ = SyncLocalClipboardToRemoteAsync();
         if (_boundVm != null && args.PropertyName == nameof(RdpViewModel.RemoteClipboardText))
             _ = ApplyRemoteClipboardTextAsync(_boundVm.RemoteClipboardText);
+
+        if (args.PropertyName == nameof(RdpViewModel.IsConnected))
+        {
+            if (_boundVm?.IsConnected == true)
+                StartScalingTimer();
+            else
+                StopScalingTimer();
+        }
+    }
+
+    private void StartScalingTimer()
+    {
+        if (_scalingTimer != null || !_isAttached)
+            return;
+
+        _lastRenderScaling = GetRenderScaling();
+        _scalingTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(2) };
+        _scalingTimer.Tick += (_, _) =>
+        {
+            var scaling = GetRenderScaling();
+            if (Math.Abs(scaling - _lastRenderScaling) < 0.001)
+                return;
+
+            _lastRenderScaling = scaling;
+            if (DataContext is RdpViewModel vm)
+            {
+                vm.ConfigureInitialDisplay(RdpViewport.Bounds.Size, GetCurrentMonitorPixelSize(), scaling);
+                vm.UpdateDpiScaling(scaling);
+            }
+        };
+        _scalingTimer.Start();
+    }
+
+    private void StopScalingTimer()
+    {
+        _scalingTimer?.Stop();
+        _scalingTimer = null;
     }
 
     private void UnbindViewModel()
@@ -106,6 +149,7 @@ public partial class RdpView : UserControl
 
         _boundVm.PropertyChanged -= OnViewModelPropertyChanged;
         _boundVm = null;
+        StopScalingTimer();
         DisposeSystemShortcutHook();
     }
 
@@ -166,6 +210,7 @@ public partial class RdpView : UserControl
             if (_isAttached)
                 vm.Start();
             vm.RequestViewportResize(e.NewSize, GetRenderScaling());
+            _lastRenderScaling = GetRenderScaling();
         }
     }
 

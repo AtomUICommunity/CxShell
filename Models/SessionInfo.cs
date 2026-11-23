@@ -350,6 +350,8 @@ public class ApplicationSettings
     public bool ShowSftpPanel { get; set; }
     public bool ShowMonitorPanel { get; set; }
     public bool ShowAgentPanel { get; set; }
+    /// <summary>Keeps the full screen connection bar pinned instead of auto hiding it.</summary>
+    public bool FullScreenConnectionBarPinned { get; set; }
     public bool EnableCommandSuggestions { get; set; } = true;
     public bool AllowExternalLaunch { get; set; } = true;
     public bool ConfirmExternalLaunch { get; set; } = true;
@@ -591,8 +593,22 @@ public class SessionInfo
     public int RdpDesktopHeight { get; set; } = 1080;
     public string RdpResizeMode { get; set; } = "SmartReconnect";
     public string RdpScreenScale { get; set; } = "Auto";
+    public string RdpDpiPolicy { get; set; } = "FollowLocal";
+    /// <summary>Frame presentation strategy: Auto, Coalesce, FrameMarker or Legacy.</summary>
+    public string RdpFrameStrategy { get; set; } = "Auto";
     public string RdpColorQuality { get; set; } = "32";
     public bool RdpApplyKeyCombinations { get; set; } = true;
+    public bool RdpClipboardEnabled { get; set; } = true;
+    /// <summary>Send PERF_DISABLE_WALLPAPER so the server skips the desktop wallpaper.</summary>
+    public bool RdpDisableWallpaper { get; set; } = true;
+    /// <summary>
+    /// Negotiate MS-RDPEGFX so the server sends complete logical frames. On by
+    /// default now that the graphics DVC is registered by its addin name
+    /// ("rdpgfx"): the first desktop frame arrives complete (~5 ms) instead of
+    /// being coalesced from legacy bitmap strips (~700 ms). Servers that reject
+    /// the pipeline still connect - the bridge retries once without EGFX.
+    /// </summary>
+    public bool RdpGraphicsPipelineEnabled { get; set; } = true;
     public bool RdpRedirectDrives { get; set; }
     public string RdpDriveName { get; set; } = "CxShell";
     public string RdpDrivePath { get; set; } = string.Empty;

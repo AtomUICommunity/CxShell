@@ -1,5 +1,6 @@
 #include "cxrdp_bridge.h"
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <codecvt>
@@ -38,7 +39,12 @@ extern "C" {
 #include <freerdp/channels/drdynvc.h>
 #include <freerdp/channels/rdpdr.h>
 #include <freerdp/channels/rdpsnd.h>
+#include <freerdp/channels/disp.h>
+#include <freerdp/channels/rdpgfx.h>
+#include <freerdp/client/disp.h>
+#include <freerdp/display.h>
 #include <freerdp/gdi/gdi.h>
+#include <freerdp/gdi/gfx.h>
 #include <freerdp/input.h>
 #include <freerdp/event.h>
 #include <freerdp/error.h>
@@ -58,6 +64,8 @@ struct CxRdpSession
     std::thread worker;
     std::atomic_bool running = false;
     std::atomic_bool connected = false;
+    std::atomic_bool reconnecting = false;
+    std::atomic_bool suppress_disconnect_callback = false;
     std::mutex callback_mutex;
     std::string host;
     std::string username;
@@ -70,6 +78,38 @@ struct CxRdpSession
     bool wsa_started = false;
     bool openssl_providers_loaded = false;
     bool clipboard_channel_enabled = false;
+    bool clipboard_channel_requested = true;
+    bool frame_marker_enabled = true;
+    bool disable_wallpaper = true;
+    bool graphics_pipeline_requested = true;
+    bool gfx_frame_mode = false;
+    // EGFX is decoded by FreeRDP's GDI backend, but the client must hand the
+    // RdpgfxClientContext to gdi_graphics_pipeline_init(). Without that
+    // binding the server's surface commands have no rendering target and
+    // EndPaint is never called - the classic "GFX advertised, black screen".
+    // These are only touched on the FreeRDP worker thread.
+    RdpgfxClientContext* gfx = nullptr;
+    bool gfx_bound = false;
+    bool gfx_pending_bind = false;
+    bool gfx_frame_mode_reported = false;
+    // Dirty region of the paint batch currently being published. The host
+    // reads it from inside the frame callback to decide when a whole desktop
+    // frame has actually arrived.
+    std::mutex dirty_mutex;
+    int dirty_x = 0;
+    int dirty_y = 0;
+    int dirty_width = 0;
+    int dirty_height = 0;
+    bool dirty_valid = false;
+    bool frame_open = false;
+    bool frame_marker_seen = false;
+    bool frame_marker_state_reported = false;
+    bool first_paint_logged = false;
+    std::chrono::steady_clock::time_point first_paint_at{};
+    std::chrono::steady_clock::time_point frame_opened_at{};
+    pSurfaceFrameMarker chained_frame_marker = nullptr;
+    std::string preferred_security_profile;
+    std::string successful_security_profile;
     bool drive_redirection_enabled = false;
     std::string drive_name;
     std::string drive_path;
@@ -94,6 +134,17 @@ struct CxRdpSession
     std::string last_error;
     std::mutex clipboard_mutex;
     std::string local_clipboard_text;
+
+    // Display control (DPI remoting + in-place resize). The worker owns the
+    // FreeRDP objects; a UI call only queues a request here.
+    int display_scale_percent = 0; /* 0 = keep the remote session's own DPI */
+    DispClientContext* disp = nullptr;
+    std::mutex display_mutex;
+    bool display_update_pending = false;
+    int pending_width = 0;
+    int pending_height = 0;
+    int pending_scale_percent = 0;
+    std::chrono::steady_clock::time_point connected_at{};
 };
 
 struct CxRdpContext
@@ -119,6 +170,32 @@ struct ParsedCredentials
 };
 
 std::once_flag addin_provider_once;
+
+// FreeRDP's own internal reconnect cookie retries. Our outer loop is driven
+// by a time budget instead, so this is just a generous upper bound for the
+// per-attempt handshake retry that FreeRDP performs itself.
+constexpr size_t kRdpReconnectAttempts = 20;
+
+// A shorter poll makes input and frame updates feel immediate. The wait is
+// event driven, so a lower timeout only bounds how often we service queued
+// work; it does not add busy-wait CPU.
+constexpr DWORD kEventWaitMs = 25;
+
+// The display-control DVC is negotiated a moment after PostConnect. Keep a
+// resize queued during that window instead of sending a premature legacy
+// monitor layout (which fails and used to trigger a full reconnect).
+constexpr auto kDisplayControlGracePeriod = std::chrono::seconds(2);
+
+// Standard X.224 negotiation is what modern servers expect. The single-layer
+// profiles are only fallbacks for hosts that refuse negotiation, so trying
+// them first costs three doomed full handshakes on every connect.
+const SecurityProfile kSecurityProfiles[] = {
+    { "negotiate", true, true, true, true, false },
+    { "nla", true, false, false, false, false },
+    { "tls", false, true, false, false, false },
+    { "rdp", false, false, true, false, true }
+};
+constexpr size_t kSecurityProfileCount = sizeof(kSecurityProfiles) / sizeof(kSecurityProfiles[0]);
 
 BOOL cx_pre_connect(freerdp* instance);
 BOOL cx_post_connect(freerdp* instance);
@@ -154,6 +231,10 @@ int cx_verify_x509_certificate(
     UINT16 port,
     DWORD flags);
 int cx_logon_error(freerdp* instance, UINT32 data, UINT32 type);
+SSIZE_T cx_retry_dialog(freerdp* instance, const char* what, size_t current, void* userarg);
+bool reconnect_session(CxRdpSession* session);
+BOOL cx_desktop_resize(rdpContext* context);
+void apply_pending_display_update(CxRdpSession* session);
 void cx_channel_connected(void* context, const ChannelConnectedEventArgs* e);
 void cx_channel_disconnected(void* context, const ChannelDisconnectedEventArgs* e);
 UINT send_client_capabilities(CliprdrClientContext* cliprdr);
@@ -222,6 +303,7 @@ bool initialize_instance(CxRdpSession* session)
     session->instance->VerifyChangedCertificateEx = cx_verify_changed_certificate;
     session->instance->VerifyX509Certificate = cx_verify_x509_certificate;
     session->instance->LogonErrorInfo = cx_logon_error;
+    session->instance->RetryDialog = cx_retry_dialog;
     session->instance->ContextSize = sizeof(CxRdpContext);
 
     if (!freerdp_context_new(session->instance))
@@ -632,16 +714,21 @@ bool equals_ignore_case(const char* left, const char* right)
     return *left == '\0' && *right == '\0';
 }
 
-bool is_clipboard_channel_allowed()
+bool is_clipboard_channel_allowed(const CxRdpSession* session)
 {
+    // The environment variable stays as a global kill switch for diagnosing a
+    // broken server-side clipboard; the per-session flag is the user setting.
     const char* value = std::getenv("CXSHELL_RDP_CLIPBOARD_CHANNEL");
-    if (!value || value[0] == '\0')
-        return true;
+    if (value && value[0] != '\0' &&
+        (std::strcmp(value, "0") == 0 ||
+         equals_ignore_case(value, "false") ||
+         equals_ignore_case(value, "off") ||
+         equals_ignore_case(value, "no")))
+    {
+        return false;
+    }
 
-    return std::strcmp(value, "0") != 0 &&
-           !equals_ignore_case(value, "false") &&
-           !equals_ignore_case(value, "off") &&
-           !equals_ignore_case(value, "no");
+    return session ? session->clipboard_channel_requested : true;
 }
 
 bool is_channel_load_success(int result)
@@ -664,7 +751,7 @@ bool process_rdp_events(CxRdpSession* session)
         return false;
     }
 
-    const DWORD status = WaitForMultipleObjects(count, handles, FALSE, 100);
+    const DWORD status = WaitForMultipleObjects(count, handles, FALSE, kEventWaitMs);
     if (status == WAIT_FAILED)
     {
         set_error(session, "FreeRDP event wait failed.");
@@ -1118,6 +1205,86 @@ std::string describe_last_error(CxRdpSession* session)
     return stream.str();
 }
 
+// Credential/account errors will fail identically for every security layer.
+// Retrying them not only wastes time, it can lock the account out, so the
+// profile loop stops at the first one.
+bool is_fatal_authentication_error(CxRdpSession* session)
+{
+    if (!session || !session->instance || !session->instance->context)
+        return false;
+
+    const UINT32 code = freerdp_get_last_error(session->instance->context);
+    const char* name = freerdp_get_last_error_name(code);
+    if (!name || name[0] == '\0')
+        return false;
+
+    static const char* const fatalNames[] = {
+        "ERRCONNECT_LOGON_FAILURE",
+        "ERRCONNECT_WRONG_PASSWORD",
+        "ERRCONNECT_AUTHENTICATION_FAILED",
+        "ERRCONNECT_PASSWORD_EXPIRED",
+        "ERRCONNECT_PASSWORD_CERTAINLY_EXPIRED",
+        "ERRCONNECT_PASSWORD_MUST_CHANGE",
+        "ERRCONNECT_ACCOUNT_DISABLED",
+        "ERRCONNECT_ACCOUNT_RESTRICTION",
+        "ERRCONNECT_ACCOUNT_LOCKED_OUT",
+        "ERRCONNECT_ACCOUNT_EXPIRED",
+        "ERRCONNECT_ACCESS_DENIED",
+        "ERRCONNECT_INSUFFICIENT_PRIVILEGES",
+        "ERRCONNECT_NO_OR_MISSING_CREDENTIALS",
+        "ERRCONNECT_LOGON_TYPE_NOT_GRANTED",
+        "ERRCONNECT_CLIENT_REVOKED",
+        "ERRCONNECT_KDC_UNREACHABLE"
+    };
+
+    for (const char* candidate : fatalNames)
+    {
+        if (std::strstr(name, candidate) != nullptr)
+            return true;
+    }
+    return false;
+}
+
+// Puts a known-good profile first (learned from a previous connection), then
+// the rest in their normal order without duplicates. When forcedProfile is
+// set - a clipboard retry - the successful profile is the only one tried.
+std::vector<const SecurityProfile*> build_profile_order(
+    const CxRdpSession* session,
+    const std::string& forcedProfile)
+{
+    std::vector<const SecurityProfile*> order;
+    auto append = [&order](const char* name) {
+        if (!name || name[0] == '\0')
+            return;
+        for (size_t i = 0; i < kSecurityProfileCount; ++i)
+        {
+            if (std::strcmp(kSecurityProfiles[i].name, name) == 0)
+            {
+                order.push_back(&kSecurityProfiles[i]);
+                return;
+            }
+        }
+    };
+
+    if (!forcedProfile.empty())
+    {
+        append(forcedProfile.c_str());
+        if (!order.empty())
+            return order;
+    }
+
+    if (session)
+        append(session->preferred_security_profile.c_str());
+
+    for (size_t i = 0; i < kSecurityProfileCount; ++i)
+    {
+        const auto* profile = &kSecurityProfiles[i];
+        if (std::find(order.begin(), order.end(), profile) == order.end())
+            order.push_back(profile);
+    }
+    return order;
+}
+
 BOOL cx_authenticate(
     freerdp* instance,
     char** username,
@@ -1518,16 +1685,207 @@ void uninitialize_cliprdr(CxRdpSession* session, CliprdrClientContext* cliprdr)
     }
 }
 
+// EGFX (MS-RDPEGFX) is not an alternative to the GDI framebuffer, it is its
+// front end: FreeRDP copies every decoded surface into gdi->primary_buffer and
+// calls EndPaint exactly once at END_FRAME, which is how MSTSC shows a whole
+// desktop without any host-side coalescing. That only happens after the
+// RdpgfxClientContext is registered with the GDI backend. Earlier /gfx tests
+// advertised the capability but skipped this step, so the server stopped
+// sending legacy bitmap updates and no frame ever reached the host.
+// The host switches to protocol-level frame boundaries on this one-shot
+// signal. Both PostConnect and the DVC-connected callback can be first, so
+// make sure it is emitted exactly once per connection.
+void report_gfx_frame_mode(CxRdpSession* session)
+{
+    if (!session || !session->gfx_frame_mode || session->gfx_frame_mode_reported)
+        return;
+    session->gfx_frame_mode_reported = true;
+    notify_status(session, "RDP GFX frame mode active.");
+}
+
+void bind_gfx_pipeline(CxRdpSession* session, rdpContext* context)
+{
+    if (!session || !context || !context->gdi || !session->gfx || session->gfx_bound)
+        return;
+
+    if (!gdi_graphics_pipeline_init(context->gdi, session->gfx))
+    {
+        // Deliberately not "failed": the UI treats status lines containing
+        // that word as a disconnect.
+        notify_status(session, "RDP GFX pipeline binding unavailable on this connection.");
+        return;
+    }
+
+    // Some builds leave the pointer to the caller; make sure the frame-mode
+    // probe in PostConnect sees it.
+    if (!context->gdi->gfx)
+        context->gdi->gfx = session->gfx;
+
+    session->gfx_bound = true;
+    session->gfx_pending_bind = false;
+    session->gfx_frame_mode = true;
+    notify_status(session, "RDP GFX pipeline bound to GDI.");
+    report_gfx_frame_mode(session);
+}
+
+void unbind_gfx_pipeline(CxRdpSession* session, rdpContext* context)
+{
+    if (!session || !context || !context->gdi || !session->gfx || !session->gfx_bound)
+        return;
+
+    gdi_graphics_pipeline_uninit(context->gdi, session->gfx);
+    context->gdi->gfx = nullptr;
+    session->gfx_bound = false;
+    session->gfx_frame_mode = false;
+    session->gfx_frame_mode_reported = false;
+}
+
+static bool is_gfx_channel_name(const char* name)
+{
+    return name && (std::strcmp(name, RDPGFX_DVC_CHANNEL_NAME) == 0 ||
+                    std::strcmp(name, RDPGFX_CHANNEL_NAME) == 0);
+}
+
+// Locates the EGFX client addin in this FreeRDP build.
+// A dynamic virtual channel only works when the addin behind its name can be
+// resolved: drdynvc asks the addin loader for the listener when the server
+// opens the channel. Builds differ in how they publish it, so probe the
+// combinations freerdp_client_load_addins() accepts and report which one hit.
+//
+// The addin is registered under its SHORT name ("rdpgfx", the same way "disp"
+// and "audin" are registered), never under the wire name
+// "Microsoft::Windows::RDS::Graphics". Probing the wire name finds nothing.
+const char* probe_gfx_addin()
+{
+    struct Probe
+    {
+        const char* subsystem;
+        const char* type;
+        DWORD flags;
+        const char* label;
+    };
+    static const Probe probes[] = {
+        { nullptr, nullptr, FREERDP_ADDIN_CHANNEL_STATIC, "static" },
+        { "drdynvc", RDPGFX_CHANNEL_NAME, FREERDP_ADDIN_CHANNEL_DYNAMIC, "drdynvc" },
+        { nullptr, nullptr, FREERDP_ADDIN_CHANNEL_DYNAMIC, "dynamic" },
+    };
+
+    for (const auto& probe : probes)
+    {
+        PVIRTUALCHANNELENTRY entry = freerdp_load_channel_addin_entry(
+            RDPGFX_CHANNEL_NAME, probe.subsystem, probe.type, probe.flags);
+        if (entry)
+            return probe.label;
+    }
+    return nullptr;
+}
+
+// Make sure the RDPGFX DVC is in the negotiated dynamic-channel list.
+// freerdp_client_load_addins() usually appends it when
+// FreeRDP_SupportGraphicsPipeline is set, but builds that only do so while
+// parsing command-line flags need an explicit entry. Check first: adding it
+// twice makes channel negotiation fail.
+void ensure_gfx_dynamic_channel(CxRdpSession* session, rdpSettings* settings)
+{
+    if (!session || !settings)
+        return;
+
+    const char* addin = probe_gfx_addin();
+    if (!addin)
+    {
+        // Never advertise EGFX without a resolvable client addin. The server
+        // would open the graphics DVC, drdynvc could not register a listener,
+        // and FreeRDP aborts the entire connection at post connect
+        // (ERRCONNECT_POST_CONNECT_FAILED) - the session dies instead of just
+        // falling back. Legacy bitmap updates keep working, so use those.
+        session->graphics_pipeline_requested = false;
+        freerdp_settings_set_bool(settings, FreeRDP_SupportGraphicsPipeline, FALSE);
+        notify_status(
+            session,
+            "RDP GFX addin unavailable in this FreeRDP build; using legacy bitmap updates.");
+        return;
+    }
+
+    bool present = false;
+    const UINT32 count = freerdp_settings_get_uint32(settings, FreeRDP_DynamicChannelCount);
+    // freerdp_settings_get_pointer() returns const void*; the array itself is
+    // a char* array, but reading it must not cast away that const qualifier.
+    const char* const* channels = reinterpret_cast<const char* const*>(
+        freerdp_settings_get_pointer(settings, FreeRDP_DynamicChannelArray));
+    for (UINT32 i = 0; channels && i < count; ++i)
+    {
+        if (!channels[i])
+            continue;
+        // The list holds addin names ("rdpgfx"), exactly like "disp" and
+        // "audin". Accept the wire name too so a future FreeRDP that stores
+        // that form does not get a duplicate entry.
+        if (std::strcmp(channels[i], RDPGFX_CHANNEL_NAME) == 0 ||
+            std::strcmp(channels[i], RDPGFX_DVC_CHANNEL_NAME) == 0)
+        {
+            present = true;
+            break;
+        }
+    }
+
+    if (!present)
+    {
+        const char* gfxChannel[] = { RDPGFX_CHANNEL_NAME };
+        if (!freerdp_client_add_dynamic_channel(settings, 1, gfxChannel))
+        {
+            notify_status(session, "RDP GFX dynamic channel registration unavailable.");
+            return;
+        }
+    }
+
+    std::ostringstream status;
+    status << "RDP GFX dynamic channels="
+           << freerdp_settings_get_uint32(settings, FreeRDP_DynamicChannelCount)
+           << " gfxChannel=" << RDPGFX_CHANNEL_NAME
+           << " present=" << (present ? "already" : "added")
+           << " addin=" << addin << ".";
+    notify_status(session, status.str().c_str());
+}
+
 void cx_channel_connected(void* context, const ChannelConnectedEventArgs* e)
 {
     if (!context || !e || !e->name || !e->pInterface)
         return;
 
+    auto* rdp_context = static_cast<struct rdp_context*>(context);
+    auto* session = get_session(rdp_context);
+
+    if (is_gfx_channel_name(e->name))
+    {
+        if (session)
+        {
+            session->gfx = static_cast<RdpgfxClientContext*>(e->pInterface);
+            session->gfx_pending_bind = true;
+            notify_status(session, "RDP GFX channel connected.");
+            // A DVC can open before PostConnect created the GDI surface. In
+            // that case bind_gfx_pipeline() defers to PostConnect.
+            bind_gfx_pipeline(session, rdp_context);
+        }
+        return;
+    }
+
+    const bool isDisplay = std::strcmp(e->name, DISP_CHANNEL_NAME) == 0 ||
+                           std::strcmp(e->name, DISP_DVC_CHANNEL_NAME) == 0;
+    if (isDisplay)
+    {
+        auto* disp = static_cast<DispClientContext*>(e->pInterface);
+        {
+            std::lock_guard<std::mutex> lock(session->display_mutex);
+            session->disp = disp;
+        }
+        disp->custom = session;
+        notify_status(session, "RDP display control channel connected.");
+        return;
+    }
+
     if (std::strcmp(e->name, CLIPRDR_SVC_CHANNEL_NAME) != 0)
         return;
 
-    auto* rdp_context = static_cast<struct rdp_context*>(context);
-    initialize_cliprdr(get_session(rdp_context), static_cast<CliprdrClientContext*>(e->pInterface));
+    initialize_cliprdr(session, static_cast<CliprdrClientContext*>(e->pInterface));
 }
 
 void cx_channel_disconnected(void* context, const ChannelDisconnectedEventArgs* e)
@@ -1535,11 +1893,38 @@ void cx_channel_disconnected(void* context, const ChannelDisconnectedEventArgs* 
     if (!context || !e || !e->name)
         return;
 
+    auto* rdp_context = static_cast<struct rdp_context*>(context);
+    auto* session = get_session(rdp_context);
+
+    if (is_gfx_channel_name(e->name))
+    {
+        if (session)
+        {
+            unbind_gfx_pipeline(session, rdp_context);
+            session->gfx = nullptr;
+            session->gfx_pending_bind = false;
+        }
+        return;
+    }
+
+    const bool isDisplay = std::strcmp(e->name, DISP_CHANNEL_NAME) == 0 ||
+                           std::strcmp(e->name, DISP_DVC_CHANNEL_NAME) == 0;
+    if (isDisplay)
+    {
+        if (session)
+        {
+            std::lock_guard<std::mutex> lock(session->display_mutex);
+            if (session->disp)
+                session->disp->custom = nullptr;
+            session->disp = nullptr;
+        }
+        return;
+    }
+
     if (std::strcmp(e->name, CLIPRDR_SVC_CHANNEL_NAME) != 0)
         return;
 
-    auto* rdp_context = static_cast<struct rdp_context*>(context);
-    uninitialize_cliprdr(get_session(rdp_context), static_cast<CliprdrClientContext*>(e->pInterface));
+    uninitialize_cliprdr(session, static_cast<CliprdrClientContext*>(e->pInterface));
 }
 
 BOOL cx_begin_paint(rdpContext* context)
@@ -1552,31 +1937,283 @@ BOOL cx_begin_paint(rdpContext* context)
     return TRUE;
 }
 
-BOOL cx_end_paint(rdpContext* context)
+// Copies the current GDI surface to the host exactly once. Kept separate from
+// EndPaint so a frame END marker can publish the completed frame directly.
+bool push_frame(rdpContext* context)
 {
     if (!context || !context->gdi || !context->instance)
-        return FALSE;
+        return false;
 
     auto* session = get_session(context);
     if (!session)
-        return TRUE;
+        return false;
 
     auto* gdi = context->gdi;
     if (!gdi->primary_buffer || gdi->width <= 0 || gdi->height <= 0)
-        return TRUE;
+        return false;
 
     const int width = static_cast<int>(gdi->width);
     const int height = static_cast<int>(gdi->height);
     const int stride = width * 4;
     const auto* source = static_cast<const uint8_t*>(gdi->primary_buffer);
     if (!source)
-        return TRUE;
+        return false;
 
     std::lock_guard<std::mutex> lock(session->callback_mutex);
     if (session->frame_callback)
         session->frame_callback(session->user_data, width, height, stride, source);
 
+    return true;
+}
+
+// Captures the region touched by the paint batch about to be published. GDI
+// accumulates every bitmap update of the current PDU into a single invalid
+// rectangle, which is exactly the information the host needs to tell a
+// half-painted desktop from a complete one.
+void store_dirty_rect(rdpContext* context, bool whole_frame)
+{
+    auto* session = context ? get_session(context) : nullptr;
+    if (!session)
+        return;
+
+    int x = 0;
+    int y = 0;
+    int w = 0;
+    int h = 0;
+    bool valid = false;
+    auto* gdi = context ? context->gdi : nullptr;
+    if (gdi && gdi->width > 0 && gdi->height > 0 && whole_frame)
+    {
+        w = static_cast<int>(gdi->width);
+        h = static_cast<int>(gdi->height);
+        valid = true;
+    }
+    else if (gdi && gdi->primary && gdi->primary->hdc && gdi->primary->hdc->hwnd)
+    {
+        auto* invalid = gdi->primary->hdc->hwnd->invalid;
+        if (invalid && !invalid->null && invalid->w > 0 && invalid->h > 0)
+        {
+            x = static_cast<int>(invalid->x);
+            y = static_cast<int>(invalid->y);
+            w = static_cast<int>(invalid->w);
+            h = static_cast<int>(invalid->h);
+            valid = true;
+        }
+    }
+
+    std::lock_guard<std::mutex> lock(session->dirty_mutex);
+    session->dirty_valid = valid;
+    session->dirty_x = x;
+    session->dirty_y = y;
+    session->dirty_width = w;
+    session->dirty_height = h;
+}
+
+// Windows servers mark a complete desktop frame with a surface frame-marker
+// BEGIN/END pair. Chaining FreeRDP's own handler keeps its GDI bookkeeping
+// intact; our part only controls WHEN the surface is handed to the host.
+BOOL cx_surface_frame_marker(rdpContext* context, const SURFACE_FRAME_MARKER* marker)
+{
+    auto* session = context ? get_session(context) : nullptr;
+    if (session && session->chained_frame_marker)
+        session->chained_frame_marker(context, marker);
+
+    if (!session || !marker || !session->frame_marker_enabled || session->gfx_frame_mode)
+        return TRUE;
+
+    if (!session->frame_marker_state_reported)
+    {
+        session->frame_marker_state_reported = true;
+        notify_status(session, "RDP frame markers active.");
+    }
+    session->frame_marker_seen = true;
+
+    if (marker->frameAction == SURFACECMD_FRAMEACTION_BEGIN)
+    {
+        session->frame_open = true;
+        session->frame_opened_at = std::chrono::steady_clock::now();
+    }
+    else if (marker->frameAction == SURFACECMD_FRAMEACTION_END)
+    {
+        session->frame_open = false;
+        store_dirty_rect(context, true);
+        push_frame(context);
+    }
+
     return TRUE;
+}
+
+BOOL cx_end_paint(rdpContext* context)
+{
+    auto* session = context ? get_session(context) : nullptr;
+    if (!session)
+        return context ? TRUE : FALSE;
+
+    const auto now = std::chrono::steady_clock::now();
+    if (!session->first_paint_logged)
+    {
+        session->first_paint_logged = true;
+        session->first_paint_at = now;
+    }
+
+    if (session->frame_marker_enabled)
+    {
+        // If the server never sends markers, tell the host to keep using time
+        // based coalescing. This is a one-shot report, not a per-frame message.
+        if (!session->frame_marker_state_reported && !session->gfx_frame_mode &&
+            now - session->first_paint_at >= std::chrono::milliseconds(3000))
+        {
+            session->frame_marker_state_reported = true;
+            notify_status(session, "RDP frame markers unavailable.");
+        }
+
+        if (session->frame_open)
+        {
+            // Hold the half-painted surface until END, but only briefly. A
+            // server that opens a frame and is slow to close it (or drops the
+            // END) must not swallow live pointer/caret updates for a second -
+            // that shows up as a frozen mouse. 120 ms is enough to cover a
+            // normal BEGIN..END pair on any transport.
+            if (now - session->frame_opened_at < std::chrono::milliseconds(120))
+                return TRUE;
+            // Fall through and publish this batch instead of dropping it.
+            session->frame_open = false;
+        }
+    }
+
+    store_dirty_rect(context, false);
+    push_frame(context);
+    return TRUE;
+}
+
+// The server sends a Desktop Resize Update after accepting a monitor-layout
+// change. FreeRDP keeps its GDI surface at the old size unless we resize it.
+BOOL cx_desktop_resize(rdpContext* context)
+{
+    if (!context || !context->settings || !context->gdi)
+        return FALSE;
+
+    const UINT32 width = freerdp_settings_get_uint32(context->settings, FreeRDP_DesktopWidth);
+    const UINT32 height = freerdp_settings_get_uint32(context->settings, FreeRDP_DesktopHeight);
+    if (width == 0 || height == 0 || width > 8192 || height > 4320)
+        return FALSE;
+
+    if (!gdi_resize(context->gdi, width, height))
+        return FALSE;
+
+    if (auto* session = get_session(context))
+    {
+        session->width = static_cast<int>(width);
+        session->height = static_cast<int>(height);
+        std::ostringstream status;
+        status << "RDP display resized to " << width << "x" << height << ".";
+        notify_status(session, status.str().c_str());
+    }
+    return TRUE;
+}
+
+// Called on the worker thread so all FreeRDP objects stay single-threaded.
+void apply_pending_display_update(CxRdpSession* session)
+{
+    if (!session || !session->running.load() || !session->connected.load())
+        return;
+
+    int width = 0;
+    int height = 0;
+    int scale = 0;
+    {
+        std::lock_guard<std::mutex> lock(session->display_mutex);
+        if (!session->display_update_pending)
+            return;
+        width = session->pending_width;
+        height = session->pending_height;
+        scale = session->pending_scale_percent;
+        session->display_update_pending = false;
+    }
+
+    auto* instance = session->instance;
+    auto* context = instance ? instance->context : nullptr;
+    if (!context || !context->settings || width < 320 || height < 240)
+        return;
+
+    DispClientContext* disp = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(session->display_mutex);
+        disp = session->disp;
+    }
+
+    // Give the display-control DVC a moment to arrive. Otherwise the very
+    // first viewport resize lands before the channel exists, the legacy
+    // fallback fails, and the UI tears the whole session down to reconnect.
+    if (!disp && session->connected_at.time_since_epoch().count() > 0 &&
+        std::chrono::steady_clock::now() - session->connected_at < kDisplayControlGracePeriod)
+    {
+        std::lock_guard<std::mutex> lock(session->display_mutex);
+        session->pending_width = width;
+        session->pending_height = height;
+        session->pending_scale_percent = scale;
+        session->display_update_pending = true;
+        return;
+    }
+
+    freerdp_settings_set_uint32(context->settings, FreeRDP_DesktopWidth, static_cast<UINT32>(width));
+    freerdp_settings_set_uint32(context->settings, FreeRDP_DesktopHeight, static_cast<UINT32>(height));
+    session->width = width;
+    session->height = height;
+
+    if (scale > 0)
+    {
+        session->display_scale_percent = scale;
+        freerdp_settings_set_uint32(context->settings, FreeRDP_DesktopScaleFactor, static_cast<UINT32>(scale));
+        freerdp_settings_set_uint32(context->settings, FreeRDP_DeviceScaleFactor, static_cast<UINT32>(scale));
+    }
+
+    bool sent = false;
+    if (disp && disp->SendMonitorLayout)
+    {
+        DISPLAY_CONTROL_MONITOR_LAYOUT layout{};
+        layout.Flags = DISPLAY_CONTROL_MONITOR_PRIMARY;
+        layout.Left = 0;
+        layout.Top = 0;
+        layout.Width = static_cast<UINT32>(width);
+        layout.Height = static_cast<UINT32>(height);
+        // Windows uses the physical monitor size together with the scale
+        // factors; sending zeroes makes it ignore the layout.
+        const UINT32 dpi = scale > 0 ? static_cast<UINT32>(scale) : 100;
+        layout.PhysicalWidth = static_cast<UINT32>(width * 2540 / (96 * dpi / 100) / 10);
+        layout.PhysicalHeight = static_cast<UINT32>(height * 2540 / (96 * dpi / 100) / 10);
+        layout.Orientation = 0;
+        layout.DesktopScaleFactor = scale > 0 ? static_cast<UINT32>(scale) : 100;
+        layout.DeviceScaleFactor = scale > 0 ? static_cast<UINT32>(scale) : 100;
+        sent = disp->SendMonitorLayout(disp, 1, &layout) == CHANNEL_RC_OK;
+    }
+
+    if (!sent)
+    {
+        // Older hosts may not negotiate the display-control DVC; the legacy
+        // monitor-layout PDU can still change the resolution (but not DPI).
+        MONITOR_DEF monitor{};
+        monitor.left = 0;
+        monitor.top = 0;
+        monitor.right = width - 1;
+        monitor.bottom = height - 1;
+        monitor.flags = MONITOR_PRIMARY;
+        sent = freerdp_display_send_monitor_layout(context, 1, &monitor) == TRUE;
+    }
+
+    // The host reacts to a layout change with a deactivate/reactivate cycle
+    // and does not reliably emit a Desktop Resize Update. Resize our GDI
+    // surface here so the next frame callback already carries the new size.
+    if (sent && context->gdi && !cx_desktop_resize(context))
+        sent = false;
+
+    std::ostringstream status;
+    status << (sent ? "RDP display update sent: " : "RDP display update failed: ")
+           << width << "x" << height;
+    if (scale > 0)
+        status << " @" << scale << "%";
+    status << ".";
+    notify_status(session, status.str().c_str());
 }
 
 BOOL cx_pre_connect(freerdp* instance)
@@ -1590,15 +2227,17 @@ BOOL cx_pre_connect(freerdp* instance)
     freerdp_settings_set_uint32(instance->context->settings, FreeRDP_OsMinorType, OSMINORTYPE_WINDOWS_NT);
     freerdp_settings_set_bool(instance->context->settings, FreeRDP_RedirectClipboard, clipboardEnabled ? TRUE : FALSE);
 
+    // Channel events are needed for DPI/display control even when the
+    // clipboard channel is disabled.
+    PubSub_SubscribeChannelConnected(instance->context->pubSub, cx_channel_connected);
+    PubSub_SubscribeChannelDisconnected(instance->context->pubSub, cx_channel_disconnected);
+
     if (clipboardEnabled)
     {
         freerdp_settings_set_uint32(
             instance->context->settings,
             FreeRDP_ClipboardFeatureMask,
             CLIPRDR_FLAG_LOCAL_TO_REMOTE | CLIPRDR_FLAG_REMOTE_TO_LOCAL);
-
-        PubSub_SubscribeChannelConnected(instance->context->pubSub, cx_channel_connected);
-        PubSub_SubscribeChannelDisconnected(instance->context->pubSub, cx_channel_disconnected);
     }
     return TRUE;
 }
@@ -1613,12 +2252,24 @@ BOOL cx_load_channels(freerdp* instance)
     if (!session || (!session->clipboard_channel_enabled &&
                      !session->drive_redirection_enabled &&
                      !localAudioEnabled &&
-                     !session->microphone_enabled))
+                     !session->microphone_enabled &&
+                     !session->graphics_pipeline_requested &&
+                     session->display_scale_percent <= 0))
         return TRUE;
 
     register_static_channel_provider();
 
-    if (freerdp_client_load_addins(instance->context->channels, instance->context->settings))
+    // freerdp_client_load_addins() is the standard path: it registers the
+    // static addins and appends the dynamic channels implied by settings. The
+    // manual loads below are only a fallback for builds where it fails.
+    const bool addinsLoaded =
+        freerdp_client_load_addins(instance->context->channels, instance->context->settings) != 0;
+
+    // Run after load_addins() so the duplicate check sees what it appended.
+    if (session->graphics_pipeline_requested)
+        ensure_gfx_dynamic_channel(session, instance->context->settings);
+
+    if (addinsLoaded)
         return TRUE;
 
     if (session->drive_redirection_enabled)
@@ -1677,7 +2328,10 @@ BOOL cx_load_channels(freerdp* instance)
         }
     }
 
-    if (session->microphone_enabled)
+    // The graphics pipeline and the microphone both ride on drdynvc. When
+    // freerdp_client_load_addins() could not do it, load the multiplexer
+    // explicitly here instead of gating it on the microphone alone.
+    if (session->microphone_enabled || session->graphics_pipeline_requested)
     {
         const int dynamicChannelResult = freerdp_channels_load_plugin(
             instance->context->channels,
@@ -1688,7 +2342,7 @@ BOOL cx_load_channels(freerdp* instance)
         if (!is_channel_load_success(dynamicChannelResult))
         {
             std::ostringstream message;
-            message << "RDP microphone channel load failed. code=" << dynamicChannelResult << ".";
+            message << "RDP dynamic virtual channel unavailable. code=" << dynamicChannelResult << ".";
             set_error(session, message.str());
             notify_status(session, message.str().c_str());
             return FALSE;
@@ -1713,8 +2367,41 @@ BOOL cx_post_connect(freerdp* instance)
         return FALSE;
     }
 
+    // A graphics DVC that opened before PostConnect had no GDI surface to
+    // attach to; complete that binding now that gdi_init() has run.
+    if (session->gfx_pending_bind)
+        bind_gfx_pipeline(session, instance->context);
+
     instance->context->update->BeginPaint = cx_begin_paint;
     instance->context->update->EndPaint = cx_end_paint;
+    instance->context->update->DesktopResize = cx_desktop_resize;
+
+    // Chain, never replace: FreeRDP's GDI layer may already have registered a
+    // marker handler for its own bookkeeping.
+    session->chained_frame_marker = instance->context->update->SurfaceFrameMarker;
+    if (session->frame_marker_enabled)
+        instance->context->update->SurfaceFrameMarker = cx_surface_frame_marker;
+
+    session->frame_open = false;
+    session->frame_marker_seen = false;
+    session->frame_marker_state_reported = false;
+    session->first_paint_logged = false;
+
+    {
+        std::lock_guard<std::mutex> lock(session->display_mutex);
+        session->display_update_pending = false;
+    }
+    session->connected_at = std::chrono::steady_clock::now();
+    auto* gdi = instance->context ? instance->context->gdi : nullptr;
+    session->gfx_frame_mode = gdi && gdi->gfx != nullptr;
+    // Do not claim ownership when FreeRDP itself created gdi->gfx: only the
+    // bind path above may later call gdi_graphics_pipeline_uninit().
+    if (session->gfx_frame_mode)
+        report_gfx_frame_mode(session);
+    else if (session->graphics_pipeline_requested)
+    {
+        notify_status(session, "RDP GFX channel not bound yet; awaiting the graphics channel.");
+    }
     notify_status(session, "RDP connected.");
     return TRUE;
 }
@@ -1725,12 +2412,29 @@ void cx_post_disconnect(freerdp* instance)
         return;
 
     auto* session = get_session(instance->context);
+    // gdi_free() destroys the surface the GFX callbacks write into; detach
+    // them first so a late END_FRAME cannot touch freed memory.
+    if (session)
+        unbind_gfx_pipeline(session, instance->context);
     gdi_free(instance);
+
+    PubSub_UnsubscribeChannelConnected(instance->context->pubSub, cx_channel_connected);
+    PubSub_UnsubscribeChannelDisconnected(instance->context->pubSub, cx_channel_disconnected);
 
     if (session)
     {
+        {
+            std::lock_guard<std::mutex> lock(session->display_mutex);
+            session->disp = nullptr;
+            session->display_update_pending = false;
+        }
+
         const bool wasConnected = session->connected.exchange(false);
         session->connected = false;
+        // A clipboard-triggered retry tears down and rebuilds the session on
+        // the same tab. Do not report that as a disconnect: the host would
+        // flash the "connection lost" overlay while we are still connecting.
+        const bool suppress = session->suppress_disconnect_callback.exchange(false);
         {
             std::lock_guard<std::mutex> lock(session->clipboard_mutex);
             session->cliprdr = nullptr;
@@ -1742,11 +2446,138 @@ void cx_post_disconnect(freerdp* instance)
             session->clipboard_requested_format = 0;
             session->offered_clipboard_revision = 0;
         }
-        notify_status(session, "RDP disconnected.");
+        if (wasConnected && !session->reconnecting.load() && !suppress)
+            notify_status(session, "RDP disconnected.");
         std::lock_guard<std::mutex> lock(session->callback_mutex);
-        if (wasConnected && session->disconnect_callback)
+        if (wasConnected && !session->reconnecting.load() && !suppress &&
+            session->disconnect_callback)
+        {
             session->disconnect_callback(session->user_data);
+        }
     }
+}
+
+// Supplies the backoff FreeRDP uses while it retries a dropped transport.
+// The initial connect must not spin inside FreeRDP: the outer profile loop
+// owns first-connect retries, and a zero backoff here used to double every
+// handshake failure. Only the ARC reconnect loop gets a real delay.
+SSIZE_T cx_retry_dialog(freerdp* instance, const char* what, size_t current, void* userarg)
+{
+    (void)userarg;
+
+    auto* session = instance && instance->context ? get_session(instance->context) : nullptr;
+    if (!session || !session->running || !session->reconnecting.load() ||
+        current >= kRdpReconnectAttempts)
+    {
+        return -1;
+    }
+
+    std::ostringstream status;
+    status << "RDP reconnecting (" << (current + 1) << "/" << kRdpReconnectAttempts
+           << ")" << (what && *what ? ": " : "");
+    if (what && *what)
+        status << what;
+    notify_status(session, status.str().c_str());
+
+    static const DWORD delays[] = { 1000, 2000, 5000, 10000, 10000 };
+    const size_t index = current < (sizeof(delays) / sizeof(delays[0]))
+                             ? current
+                             : (sizeof(delays) / sizeof(delays[0])) - 1;
+    return static_cast<SSIZE_T>(delays[index]);
+}
+
+// Resumes the remote session with the auto reconnect cookie handed out during
+// logon. The remote session keeps running, so the user lands back in the same
+// desktop without logging on again.
+bool reconnect_session(CxRdpSession* session)
+{
+    if (!session || !session->instance || !session->instance->context)
+        return false;
+
+    session->reconnecting = true;
+    session->connected = false;
+    session->last_error.clear();
+
+    notify_status(session, "RDP connection lost.");
+
+    // Retry until the outage is over (or the user stops us). A 20 minute
+    // budget covers long network/VPN failures while still giving up eventually
+    // instead of spinning forever against a host that is never coming back.
+    // The UI offers a "stop trying" button for the impatient case.
+    constexpr auto kReconnectBudget = std::chrono::minutes(20);
+    constexpr DWORD kMaxReconnectDelayMs = 10000;
+    const auto retryStartedAt = std::chrono::steady_clock::now();
+
+    bool reconnected = false;
+    size_t attempt = 0;
+    while (session->running)
+    {
+        if (std::chrono::steady_clock::now() - retryStartedAt >= kReconnectBudget)
+            break;
+
+        ++attempt;
+        {
+            std::ostringstream status;
+            status << "RDP reconnecting (attempt " << attempt << ")";
+            notify_status(session, status.str().c_str());
+        }
+
+        freerdp_disconnect_before_reconnect_context(session->instance->context);
+
+        if (freerdp_reconnect(session->instance) == TRUE)
+        {
+            session->connected = true;
+            reconnected = true;
+            break;
+        }
+
+        const DWORD delay = attempt <= 3 ? static_cast<DWORD>(attempt) * 1000
+                            : attempt <= 6 ? 5000
+                                           : kMaxReconnectDelayMs;
+        for (DWORD waited = 0; waited < delay && session->running; waited += 100)
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+
+    session->reconnecting = false;
+
+    if (reconnected)
+    {
+        session->last_error.clear();
+
+        // ARC resumes the remote session without running PostConnect again, so
+        // ask the server once for the full desktop instead of leaving the last
+        // captured frame on screen until something on the remote side changes.
+        auto* context = session->instance->context;
+        if (context && context->update && context->update->RefreshRect && context->settings)
+        {
+            const UINT32 desktopWidth =
+                freerdp_settings_get_uint32(context->settings, FreeRDP_DesktopWidth);
+            const UINT32 desktopHeight =
+                freerdp_settings_get_uint32(context->settings, FreeRDP_DesktopHeight);
+            const UINT16 width =
+                static_cast<UINT16>(desktopWidth > 0xFFFFu ? 0xFFFFu : desktopWidth);
+            const UINT16 height =
+                static_cast<UINT16>(desktopHeight > 0xFFFFu ? 0xFFFFu : desktopHeight);
+            if (width > 0 && height > 0)
+            {
+                RECTANGLE_16 area{ 0, 0, width, height };
+                context->update->RefreshRect(context, 1, &area);
+            }
+        }
+
+        notify_status(session, "RDP reconnected.");
+        return true;
+    }
+
+    set_error(session, "RDP reconnect failed; the remote session was closed.");
+    if (session->running)
+        notify_status(session, "RDP reconnect failed.");
+
+    // ARC gave up and this session is over. Report it as a normal disconnect so
+    // hosts get the same teardown notification they get for any dropped link
+    // instead of a session that silently goes quiet.
+    session->connected = true;
+    return false;
 }
 
 void connection_thread(CxRdpSession* session)
@@ -1761,18 +2592,19 @@ void connection_thread(CxRdpSession* session)
            << " colorDepth=" << session->color_depth;
     notify_status(session, target.str().c_str());
 
-    const SecurityProfile profiles[] = {
-        { "nla", true, false, false, false, false },
-        { "tls", false, true, false, false, false },
-        { "rdp", false, false, true, false, true },
-        { "negotiate", true, true, true, true, false }
-    };
-
-    const bool allowClipboardChannel = is_clipboard_channel_allowed();
+    const bool allowClipboardChannel = is_clipboard_channel_allowed(session);
     bool retriedWithoutClipboard = false;
+    // EGFX is only advertised when the addin resolves, but a server can still
+    // reject the pipeline during post connect. Recover once by dropping EGFX
+    // instead of leaving the tab dead.
+    bool retriedWithoutGfx = false;
+    // When a clipboard failure forces a second run, only re-try the profile
+    // that already proved it works instead of walking all four again.
+    std::string forcedProfile;
 
     while (session->running)
     {
+        const auto profileOrder = build_profile_order(session, forcedProfile);
         session->clipboard_channel_enabled = allowClipboardChannel && !retriedWithoutClipboard;
         session->connected = false;
         {
@@ -1794,7 +2626,11 @@ void connection_thread(CxRdpSession* session)
                 : "RDP clipboard channel disabled.");
 
         std::string lastError;
-        for (const auto& profile : profiles)
+        bool fatalFailure = false;
+        // Set when the failure is not worth retrying with another security
+        // profile; the outer loop starts a fresh attempt with new settings.
+        bool break_attempts = false;
+        for (const auto* profile : profileOrder)
         {
             if (!session->running)
                 break;
@@ -1833,18 +2669,138 @@ void connection_thread(CxRdpSession* session)
             freerdp_settings_set_bool(settings, FreeRDP_LogonNotify, TRUE);
             freerdp_settings_set_bool(settings, FreeRDP_LogonErrors, TRUE);
             freerdp_settings_set_bool(settings, FreeRDP_LongCredentialsSupported, TRUE);
+
+            // This host renders through the GDI frame callback. Software GDI is
+            // required to read gdi->primary_buffer, but EGFX (MS-RDPEGFX) is
+            // its FRONT END, not an alternative: with the graphics pipeline
+            // enabled FreeRDP decodes every surface command of a logical frame
+            // into offscreen surfaces and only calls EndPaint once, at
+            // END_FRAME, after copying the complete frame into the primary
+            // buffer. That is exactly how MSTSC avoids showing a half-painted
+            // desktop. Without EGFX the server falls back to legacy bitmap
+            // updates, which carry no frame boundary at all.
             freerdp_settings_set_bool(settings, FreeRDP_SoftwareGdi, TRUE);
             freerdp_settings_set_bool(settings, FreeRDP_RemoteFxCodec, FALSE);
             freerdp_settings_set_bool(settings, FreeRDP_GfxThinClient, FALSE);
-            freerdp_settings_set_bool(settings, FreeRDP_NegotiateSecurityLayer, profile.negotiate ? TRUE : FALSE);
-            freerdp_settings_set_bool(settings, FreeRDP_NlaSecurity, profile.nla ? TRUE : FALSE);
-            freerdp_settings_set_bool(settings, FreeRDP_TlsSecurity, profile.tls ? TRUE : FALSE);
-            freerdp_settings_set_bool(settings, FreeRDP_RdpSecurity, profile.rdp ? TRUE : FALSE);
-            freerdp_settings_set_bool(settings, FreeRDP_UseRdpSecurityLayer, profile.useRdpSecurityLayer ? TRUE : FALSE);
+
+            // Advertise the legacy surface-command frame markers. Without
+            // these three capability bits the server never emits the
+            // TS_SURFCMD_FRAME_MARKER BEGIN/END pair, so every bitmap update
+            // arrives with no frame boundary at all and any amount of host-side
+            // coalescing can only guess where a frame ends. These are plain
+            // capability flags in the GCC handshake - they do NOT switch the
+            // transport to EGFX, so GDI frame capture keeps working.
+            freerdp_settings_set_bool(settings, FreeRDP_SurfaceCommandsEnabled, TRUE);
+            freerdp_settings_set_bool(settings, FreeRDP_FrameMarkerCommandEnabled, TRUE);
+            freerdp_settings_set_bool(settings, FreeRDP_SurfaceFrameMarkerEnabled, TRUE);
+            freerdp_settings_set_bool(settings, FreeRDP_AltSecFrameMarkerSupport, TRUE);
+            if (session->graphics_pipeline_requested)
+            {
+                freerdp_settings_set_bool(settings, FreeRDP_SupportGraphicsPipeline, TRUE);
+                freerdp_settings_set_bool(settings, FreeRDP_GfxPlanar, TRUE);
+                freerdp_settings_set_bool(settings, FreeRDP_GfxProgressive, TRUE);
+                // A positive FrameAcknowledge makes the client send
+                // RDPGFX_FRAME_ACKNOWLEDGE; without it the server throttles the
+                // graphics channel and may stop streaming frames entirely.
+                freerdp_settings_set_uint32(settings, FreeRDP_FrameAcknowledge, 10);
+            }
+            else
+            {
+                freerdp_settings_set_bool(settings, FreeRDP_SupportGraphicsPipeline, FALSE);
+            }
+
+            // Cheap bandwidth/CPU wins that do not change what the user sees:
+            // bulk compression, a persistent bitmap cache, and RTT-based
+            // auto detection so FreeRDP tunes itself for WAN links.
+            freerdp_settings_set_bool(settings, FreeRDP_CompressionEnabled, TRUE);
+            freerdp_settings_set_bool(settings, FreeRDP_BitmapCacheEnabled, TRUE);
+            freerdp_settings_set_bool(settings, FreeRDP_NetworkAutoDetect, TRUE);
+            freerdp_settings_set_bool(settings, FreeRDP_AllowFontSmoothing, TRUE);
+            freerdp_settings_set_uint32(settings, FreeRDP_ConnectionType, CONNECTION_TYPE_AUTODETECT);
+
+            // RDP performance flags are advertised in the client core data of
+            // the handshake. FreeRDP 3 keeps the individual flags (including
+            // DisableWallpaper) as deprecated booleans and only sends the
+            // combined PerformanceFlags bitmask, so fold the booleans into the
+            // bitmask here instead of leaving the default mask untouched.
+            freerdp_settings_set_bool(
+                settings,
+                FreeRDP_DisableWallpaper,
+                session->disable_wallpaper ? TRUE : FALSE);
+            freerdp_performance_flags_make(settings);
+
+            // Ask the server to delimit complete desktop frames. Without these
+            // the bridge publishes every bitmap-update batch and the host has
+            // to coalesce them by time instead (frame-marker mode disabled).
+            if (session->frame_marker_enabled)
+            {
+                freerdp_settings_set_bool(settings, FreeRDP_SurfaceCommandsEnabled, TRUE);
+                freerdp_settings_set_bool(settings, FreeRDP_FrameMarkerCommandEnabled, TRUE);
+                freerdp_settings_set_bool(settings, FreeRDP_SurfaceFrameMarkerEnabled, TRUE);
+            }
+
+            // Bound every handshake. Without these, a black-holed host can
+            // stall freerdp_connect (and cxrdp_disconnect's worker join) for
+            // the OS TCP timeout, multiplied by every profile in the loop.
+            freerdp_settings_set_uint32(settings, FreeRDP_TcpConnectTimeout, 10000);
+            freerdp_settings_set_uint32(settings, FreeRDP_TcpAckTimeout, 5000);
+
+            freerdp_settings_set_bool(settings, FreeRDP_NegotiateSecurityLayer, profile->negotiate ? TRUE : FALSE);
+            freerdp_settings_set_bool(settings, FreeRDP_NlaSecurity, profile->nla ? TRUE : FALSE);
+            freerdp_settings_set_bool(settings, FreeRDP_TlsSecurity, profile->tls ? TRUE : FALSE);
+            freerdp_settings_set_bool(settings, FreeRDP_RdpSecurity, profile->rdp ? TRUE : FALSE);
+            freerdp_settings_set_bool(settings, FreeRDP_UseRdpSecurityLayer, profile->useRdpSecurityLayer ? TRUE : FALSE);
             freerdp_settings_set_uint32(
                 settings,
                 FreeRDP_KeyboardHook,
                 session->apply_key_combinations_remotely ? 1u : 0u);
+
+            // DPI remoting: tell the remote session what scaling the user sees.
+            // 0 means "Keep remote" - leave the session's own scaling alone.
+            if (session->display_scale_percent > 0)
+            {
+                const auto scale = static_cast<UINT32>(session->display_scale_percent);
+                // Adding the display-control DVC is what makes FreeRDP load the
+                // channel; setting SupportDisplayControl as well would register
+                // it twice and fail PostConnect on some builds.
+                freerdp_settings_set_uint32(settings, FreeRDP_DesktopScaleFactor, scale);
+                freerdp_settings_set_uint32(settings, FreeRDP_DeviceScaleFactor, scale);
+
+                // The static addin in freerdp-client3.dll is registered as
+                // "disp"; the long DVC name is only the wire protocol name.
+                freerdp_settings_set_bool(settings, FreeRDP_SupportDisplayControl, TRUE);
+                const char* displayChannel[] = { DISP_CHANNEL_NAME };
+                if (!freerdp_client_add_dynamic_channel(settings, 1, displayChannel))
+                {
+                    set_error(session, "Failed to configure the RDP display control channel.");
+                    free_instance(session);
+                    break;
+                }
+            }
+            else
+            {
+                freerdp_settings_set_uint32(settings, FreeRDP_DesktopScaleFactor, 0);
+                freerdp_settings_set_uint32(settings, FreeRDP_DeviceScaleFactor, 0);
+            }
+
+            // Idle sessions die when a NAT or firewall drops the flow, so keep
+            // TCP probes flowing. The retry count doubles as dead peer
+            // detection: three unanswered probes make the socket fail, which
+            // ends the event loop instead of leaving the picture frozen.
+            freerdp_settings_set_bool(settings, FreeRDP_TcpKeepAlive, TRUE);
+            freerdp_settings_set_uint32(settings, FreeRDP_TcpKeepAliveDelay, 10);
+            freerdp_settings_set_uint32(settings, FreeRDP_TcpKeepAliveInterval, 5);
+            freerdp_settings_set_uint32(settings, FreeRDP_TcpKeepAliveRetries, 3);
+
+            // Advertise and enable the RDP auto reconnect cookie so a dropped
+            // transport resumes the running remote session instead of starting
+            // a new logon.
+            freerdp_settings_set_bool(settings, FreeRDP_AutoReconnectionEnabled, TRUE);
+            freerdp_settings_set_bool(settings, FreeRDP_AutoReconnectionPacketSupported, TRUE);
+            freerdp_settings_set_uint32(
+                settings,
+                FreeRDP_AutoReconnectMaxRetries,
+                static_cast<uint32_t>(kRdpReconnectAttempts));
 
             if (!configure_drive_redirection(session, settings))
             {
@@ -1897,7 +2853,7 @@ void connection_thread(CxRdpSession* session)
             notify_status(session, parsedTarget.str().c_str());
 
             std::ostringstream security;
-            security << "RDP security attempt mode=" << profile.name
+            security << "RDP security attempt mode=" << profile->name
                      << " nla=" << (freerdp_settings_get_bool(settings, FreeRDP_NlaSecurity) ? "true" : "false")
                      << " tls=" << (freerdp_settings_get_bool(settings, FreeRDP_TlsSecurity) ? "true" : "false")
                      << " rdp=" << (freerdp_settings_get_bool(settings, FreeRDP_RdpSecurity) ? "true" : "false")
@@ -1907,23 +2863,63 @@ void connection_thread(CxRdpSession* session)
             if (!freerdp_connect(session->instance))
             {
                 lastError = describe_last_error(session);
+                const bool fatal = is_fatal_authentication_error(session);
                 std::ostringstream attemptError;
-                attemptError << lastError << " mode=" << profile.name;
+                attemptError << lastError << " mode=" << profile->name;
                 set_error(session, attemptError.str());
                 notify_status(session, attemptError.str().c_str());
                 free_instance(session);
+                if (fatal)
+                {
+                    fatalFailure = true;
+                    notify_status(session, "RDP authentication failed; stopping security profile fallback.");
+                    break;
+                }
+
+                // Post connect aborts are not a security problem: the profile
+                // authenticated fine, the session setup was rejected (EGFX is
+                // the usual reason). Walking the remaining security profiles
+                // just repeats the same failure, so drop the graphics pipeline
+                // and retry this profile once on the legacy path.
+                if (session->graphics_pipeline_requested && !retriedWithoutGfx &&
+                    lastError.find("POST_CONNECT_FAILED") != std::string::npos)
+                {
+                    retriedWithoutGfx = true;
+                    session->graphics_pipeline_requested = false;
+                    forcedProfile = profile->name;
+                    notify_status(
+                        session,
+                        "RDP post connect rejected the graphics pipeline; retrying with legacy bitmap updates.");
+                    break_attempts = true;
+                    break;
+                }
                 continue;
             }
 
             session->connected = true;
+            session->successful_security_profile = profile->name;
+            {
+                std::ostringstream selected;
+                selected << "RDP security profile selected mode=" << profile->name << ".";
+                notify_status(session, selected.str().c_str());
+            }
             break;
         }
 
         if (!session->connected)
         {
-            if (session->running && session->clipboard_channel_enabled && !retriedWithoutClipboard)
+            if (!fatalFailure && session->running && break_attempts)
+            {
+                // Fresh attempt with the pipeline dropped; keep the clipboard
+                // state as it is so the retry does not also lose the clipboard.
+                continue;
+            }
+
+            if (!fatalFailure && session->running &&
+                session->clipboard_channel_enabled && !retriedWithoutClipboard)
             {
                 retriedWithoutClipboard = true;
+                forcedProfile = session->successful_security_profile;
                 notify_status(session, "RDP clipboard channel connect failed; retrying without clipboard.");
                 continue;
             }
@@ -1931,26 +2927,60 @@ void connection_thread(CxRdpSession* session)
             session->running = false;
             if (!lastError.empty())
                 set_error(session, lastError);
+
+            // Terminal failure, deliberately distinct from the per-profile
+            // "FreeRDP connection failed ... mode=" lines the host treats as
+            // transient while the fallback loop is still running.
+            {
+                std::ostringstream terminal;
+                terminal << "RDP connection failed.";
+                if (!lastError.empty())
+                    terminal << " " << lastError;
+                notify_status(session, terminal.str().c_str());
+            }
             return;
         }
 
         const auto connectedAt = std::chrono::steady_clock::now();
-        while (session->running && !freerdp_shall_disconnect_context(session->instance->context))
+        bool transportLost = false;
+
+        for (;;)
         {
-            if (session->clipboard_channel_enabled)
+            while (session->running && !freerdp_shall_disconnect_context(session->instance->context))
             {
-                activate_pending_cliprdr(session);
-                flush_local_clipboard_format_list(session);
+                apply_pending_display_update(session);
+
+                if (session->clipboard_channel_enabled)
+                {
+                    activate_pending_cliprdr(session);
+                    flush_local_clipboard_format_list(session);
+                }
+
+                // A bounded wait keeps the thread responsive to aborts while
+                // still surfacing transport failures the moment they happen.
                 if (!process_rdp_events(session))
+                {
+                    transportLost = true;
                     break;
-                activate_pending_cliprdr(session);
-                flush_local_clipboard_format_list(session);
+                }
+
+                if (session->clipboard_channel_enabled)
+                {
+                    activate_pending_cliprdr(session);
+                    flush_local_clipboard_format_list(session);
+                }
             }
-            else if (freerdp_check_fds(session->instance) != TRUE)
+
+            if (!transportLost || !session->running ||
+                freerdp_shall_disconnect_context(session->instance->context))
             {
-                set_error(session, "FreeRDP transport closed.");
                 break;
             }
+
+            if (!reconnect_session(session))
+                break;
+
+            transportLost = false;
         }
 
         const auto connectedMilliseconds = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -1961,12 +2991,18 @@ void connection_thread(CxRdpSession* session)
             !retriedWithoutClipboard &&
             connectedMilliseconds < 2000;
 
+        // Rebuilding without the clipboard must look like one continuous
+        // connection attempt to the host.
+        if (shouldRetryWithoutClipboard)
+            session->suppress_disconnect_callback = true;
+
         freerdp_disconnect(session->instance);
         free_instance(session);
 
         if (shouldRetryWithoutClipboard)
         {
             retriedWithoutClipboard = true;
+            forcedProfile = session->successful_security_profile;
             notify_status(session, "RDP clipboard channel closed the session early; retrying without clipboard.");
             continue;
         }
@@ -1990,7 +3026,14 @@ CX_RDP_API uint32_t cxrdp_get_capabilities(void)
 {
     uint32_t capabilities = CX_RDP_CAPABILITY_CLIPBOARD |
                             CX_RDP_CAPABILITY_DRIVE_REDIRECTION |
-                            CX_RDP_CAPABILITY_KEYBOARD_HOOK;
+                            CX_RDP_CAPABILITY_KEYBOARD_HOOK |
+                            CX_RDP_CAPABILITY_AUTO_RECONNECT |
+                            CX_RDP_CAPABILITY_RUNTIME_RESIZE |
+                            CX_RDP_CAPABILITY_FAST_CONNECT |
+                            CX_RDP_CAPABILITY_FRAME_MARKER |
+                            CX_RDP_CAPABILITY_PERFORMANCE_FLAGS |
+                            CX_RDP_CAPABILITY_DIRTY_RECT |
+                            CX_RDP_CAPABILITY_GFX;
     if (has_native_audio_backend())
         capabilities |= CX_RDP_CAPABILITY_AUDIO_PLAYBACK | CX_RDP_CAPABILITY_MICROPHONE;
     return capabilities;
@@ -2089,6 +3132,22 @@ CX_RDP_API int cxrdp_connect(
     session->color_depth = color_depth == 15 || color_depth == 16 || color_depth == 24 || color_depth == 32
         ? color_depth
         : 32;
+    session->successful_security_profile.clear();
+    session->connected_at = {};
+    session->suppress_disconnect_callback = false;
+    {
+        std::lock_guard<std::mutex> lock(session->dirty_mutex);
+        session->dirty_valid = false;
+        session->dirty_x = 0;
+        session->dirty_y = 0;
+        session->dirty_width = 0;
+        session->dirty_height = 0;
+    }
+    session->gfx_frame_mode = false;
+    session->gfx = nullptr;
+    session->gfx_bound = false;
+    session->gfx_pending_bind = false;
+    session->gfx_frame_mode_reported = false;
     ensure_openssl_providers(session);
 
     session->running = true;
@@ -2245,6 +3304,173 @@ CX_RDP_API int cxrdp_set_keyboard_options(
     }
 
     session->apply_key_combinations_remotely = apply_key_combinations_remotely != 0;
+    return 0;
+}
+
+CX_RDP_API int cxrdp_set_display_scale(void* handle, int scalePercent)
+{
+    auto* session = static_cast<CxRdpSession*>(handle);
+    if (!session)
+        return -1;
+
+    if (session->running)
+    {
+        set_error(session, "RDP display scale must be configured before connecting.");
+        return -2;
+    }
+
+    if (scalePercent != 0 && (scalePercent < 50 || scalePercent > 400))
+    {
+        set_error(session, "RDP display scale must be 0 or a percentage between 50 and 400.");
+        return -3;
+    }
+
+    session->display_scale_percent = scalePercent;
+    return 0;
+}
+
+CX_RDP_API int cxrdp_update_display(void* handle, int width, int height, int scalePercent)
+{
+    auto* session = static_cast<CxRdpSession*>(handle);
+    if (!session || !session->connected.load() || !session->running.load())
+        return -1;
+
+    if (width < 320 || height < 240 || width > 8192 || height > 4320)
+    {
+        set_error(session, "RDP display size is out of range.");
+        return -2;
+    }
+
+    if (scalePercent != 0 && (scalePercent < 50 || scalePercent > 400))
+    {
+        set_error(session, "RDP display scale is out of range.");
+        return -3;
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(session->display_mutex);
+        session->pending_width = width;
+        session->pending_height = height;
+        session->pending_scale_percent = scalePercent;
+        session->display_update_pending = true;
+    }
+    return 0;
+}
+
+CX_RDP_API int cxrdp_set_security_profile(void* handle, const char* profileName)
+{
+    auto* session = static_cast<CxRdpSession*>(handle);
+    if (!session)
+        return -1;
+    if (session->running)
+    {
+        set_error(session, "RDP security profile must be configured before connecting.");
+        return -2;
+    }
+
+    const char* value = profileName ? profileName : "";
+    if (value[0] != '\0')
+    {
+        bool known = false;
+        for (size_t i = 0; i < kSecurityProfileCount; ++i)
+        {
+            if (std::strcmp(kSecurityProfiles[i].name, value) == 0)
+            {
+                known = true;
+                break;
+            }
+        }
+        if (!known)
+            return -3;
+    }
+
+    session->preferred_security_profile = value;
+    return 0;
+}
+
+CX_RDP_API int cxrdp_set_clipboard_channel(void* handle, int enabled)
+{
+    auto* session = static_cast<CxRdpSession*>(handle);
+    if (!session)
+        return -1;
+    if (session->running)
+    {
+        set_error(session, "RDP clipboard setting must be configured before connecting.");
+        return -2;
+    }
+
+    session->clipboard_channel_requested = enabled != 0;
+    return 0;
+}
+
+CX_RDP_API int cxrdp_set_frame_marker_enabled(void* handle, int enabled)
+{
+    auto* session = static_cast<CxRdpSession*>(handle);
+    if (!session)
+        return -1;
+    if (session->running)
+    {
+        set_error(session, "RDP frame marker setting must be configured before connecting.");
+        return -2;
+    }
+
+    session->frame_marker_enabled = enabled != 0;
+    return 0;
+}
+
+CX_RDP_API int cxrdp_set_disable_wallpaper(void* handle, int enabled)
+{
+    auto* session = static_cast<CxRdpSession*>(handle);
+    if (!session)
+        return -1;
+    if (session->running)
+    {
+        set_error(session, "RDP wallpaper setting must be configured before connecting.");
+        return -2;
+    }
+
+    session->disable_wallpaper = enabled != 0;
+    return 0;
+}
+
+CX_RDP_API int cxrdp_get_frame_dirty_rect(
+    void* handle,
+    int* x,
+    int* y,
+    int* width,
+    int* height)
+{
+    auto* session = static_cast<CxRdpSession*>(handle);
+    if (!session)
+        return 1;
+
+    std::lock_guard<std::mutex> lock(session->dirty_mutex);
+    if (!session->dirty_valid || session->dirty_width <= 0 || session->dirty_height <= 0)
+        return 1;
+
+    if (x)
+        *x = session->dirty_x;
+    if (y)
+        *y = session->dirty_y;
+    if (width)
+        *width = session->dirty_width;
+    if (height)
+        *height = session->dirty_height;
+    return 0;
+}
+
+CX_RDP_API int cxrdp_set_graphics_pipeline(void* handle, int enabled)
+{
+    auto* session = static_cast<CxRdpSession*>(handle);
+    if (!session)
+        return -1;
+    if (session->running)
+    {
+        set_error(session, "RDP graphics pipeline setting must be configured before connecting.");
+        return -2;
+    }
+
+    session->graphics_pipeline_requested = enabled != 0;
     return 0;
 }
 
