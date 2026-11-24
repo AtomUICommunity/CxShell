@@ -259,6 +259,7 @@ public partial class SessionTreeViewModel : ObservableObject
         target.RdpDpiPolicy = source.RdpDpiPolicy;
         target.RdpFrameStrategy = source.RdpFrameStrategy;
         target.RdpColorQuality = source.RdpColorQuality;
+        target.RdpSecurityMode = source.RdpSecurityMode;
         target.RdpApplyKeyCombinations = source.RdpApplyKeyCombinations;
         target.RdpClipboardEnabled = source.RdpClipboardEnabled;
         target.RdpDisableWallpaper = source.RdpDisableWallpaper;
@@ -1180,6 +1181,7 @@ public partial class SessionTreeViewModel : ObservableObject
             RdpDpiPolicy = source.RdpDpiPolicy,
             RdpFrameStrategy = source.RdpFrameStrategy,
             RdpColorQuality = source.RdpColorQuality,
+            RdpSecurityMode = source.RdpSecurityMode,
             RdpApplyKeyCombinations = source.RdpApplyKeyCombinations,
             RdpClipboardEnabled = source.RdpClipboardEnabled,
             RdpDisableWallpaper = source.RdpDisableWallpaper,
