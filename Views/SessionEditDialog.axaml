@@ -1717,11 +1717,16 @@
                                     <atom:CheckBox Content="{Binding [UiText.091], Source={x:Static services:LocalizationService.Shared}}"
                                                    atom:ToolTip.Tip="{Binding [SessionEdit.RdpKeyboardHint], Source={x:Static services:LocalizationService.Shared}}"
                                                    IsChecked="{Binding RdpApplyKeyCombinations, Mode=TwoWay}"/>
-                                    <atom:CheckBox Content="Sync CapsLock / NumLock / ScrollLock state"
-                                                   atom:ToolTip.Tip="Automatically synchronize local lock key states to the remote session on connect or focus."
+                                    <atom:CheckBox Content="{Binding [SessionEdit.RdpSyncLockKeys], Source={x:Static services:LocalizationService.Shared}}"
+                                                   atom:ToolTip.Tip="{Binding [SessionEdit.RdpSyncLockKeysHint], Source={x:Static services:LocalizationService.Shared}}"
                                                    IsChecked="{Binding RdpSyncLockKeys, Mode=TwoWay}"/>
-                                    <atom:CheckBox Content="Enable clipboard large file locking (LockClipboardData)"
-                                                   atom:ToolTip.Tip="Lock clipboard file snapshots during large file transfers so copying other content does not abort transfers."
+                                    <!-- Hidden until the native bridge implements LockClipboardData:
+                                         cxrdp_set_clipboard_lock_enabled is declared in cxrdp_bridge.h
+                                         (API 14) but never implemented, so the capability bit is
+                                         never reported and the option would do nothing. -->
+                                    <atom:CheckBox Content="{Binding [SessionEdit.RdpEnableClipboardLock], Source={x:Static services:LocalizationService.Shared}}"
+                                                   atom:ToolTip.Tip="{Binding [SessionEdit.RdpEnableClipboardLockHint], Source={x:Static services:LocalizationService.Shared}}"
+                                                   IsVisible="False"
                                                    IsChecked="{Binding RdpEnableClipboardLock, Mode=TwoWay}"/>
                                 </StackPanel>
 
