@@ -92,6 +92,7 @@ public sealed class RdpBridgeClient : IDisposable
     private const uint DirtyRectCapability = 0x00000400;
     private const uint GfxApiVersion = 11;
     private const uint GfxCapability = 0x00000800;
+    private const uint GfxH264Capability = 0x00080000;
     private const uint SyncLockKeysApiVersion = 12;
     private const uint SyncLockKeysCapability = 0x00001000;
     private const uint PointerShapeApiVersion = 13;
@@ -316,6 +317,15 @@ public sealed class RdpBridgeClient : IDisposable
                 var gfxResult = NativeMethods.cxrdp_set_graphics_pipeline(_handle, gfxRequested ? 1 : 0);
                 DebugLog($"graphics pipeline requested={gfxRequested} session={session.RdpGraphicsPipelineEnabled} env={GraphicsPipelineForcedOn} result={gfxResult}");
             });
+            if ((nativeCapabilities & GfxH264Capability) != 0)
+            {
+                var h264Requested = gfxRequested && session.RdpH264Enabled;
+                TryInvokeOptionalNative("cxrdp_set_h264_enabled", () =>
+                {
+                    var h264Result = NativeMethods.cxrdp_set_h264_enabled(_handle, h264Requested ? 1 : 0);
+                    DebugLog($"graphics pipeline h264 requested={h264Requested} result={h264Result}");
+                });
+            }
         }
         else
         {
@@ -1703,6 +1713,9 @@ public sealed class RdpBridgeClient : IDisposable
 
         [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
         public static extern int cxrdp_set_graphics_pipeline(IntPtr handle, int enabled);
+
+        [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+        public static extern int cxrdp_set_h264_enabled(IntPtr handle, int enabled);
 
         [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
         public static extern IntPtr cxrdp_get_last_error(IntPtr handle);

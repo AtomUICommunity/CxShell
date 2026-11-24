@@ -627,6 +627,7 @@ public class SessionInfo
     /// the pipeline still connect - the bridge retries once without EGFX.
     /// </summary>
     public bool RdpGraphicsPipelineEnabled { get; set; } = true;
+    public bool RdpH264Enabled { get; set; }
     public bool RdpRedirectDrives { get; set; }
     public string RdpDriveName { get; set; } = "CxShell";
     public string RdpDrivePath { get; set; } = string.Empty;
