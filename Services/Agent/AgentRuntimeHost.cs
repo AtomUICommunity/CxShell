@@ -491,7 +491,8 @@ public sealed class AgentRuntimeHost : IAgentRuntimeHost, IDisposable
                 new AgentRuntimeRequestCancelResult(
                     cancelled,
                     targetRequestId,
-                    cancelled ? null : "The target request was not found or has already completed.")
+                    cancelled ? null : "The target request was not found or has already completed."),
+                CxShell.Services.AppJsonOptions.CamelCase
             )
         };
     }

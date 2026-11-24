@@ -10,11 +10,7 @@ namespace CxShell.Services.Agent;
 /// </summary>
 public sealed class AgentRuntimeJsonEndpoint
 {
-    private static readonly JsonSerializerOptions JsonOptions = new()
-    {
-        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-        Converters = { new JsonStringEnumConverter() }
-    };
+    private static readonly JsonSerializerOptions JsonOptions = CxShell.Services.AppJsonOptions.CamelCase;
 
     private readonly IAgentRuntimeHost _host;
 

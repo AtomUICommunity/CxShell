@@ -99,7 +99,7 @@ public sealed class AgentAuditLog
             if (string.IsNullOrWhiteSpace(json))
                 return;
 
-            var entries = JsonSerializer.Deserialize<List<AgentAuditEntry>>(json);
+            var entries = JsonSerializer.Deserialize<List<AgentAuditEntry>>(json, CxShell.Services.AppJsonOptions.Default);
             if (entries == null)
                 return;
 
@@ -121,7 +121,7 @@ public sealed class AgentAuditLog
             return;
         try
         {
-            var json = JsonSerializer.Serialize(_entries.Take(MaximumEntries).ToArray());
+            var json = JsonSerializer.Serialize(_entries.Take(MaximumEntries).ToArray(), CxShell.Services.AppJsonOptions.Default);
             var encrypted = PasswordEncryptionService.Encrypt(json);
             _store.Write("agent_audit", "entries", encrypted);
         }
@@ -139,7 +139,7 @@ public sealed class AgentAuditLog
 
         try
         {
-            return JsonSerializer.Deserialize<List<AgentAuditEntry>>(json);
+            return JsonSerializer.Deserialize<List<AgentAuditEntry>>(json, CxShell.Services.AppJsonOptions.Default);
         }
         catch (JsonException)
         {

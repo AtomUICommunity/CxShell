@@ -31,11 +31,7 @@ public interface IAgentRuntimeRequestCancellationTransport
 /// </summary>
 public sealed class InProcessAgentRuntimeTransport : IAgentRuntimeTransport, IAgentRuntimeEventTransport
 {
-    private static readonly JsonSerializerOptions JsonOptions = new()
-    {
-        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-        Converters = { new JsonStringEnumConverter() }
-    };
+    private static readonly JsonSerializerOptions JsonOptions = CxShell.Services.AppJsonOptions.CamelCase;
 
     private readonly AgentRuntimeJsonEndpoint _endpoint;
     private readonly IAgentRuntimeHost _host;
@@ -424,11 +420,7 @@ public sealed class AgentRuntimeStreamSession : IAgentRuntimeStreamSession
         }
     }
 
-    private static readonly JsonSerializerOptions JsonOptions = new()
-    {
-        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-        Converters = { new JsonStringEnumConverter() }
-    };
+    private static readonly JsonSerializerOptions JsonOptions = CxShell.Services.AppJsonOptions.CamelCase;
 
     private static string SerializeDefaultEvent(AgentRuntimeModuleEvent @event)
     {

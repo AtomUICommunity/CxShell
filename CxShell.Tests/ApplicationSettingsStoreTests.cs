@@ -138,8 +138,9 @@ public sealed class ApplicationSettingsStoreTests
 
         Assert.Equal(ApplicationSettings.CurrentSchemaVersion, loaded.SchemaVersion);
         Assert.Equal(300, loaded.AgentProvider.RequestTimeoutSeconds);
-        var saved = JsonSerializer.Deserialize<ApplicationSettings>(
-            new SqliteAppDataStore(directory.Path).Read("application_settings"));
+        var rawJson = new SqliteAppDataStore(directory.Path).Read("application_settings");
+        Assert.NotNull(rawJson);
+        var saved = JsonSerializer.Deserialize<ApplicationSettings>(rawJson);
         Assert.NotNull(saved);
         Assert.Equal(300, saved.AgentProvider.RequestTimeoutSeconds);
         Assert.True(File.Exists(path + ".migrated.bak"));

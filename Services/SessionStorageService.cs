@@ -72,7 +72,7 @@ public class SessionStorageService
             QuickSessionIds = data.QuickSessionIds,
             ExportedAt = data.ExportedAt
         };
-        var json = System.Text.Json.JsonSerializer.Serialize(persisted);
+        var json = System.Text.Json.JsonSerializer.Serialize(persisted, AppJsonOptions.Default);
         _store.Write("sessions", "default", json);
     }
 
@@ -80,7 +80,7 @@ public class SessionStorageService
     {
         try
         {
-            return System.Text.Json.JsonSerializer.Deserialize<SessionData>(json);
+            return System.Text.Json.JsonSerializer.Deserialize<SessionData>(json, AppJsonOptions.Default);
         }
         catch (System.Text.Json.JsonException)
         {

@@ -11,11 +11,7 @@ namespace CxShell.Services.Agent;
 /// </summary>
 public sealed record AgentToolResultEnvelope
 {
-    private static readonly JsonSerializerOptions JsonOptions = new()
-    {
-        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-        Converters = { new JsonStringEnumConverter() }
-    };
+    private static readonly JsonSerializerOptions JsonOptions = CxShell.Services.AppJsonOptions.CamelCase;
 
     public bool Success { get; init; }
     public string Status { get; init; } = string.Empty;

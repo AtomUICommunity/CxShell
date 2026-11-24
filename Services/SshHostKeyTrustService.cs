@@ -13,7 +13,7 @@ public interface ISshHostKeyPrompt
 
 public sealed class SshHostKeyTrustService
 {
-    private sealed class KnownHostsFile
+    internal sealed class KnownHostsFile
     {
         public int Version { get; set; } = 1;
         public List<KnownSshHostKey> Hosts { get; set; } = [];
@@ -239,14 +239,14 @@ public sealed class SshHostKeyTrustService
         _store.Write(
             "ssh_host_keys",
             "trusted_hosts",
-            JsonSerializer.Serialize(file));
+            JsonSerializer.Serialize(file, AppJsonOptions.Default));
     }
 
     private static KnownHostsFile? TryDeserializeKnownHosts(string json)
     {
         try
         {
-            var file = JsonSerializer.Deserialize<KnownHostsFile>(json);
+            var file = JsonSerializer.Deserialize<KnownHostsFile>(json, AppJsonOptions.Default);
             if (file == null)
                 return null;
             file.Hosts ??= [];

@@ -168,8 +168,7 @@ public sealed class ConnectionAuditService
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
         var exportEntries = entries ?? ReadRecent();
-        var options = new JsonSerializerOptions { WriteIndented = true };
-        var json = JsonSerializer.Serialize(exportEntries, options);
+        var json = JsonSerializer.Serialize(exportEntries, AppJsonOptions.Indented);
         File.WriteAllText(path, json, new UTF8Encoding(encoderShouldEmitUTF8Identifier: true));
     }
 
@@ -198,14 +197,14 @@ public sealed class ConnectionAuditService
 
     private void SaveUnsafe(IReadOnlyList<ConnectionAuditEntry> entries)
     {
-        _store.Write("connection_audit", "entries", JsonSerializer.Serialize(entries));
+        _store.Write("connection_audit", "entries", JsonSerializer.Serialize(entries, AppJsonOptions.Default));
     }
 
     private static List<ConnectionAuditEntry>? TryDeserialize(string json)
     {
         try
         {
-            return JsonSerializer.Deserialize<List<ConnectionAuditEntry>>(json);
+            return JsonSerializer.Deserialize<List<ConnectionAuditEntry>>(json, AppJsonOptions.Default);
         }
         catch (JsonException)
         {

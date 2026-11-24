@@ -51,7 +51,7 @@ public static class BastionTokenExchangeService
         var request = new HttpRequestMessage(HttpMethod.Post, endpoint)
         {
             Content = new StringContent(
-                JsonSerializer.Serialize(new TokenExchangeRequest(token)),
+                JsonSerializer.Serialize(new TokenExchangeRequest(token), AppJsonOptions.Default),
                 Encoding.UTF8,
                 "application/json")
         };
@@ -124,5 +124,5 @@ public static class BastionTokenExchangeService
         return false;
     }
 
-    private sealed record TokenExchangeRequest(string Token);
+    internal sealed record TokenExchangeRequest(string Token);
 }

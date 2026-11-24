@@ -3,6 +3,7 @@ using System.Collections.Generic;
 
 namespace CxShell.Models;
 
+[JsonConverter(typeof(JsonStringEnumConverter<AgentProviderType>))]
 public enum AgentProviderType
 {
     OpenAiChatCompatible,
@@ -20,7 +21,6 @@ public sealed class AgentModelSettings
     public string Name { get; set; } = string.Empty;
     public string ModelId { get; set; } = string.Empty;
 
-    [JsonConverter(typeof(JsonStringEnumConverter))]
     public AgentProviderType? ProtocolOverride { get; set; }
 
     public bool Enabled { get; set; } = true;
@@ -37,7 +37,6 @@ public sealed class AgentProviderSettings
     public string Name { get; set; } = string.Empty;
     public string BuiltinId { get; set; } = string.Empty;
 
-    [JsonConverter(typeof(JsonStringEnumConverter))]
     public AgentProviderType Type { get; set; } = AgentProviderType.OpenAiChatCompatible;
 
     public string BaseUrl { get; set; } = string.Empty;

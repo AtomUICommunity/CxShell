@@ -19,10 +19,7 @@ public interface IAgentRunHistoryStore
 /// </summary>
 public sealed class SqliteAgentRunHistoryStore : IAgentRunHistoryStore
 {
-    private static readonly JsonSerializerOptions JsonOptions = new()
-    {
-        WriteIndented = true
-    };
+    private static readonly JsonSerializerOptions JsonOptions = AppJsonOptions.Indented;
 
     private const string Collection = "agent_runs";
     private readonly object _gate = new();

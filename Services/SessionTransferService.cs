@@ -8,10 +8,7 @@ public static class SessionTransferService
     public const string StorageFormat = "CxShell.Session";
     public const string Format = "CxShell.SessionExport";
 
-    private static readonly JsonSerializerOptions JsonOptions = new()
-    {
-        WriteIndented = true
-    };
+    private static readonly JsonSerializerOptions JsonOptions = AppJsonOptions.Indented;
 
     public static void Export(string path, IEnumerable<SessionGroup> groups, IEnumerable<SessionInfo> sessions)
     {
@@ -52,7 +49,7 @@ public static class SessionTransferService
     {
         var json = File.ReadAllText(path);
 
-        var package = JsonSerializer.Deserialize<SessionData>(json)
+        var package = JsonSerializer.Deserialize<SessionData>(json, AppJsonOptions.Default)
                       ?? throw new InvalidDataException("The session export file is empty.");
 
         if ((!string.Equals(package.Format, Format, StringComparison.Ordinal) &&
@@ -120,7 +117,7 @@ public static class SessionTransferService
     private static SessionInfo CloneSessionForExport(SessionInfo source)
     {
         var json = JsonSerializer.Serialize(source, JsonOptions);
-        var clone = JsonSerializer.Deserialize<SessionInfo>(json)
+        var clone = JsonSerializer.Deserialize<SessionInfo>(json, AppJsonOptions.Default)
                     ?? throw new InvalidDataException("Failed to copy a session for export.");
 
         clone.Password = KeepEncryptedOrEmpty(clone.Password);

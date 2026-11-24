@@ -14,6 +14,7 @@ namespace CxShell.Controls;
 /// </summary>
 public sealed class DataGridSourceAdapter<T> : IDisposable
 {
+    private static readonly IComparer<object?> ObjectComparer = Comparer<object?>.Create(CompareValues);
     private readonly IReadOnlyList<T> _items;
     private readonly Dictionary<DataGridRowKey, T> _itemsByKey = new();
     private readonly DataGridLocalSource<T> _source;
@@ -30,10 +31,7 @@ public sealed class DataGridSourceAdapter<T> : IDisposable
             if (property.GetMethod == null || property.GetIndexParameters().Length != 0)
                 continue;
 
-            var addField = typeof(DataGridSourceAdapter<T>)
-                .GetMethod(nameof(AddReflectedField), BindingFlags.Static | BindingFlags.NonPublic)!
-                .MakeGenericMethod(property.PropertyType);
-            addField.Invoke(null, [descriptor, property]);
+            AddReflectedField(descriptor, property);
         }
 
         _source = DataGridLocalSource<T>.Create(
@@ -171,41 +169,41 @@ public sealed class DataGridSourceAdapter<T> : IDisposable
             GetRowKey(item);
     }
 
-    private static void AddReflectedField<TValue>(
+    private static void AddReflectedField(
         DataGridLocalSourceDescriptor<T> descriptor,
         PropertyInfo property)
     {
         var fieldId = new DataGridFieldId(property.Name);
-        Func<T, TValue> getter = item =>
-        {
-            var value = property.GetValue(item);
-            return value is null ? default! : (TValue)value;
-        };
+        Func<T, object?> getter = item => property.GetValue(item);
 
         descriptor.Field(
             fieldId,
             getter,
-            CreateComparer<TValue>(),
+            ObjectComparer,
             static value => ToScalar(value),
             sortDirections: SupportsScalar(property.PropertyType)
                 ? DataGridSortDirections.All
                 : DataGridSortDirections.None);
     }
 
-    private static IComparer<TValue> CreateComparer<TValue>()
+    private static int CompareValues(object? left, object? right)
     {
-        if (typeof(IComparable).IsAssignableFrom(typeof(TValue)) ||
-            typeof(IComparable<TValue>).IsAssignableFrom(typeof(TValue)))
-            return Comparer<TValue>.Default;
+        if (ReferenceEquals(left, right))
+            return 0;
+        if (left is null)
+            return -1;
+        if (right is null)
+            return 1;
 
-        return Comparer<TValue>.Create((left, right) =>
-            StringComparer.Ordinal.Compare(left?.ToString(), right?.ToString()));
+        if (left.GetType() == right.GetType() && left is IComparable comparable)
+            return comparable.CompareTo(right);
+
+        return StringComparer.Ordinal.Compare(left.ToString(), right.ToString());
     }
 
-    private static DataGridScalar ToScalar<TValue>(TValue value)
+    private static DataGridScalar ToScalar(object? value)
     {
-        object? boxed = value;
-        return boxed switch
+        return value switch
         {
             null => DataGridScalar.Null,
             bool item => DataGridScalar.FromBoolean(item),
@@ -225,7 +223,7 @@ public sealed class DataGridSourceAdapter<T> : IDisposable
             DateOnly item => DataGridScalar.FromDateOnly(item),
             TimeOnly item => DataGridScalar.FromTimeOnly(item),
             DateTimeOffset item => DataGridScalar.FromDateTimeOffset(item),
-            _ => DataGridScalar.FromString(boxed.ToString() ?? string.Empty)
+            _ => DataGridScalar.FromString(value.ToString() ?? string.Empty)
         };
     }
 

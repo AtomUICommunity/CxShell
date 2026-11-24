@@ -4,7 +4,7 @@
         x:Class="CxShell.Views.TabDragGhostWindow"
         Width="180"
         Height="34"
-        SystemDecorations="None"
+        WindowDecorations="None"
         WindowStartupLocation="Manual"
         ShowInTaskbar="False"
         ShowActivated="False"

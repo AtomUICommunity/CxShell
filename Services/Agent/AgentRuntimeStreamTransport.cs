@@ -18,11 +18,7 @@ public sealed class AgentRuntimeStreamTransport :
     public const int MaximumPendingRequests = 64;
     private const int ReadBufferSize = 16 * 1024;
 
-    private static readonly JsonSerializerOptions JsonOptions = new()
-    {
-        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-        Converters = { new JsonStringEnumConverter() }
-    };
+    private static readonly JsonSerializerOptions JsonOptions = CxShell.Services.AppJsonOptions.CamelCase;
 
     private readonly Stream _stream;
     private readonly bool _leaveOpen;
@@ -331,7 +327,7 @@ public sealed class AgentRuntimeStreamTransport :
         }
     }
 
-    private sealed record RuntimeRequestEnvelope(
+    internal sealed record RuntimeRequestEnvelope(
         [property: JsonPropertyName("requestId")] string RequestId,
         [property: JsonPropertyName("method")] string Method,
         [property: JsonPropertyName("params")] JsonElement Parameters);

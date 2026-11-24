@@ -46,11 +46,7 @@ public interface IAgentRuntimeClient
 
 public sealed class AgentRuntimeClient : IAgentRuntimeClient
 {
-    private static readonly JsonSerializerOptions JsonOptions = new()
-    {
-        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-        Converters = { new JsonStringEnumConverter() }
-    };
+    private static readonly JsonSerializerOptions JsonOptions = CxShell.Services.AppJsonOptions.CamelCase;
 
     private readonly IAgentRuntimeTransport _transport;
     private long _generatedRequestId;
@@ -259,7 +255,7 @@ public sealed class AgentRuntimeClient : IAgentRuntimeClient
         }
     }
 
-    private sealed record RuntimeRequestEnvelope(
+    internal sealed record RuntimeRequestEnvelope(
         [property: JsonPropertyName("requestId")] string RequestId,
         [property: JsonPropertyName("method")] string Method,
         [property: JsonPropertyName("params")] JsonElement Parameters);

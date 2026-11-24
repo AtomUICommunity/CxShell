@@ -320,7 +320,7 @@ public sealed class AgentPanelViewModelTests
             Assert.Equal("Thinking", panel.ReasoningEffortText);
             Assert.Equal(
                 ["Default", "Low", "Medium", "High"],
-                panel.ReasoningEffortOptions.Select(option => option.Header?.ToString()).ToArray());
+                panel.ReasoningEffortOptions.Select(option => option.Header?.ToString() ?? string.Empty).ToArray());
             Assert.Contains(nameof(AgentPanelViewModel.ReasoningEffortText), changedProperties);
         }
         finally

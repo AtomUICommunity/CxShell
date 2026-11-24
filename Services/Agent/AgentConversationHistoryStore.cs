@@ -72,12 +72,7 @@ public interface IAgentConversationHistoryStore
 /// </summary>
 internal static class LegacyAgentConversationHistoryReader
 {
-    private static readonly JsonSerializerOptions JsonOptions = new()
-    {
-        WriteIndented = false,
-        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-        Converters = { new JsonStringEnumConverter() }
-    };
+    private static readonly JsonSerializerOptions JsonOptions = AppJsonOptions.CamelCase;
 
     public static bool TryLoad(
         string filePath,

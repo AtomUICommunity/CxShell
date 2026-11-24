@@ -16,16 +16,11 @@ public sealed class SqliteAgentConversationHistoryStore : IAgentConversationHist
 {
     private const string LegacyHistoryMigrationKey = "legacy_agent_conversations_v1";
 
-    private sealed record ConversationPayload(
+    internal sealed record ConversationPayload(
         IReadOnlyList<AgentChatMessage>? ContextMessages,
         IReadOnlyList<AgentConversationMessageRecord>? Messages);
 
-    private static readonly JsonSerializerOptions JsonOptions = new()
-    {
-        WriteIndented = false,
-        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-        Converters = { new JsonStringEnumConverter() }
-    };
+    private static readonly JsonSerializerOptions JsonOptions = AppJsonOptions.CamelCase;
 
     private readonly object _gate = new();
     private readonly string _filePath;

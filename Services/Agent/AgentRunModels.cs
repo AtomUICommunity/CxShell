@@ -2,7 +2,7 @@ using System.Text.Json.Serialization;
 
 namespace CxShell.Services.Agent;
 
-[JsonConverter(typeof(JsonStringEnumConverter))]
+[JsonConverter(typeof(JsonStringEnumConverter<AgentChatMode>))]
 public enum AgentChatMode
 {
     Chat,

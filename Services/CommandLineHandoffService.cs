@@ -143,7 +143,7 @@ public static class CommandLineHandoffService
 
     private static string EncodePayload(string[] args)
     {
-        var json = JsonSerializer.SerializeToUtf8Bytes(new HandoffPayload(args));
+        var json = JsonSerializer.SerializeToUtf8Bytes(new HandoffPayload(args), AppJsonOptions.Default);
         return Convert.ToBase64String(json);
     }
 
@@ -156,7 +156,7 @@ public static class CommandLineHandoffService
         try
         {
             var json = Convert.FromBase64String(payload.Trim());
-            var decoded = JsonSerializer.Deserialize<HandoffPayload>(json);
+            var decoded = JsonSerializer.Deserialize<HandoffPayload>(json, AppJsonOptions.Default);
             if (decoded?.Args is not { Length: > 0 } decodedArgs)
                 return false;
 
@@ -176,7 +176,7 @@ public static class CommandLineHandoffService
         return Convert.ToHexString(hash)[..16].ToLowerInvariant();
     }
 
-    private sealed record HandoffPayload(string[] Args);
+    internal sealed record HandoffPayload(string[] Args);
 
     private sealed class ServerLifetime(
         CancellationTokenSource cancellationTokenSource,

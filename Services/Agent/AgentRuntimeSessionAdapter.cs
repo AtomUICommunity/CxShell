@@ -16,11 +16,7 @@ public sealed class AgentRuntimeSessionAdapter :
 {
     public const string ModuleName = "session-gateway";
 
-    private static readonly JsonSerializerOptions JsonOptions = new()
-    {
-        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-        Converters = { new JsonStringEnumConverter() }
-    };
+    private static readonly JsonSerializerOptions JsonOptions = CxShell.Services.AppJsonOptions.CamelCase;
 
     private readonly IAgentSessionGateway _gateway;
     private readonly Func<AgentProviderSettings?> _providerSettings;

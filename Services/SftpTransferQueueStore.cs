@@ -84,7 +84,7 @@ public sealed class SftpTransferQueueStore
             if (payload == null)
                 return [];
 
-            var data = JsonSerializer.Deserialize<SftpTransferQueueData>(payload);
+            var data = JsonSerializer.Deserialize<SftpTransferQueueData>(payload, AppJsonOptions.Default);
             if (data == null ||
                 !string.Equals(data.Format, "CxShell.SftpTransferQueue", StringComparison.Ordinal) ||
                 !string.Equals(data.Version, "1.0", StringComparison.Ordinal))
@@ -115,7 +115,7 @@ public sealed class SftpTransferQueueStore
                     .Take(MaxRecords)
                     .ToList()
             };
-            _store.Write(Collection, ItemKey, JsonSerializer.Serialize(data));
+            _store.Write(Collection, ItemKey, JsonSerializer.Serialize(data, AppJsonOptions.Default));
         }
         catch
         {
@@ -127,7 +127,7 @@ public sealed class SftpTransferQueueStore
     {
         try
         {
-            var data = JsonSerializer.Deserialize<SftpTransferQueueData>(json);
+            var data = JsonSerializer.Deserialize<SftpTransferQueueData>(json, AppJsonOptions.Default);
             return data != null &&
                    string.Equals(data.Format, "CxShell.SftpTransferQueue", StringComparison.Ordinal) &&
                    string.Equals(data.Version, "1.0", StringComparison.Ordinal);

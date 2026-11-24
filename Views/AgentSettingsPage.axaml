@@ -219,7 +219,7 @@
                                                Foreground="{atom:SharedTokenResource ColorTextSecondary}"/>
                                     <atom:TextBox Grid.Column="1"
                                                   Text="{Binding AgentSearxngBaseUrl, Mode=TwoWay}"
-                                                  Watermark="https://searx.example"/>
+                                                  PlaceholderText="https://searx.example"/>
                                 </Grid>
                                 <Grid ColumnDefinitions="132,*"
                                       ColumnSpacing="10"
@@ -233,7 +233,7 @@
                                                   AcceptsReturn="True"
                                                   TextWrapping="Wrap"
                                                   MinHeight="48"
-                                                  Watermark="host.example.com:8080"/>
+                                                  PlaceholderText="host.example.com:8080"/>
                                 </Grid>
                                 <atom:CheckBox Content="{Binding AgentAllowPrivateNetworkText}"
                                                IsChecked="{Binding AgentAllowPrivateNetwork, Mode=TwoWay}"

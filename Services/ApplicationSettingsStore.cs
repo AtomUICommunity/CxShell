@@ -11,7 +11,7 @@ namespace CxShell.Services;
 public sealed class ApplicationSettingsStore
 {
     private const string LegacyFileName = "application-settings.json";
-    private static readonly JsonSerializerOptions ComparisonJsonOptions = new();
+    private static readonly JsonSerializerOptions ComparisonJsonOptions = AppJsonOptions.Default;
     private readonly string _directory;
     private readonly string _path;
     private readonly SqliteAppDataStore _store;
@@ -48,7 +48,7 @@ public sealed class ApplicationSettingsStore
 
         try
         {
-            var loaded = JsonSerializer.Deserialize<ApplicationSettings>(payload);
+            var loaded = JsonSerializer.Deserialize<ApplicationSettings>(payload, AppJsonOptions.Default);
             if (loaded == null)
                 return Recover(fallback);
 
@@ -81,8 +81,7 @@ public sealed class ApplicationSettingsStore
         ArgumentNullException.ThrowIfNull(settings);
 
         Normalize(settings);
-        var options = new JsonSerializerOptions { WriteIndented = true };
-        var json = JsonSerializer.Serialize(settings, options);
+        var json = JsonSerializer.Serialize(settings, AppJsonOptions.Indented);
         _store.Write("application_settings", "default", json);
     }
 
@@ -201,7 +200,7 @@ public sealed class ApplicationSettingsStore
     {
         try
         {
-            return JsonSerializer.Deserialize<ApplicationSettings>(json);
+            return JsonSerializer.Deserialize<ApplicationSettings>(json, AppJsonOptions.Default);
         }
         catch (JsonException)
         {

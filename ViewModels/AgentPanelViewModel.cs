@@ -41,11 +41,7 @@ public sealed partial class AgentPanelViewModel : ObservableObject, IDisposable
         "and open_session to establish a saved SSH connection before attempting terminal " +
         "operations.";
 
-    private static readonly JsonSerializerOptions RuntimeJsonOptions = new()
-    {
-        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-        Converters = { new JsonStringEnumConverter() }
-    };
+    private static readonly JsonSerializerOptions RuntimeJsonOptions = CxShell.Services.AppJsonOptions.CamelCase;
 
     private readonly IAgentRuntimeClient _runtimeClient;
     private readonly IAgentRuntimeStatusSource? _runtimeStatusSource;

@@ -11,7 +11,7 @@ public sealed class SessionRecordingStore
     private readonly string _storageDirectory;
     private readonly SqliteAppDataStore _metadataStore;
     private readonly SemaphoreSlim _gate = new(1, 1);
-    private readonly JsonSerializerOptions _jsonOptions = new() { WriteIndented = true };
+    private readonly JsonSerializerOptions _jsonOptions = AppJsonOptions.Indented;
 
     public static SessionRecordingStore Shared { get; } = new(
         Path.Combine(SessionStorageService.GetStorageDirectory(), "recordings"),
@@ -203,7 +203,7 @@ public sealed class SessionRecordingStore
     {
         try
         {
-            return JsonSerializer.Deserialize<SessionRecording>(json);
+            return JsonSerializer.Deserialize<SessionRecording>(json, AppJsonOptions.Default);
         }
         catch (JsonException)
         {
