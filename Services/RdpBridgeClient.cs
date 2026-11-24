@@ -72,6 +72,8 @@ public sealed class RdpBridgeClient : IDisposable
     private const uint DirtyRectCapability = 0x00000400;
     private const uint GfxApiVersion = 11;
     private const uint GfxCapability = 0x00000800;
+    private const uint SyncLockKeysApiVersion = 12;
+    private const uint SyncLockKeysCapability = 0x00001000;
     private static readonly object DebugLogLock = new();
     private static readonly object NativeLoadFailureLock = new();
     private static readonly bool DetailedDebugLogEnabled = IsEnvironmentFlagEnabled("CXSHELL_RDP_DEBUG_LOG");
@@ -95,6 +97,7 @@ public sealed class RdpBridgeClient : IDisposable
     private readonly RdpFrameComposer _frameComposer = new(enabled: FrameCoalescingEnabled, useCoverage: FrameCoverageEnabled);
     private RdpFramePresentationMode _frameMode = RdpFramePresentationMode.Auto;
     private bool _frameMarkerSupported;
+    private bool _supportsSyncLockKeys;
     private bool _dirtyRectSupported;
     private bool _gfxFrameMode;
     private byte[] _frameBuffer = Array.Empty<byte>();
@@ -236,6 +239,8 @@ public sealed class RdpBridgeClient : IDisposable
 
         _frameMarkerSupported = nativeApiVersion >= FrameMarkerApiVersion &&
                                 (nativeCapabilities & FrameMarkerCapability) != 0;
+        _supportsSyncLockKeys = nativeApiVersion >= SyncLockKeysApiVersion &&
+                                (nativeCapabilities & SyncLockKeysCapability) != 0;
         if (nativeApiVersion >= GfxApiVersion && (nativeCapabilities & GfxCapability) != 0)
         {
             var gfxRequested = GraphicsPipelineForcedOn || session.RdpGraphicsPipelineEnabled;
@@ -699,6 +704,12 @@ public sealed class RdpBridgeClient : IDisposable
 
         NoteUserInteraction();
         NativeMethods.cxrdp_send_unicode_key(_handle, key, down ? 1 : 0);
+    }
+
+    public void SyncLockKeys(uint flags)
+    {
+        if (_handle != IntPtr.Zero && _supportsSyncLockKeys)
+            NativeMethods.cxrdp_sync_lock_keys(_handle, flags);
     }
 
     /// <summary>
@@ -1403,6 +1414,9 @@ public sealed class RdpBridgeClient : IDisposable
 
         [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
         public static extern void cxrdp_send_unicode_key(IntPtr handle, ushort code, int down);
+
+        [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+        public static extern void cxrdp_sync_lock_keys(IntPtr handle, uint flags);
 
         [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
         public static extern void cxrdp_set_clipboard_text(

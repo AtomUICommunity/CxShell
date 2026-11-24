@@ -21,7 +21,7 @@ typedef void (*cxrdp_status_callback)(void* user_data, const char* message);
 typedef void (*cxrdp_disconnect_callback)(void* user_data);
 typedef void (*cxrdp_clipboard_text_callback)(void* user_data, const char* text);
 
-#define CX_RDP_BRIDGE_API_VERSION 11u
+#define CX_RDP_BRIDGE_API_VERSION 12u
 #define CX_RDP_CAPABILITY_CLIPBOARD 0x00000001u
 #define CX_RDP_CAPABILITY_DRIVE_REDIRECTION 0x00000002u
 #define CX_RDP_CAPABILITY_AUDIO_PLAYBACK 0x00000004u
@@ -50,6 +50,8 @@ typedef void (*cxrdp_clipboard_text_callback)(void* user_data, const char* text)
    groups surface commands between START_FRAME/END_FRAME and FreeRDP's GDI
    backend calls EndPaint exactly once per complete frame, just like MSTSC. */
 #define CX_RDP_CAPABILITY_GFX 0x00000800u
+/* The bridge can synchronize CapsLock/NumLock/ScrollLock state to the remote session. */
+#define CX_RDP_CAPABILITY_SYNC_LOCK_KEYS 0x00001000u
 
 #define CX_RDP_AUDIO_PLAY_LOCAL 0
 #define CX_RDP_AUDIO_PLAY_REMOTE 1
@@ -79,6 +81,7 @@ CX_RDP_API void cxrdp_disconnect(void* handle);
 CX_RDP_API void cxrdp_send_pointer(void* handle, uint16_t flags, uint16_t x, uint16_t y);
 CX_RDP_API void cxrdp_send_key(void* handle, uint32_t key, int down);
 CX_RDP_API void cxrdp_send_unicode_key(void* handle, uint16_t code, int down);
+CX_RDP_API void cxrdp_sync_lock_keys(void* handle, uint32_t flags);
 CX_RDP_API void cxrdp_set_clipboard_callback(void* handle, cxrdp_clipboard_text_callback clipboard_text_callback);
 CX_RDP_API void cxrdp_set_clipboard_text(void* handle, const char* text);
 CX_RDP_API int cxrdp_set_drive_redirection(

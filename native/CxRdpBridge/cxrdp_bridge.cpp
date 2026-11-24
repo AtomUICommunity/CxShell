@@ -3045,7 +3045,8 @@ CX_RDP_API uint32_t cxrdp_get_capabilities(void)
                             CX_RDP_CAPABILITY_FRAME_MARKER |
                             CX_RDP_CAPABILITY_PERFORMANCE_FLAGS |
                             CX_RDP_CAPABILITY_DIRTY_RECT |
-                            CX_RDP_CAPABILITY_GFX;
+                            CX_RDP_CAPABILITY_GFX |
+                            CX_RDP_CAPABILITY_SYNC_LOCK_KEYS;
     if (has_native_audio_backend())
         capabilities |= CX_RDP_CAPABILITY_AUDIO_PLAYBACK | CX_RDP_CAPABILITY_MICROPHONE;
     return capabilities;
@@ -3217,6 +3218,16 @@ CX_RDP_API void cxrdp_send_unicode_key(void* handle, uint16_t code, int down)
         return;
 
     freerdp_input_send_unicode_keyboard_event(input, down ? 0 : KBD_FLAGS_RELEASE, code);
+}
+
+CX_RDP_API void cxrdp_sync_lock_keys(void* handle, uint32_t flags)
+{
+    auto* session = static_cast<CxRdpSession*>(handle);
+    auto* input = session && session->instance && session->instance->context ? session->instance->context->input : nullptr;
+    if (!session || !input || !session->connected)
+        return;
+
+    freerdp_input_send_synchronize_event(input, flags);
 }
 
 CX_RDP_API void cxrdp_set_clipboard_text(void* handle, const char* text)

@@ -107,11 +107,32 @@ public partial class RdpView : UserControl
         if (args.PropertyName == nameof(RdpViewModel.IsConnected))
         {
             if (_boundVm?.IsConnected == true)
+            {
                 StartScalingTimer();
+                SyncLocalLockKeysToRemote();
+            }
             else
                 StopScalingTimer();
         }
     }
+
+    private void SyncLocalLockKeysToRemote()
+    {
+        if (!OperatingSystem.IsWindows() || DataContext is not RdpViewModel vm || !vm.IsConnected || !vm.Session.RdpSyncLockKeys)
+            return;
+
+        uint flags = 0;
+        if ((GetKeyState(0x91) & 1) != 0) // VK_SCROLL
+            flags |= 0x01;
+        if ((GetKeyState(0x90) & 1) != 0) // VK_NUMLOCK
+            flags |= 0x02;
+        if ((GetKeyState(0x14) & 1) != 0) // VK_CAPITAL
+            flags |= 0x04;
+        vm.SyncLockKeys(flags);
+    }
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern short GetKeyState(int nVirtKey);
 
     private void StartScalingTimer()
     {
