@@ -641,6 +641,12 @@ public partial class RdpViewModel : ObservableObject, IDisposable
             _client.SetClipboardText(text);
     }
 
+    public void SyncLockKeys(uint flags)
+    {
+        if (IsConnected)
+            _client.SyncLockKeys(flags);
+    }
+
     [RelayCommand]
     private void ToggleScaleMode()
     {

@@ -600,6 +600,7 @@ public class SessionInfo
     /// <summary>Preferred RDP security mode: Auto, Negotiate, NLA, TLS or RDP.</summary>
     public string RdpSecurityMode { get; set; } = "Auto";
     public bool RdpApplyKeyCombinations { get; set; } = true;
+    public bool RdpSyncLockKeys { get; set; } = true;
     public bool RdpClipboardEnabled { get; set; } = true;
     /// <summary>Send PERF_DISABLE_WALLPAPER so the server skips the desktop wallpaper.</summary>
     public bool RdpDisableWallpaper { get; set; } = true;

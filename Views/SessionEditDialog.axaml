@@ -1713,11 +1713,14 @@
                                            FontWeight="SemiBold"
                                            Foreground="{atom:SharedTokenResource ColorText}"/>
 
-                                <atom:CheckBox Grid.Row="2"
-                                               Grid.ColumnSpan="3"
-                                               Content="{Binding [UiText.091], Source={x:Static services:LocalizationService.Shared}}"
-                                               atom:ToolTip.Tip="{Binding [SessionEdit.RdpKeyboardHint], Source={x:Static services:LocalizationService.Shared}}"
-                                               IsChecked="{Binding RdpApplyKeyCombinations, Mode=TwoWay}"/>
+                                <StackPanel Grid.Row="2" Grid.ColumnSpan="3" Spacing="8">
+                                    <atom:CheckBox Content="{Binding [UiText.091], Source={x:Static services:LocalizationService.Shared}}"
+                                                   atom:ToolTip.Tip="{Binding [SessionEdit.RdpKeyboardHint], Source={x:Static services:LocalizationService.Shared}}"
+                                                   IsChecked="{Binding RdpApplyKeyCombinations, Mode=TwoWay}"/>
+                                    <atom:CheckBox Content="Sync CapsLock / NumLock / ScrollLock state"
+                                                   atom:ToolTip.Tip="Automatically synchronize local lock key states to the remote session on connect or focus."
+                                                   IsChecked="{Binding RdpSyncLockKeys, Mode=TwoWay}"/>
+                                </StackPanel>
 
                                 <atom:CheckBox Grid.Row="4"
                                                Grid.ColumnSpan="3"

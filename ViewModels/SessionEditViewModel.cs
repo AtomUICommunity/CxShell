@@ -332,6 +332,7 @@ public partial class SessionEditViewModel : ObservableObject
     [ObservableProperty] private string _rdpColorQuality = "32";
     [ObservableProperty] private string _rdpSecurityMode = "Auto";
     [ObservableProperty] private bool _rdpApplyKeyCombinations = true;
+    [ObservableProperty] private bool _rdpSyncLockKeys = true;
     [ObservableProperty] private bool _rdpClipboardEnabled = true;
     [ObservableProperty] private bool _rdpDisableWallpaper = true;
     [ObservableProperty] private bool _rdpGraphicsPipelineEnabled;
@@ -1545,6 +1546,7 @@ public partial class SessionEditViewModel : ObservableObject
         RdpColorQuality = string.IsNullOrWhiteSpace(session.RdpColorQuality) ? "32" : session.RdpColorQuality;
         RdpSecurityMode = string.IsNullOrWhiteSpace(session.RdpSecurityMode) ? "Auto" : session.RdpSecurityMode;
         RdpApplyKeyCombinations = session.RdpApplyKeyCombinations;
+        RdpSyncLockKeys = session.RdpSyncLockKeys;
         RdpClipboardEnabled = session.RdpClipboardEnabled;
         RdpDisableWallpaper = session.RdpDisableWallpaper;
         RdpGraphicsPipelineEnabled = session.RdpGraphicsPipelineEnabled;
@@ -1856,6 +1858,7 @@ public partial class SessionEditViewModel : ObservableObject
         session.RdpColorQuality = RdpColorQuality;
         session.RdpSecurityMode = string.IsNullOrWhiteSpace(RdpSecurityMode) ? "Auto" : RdpSecurityMode;
         session.RdpApplyKeyCombinations = RdpApplyKeyCombinations;
+        session.RdpSyncLockKeys = RdpSyncLockKeys;
         session.RdpClipboardEnabled = RdpClipboardEnabled;
         session.RdpDisableWallpaper = RdpDisableWallpaper;
         session.RdpGraphicsPipelineEnabled = RdpGraphicsPipelineEnabled;
