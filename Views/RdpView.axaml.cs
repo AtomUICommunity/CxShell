@@ -546,17 +546,17 @@ public partial class RdpView : UserControl
 
         var layouts = new System.Collections.Generic.List<RdpMonitorRect>(selected.Count);
         var sliceByIndex = new System.Collections.Generic.Dictionary<int, Rect>();
-        foreach (var item in selected)
-        {
-            var b = item.Screen.Bounds;
-            var w = item.Index == hostEntry.Index ? hostPixelW : Math.Clamp(b.Width & ~1, 200, 8192);
-            var h = item.Index == hostEntry.Index ? hostPixelH : Math.Clamp(b.Height & ~1, 200, 8192);
-            sliceByIndex[item.Index] = new Rect(b.X - minX, b.Y - minY, w, h);
-        }
 
         // Mode 2: Local dual PBP screens -> Remote single merged ultrawide monitor
         if (_ultrawideMode == 2 && selected.Count >= 2 && _virtualMonitorIds.Count == 0)
         {
+            foreach (var item in selected)
+            {
+                var b = item.Screen.Bounds;
+                var w = item.Index == hostEntry.Index ? hostPixelW : Math.Clamp(b.Width & ~1, 200, 8192);
+                var h = item.Index == hostEntry.Index ? hostPixelH : Math.Clamp(b.Height & ~1, 200, 8192);
+                sliceByIndex[item.Index] = new Rect(b.X - minX, b.Y - minY, w, h);
+            }
             var totalW = Math.Clamp((maxX - minX) & ~1, 200, 8192);
             var totalH = Math.Clamp((maxY - minY) & ~1, 200, 8192);
             var scale = Math.Clamp((int)Math.Round(remotePrimaryEntry.Screen.Scaling * 100), 100, 500);
@@ -564,32 +564,79 @@ public partial class RdpView : UserControl
         }
         else
         {
+            // Snap adjacent monitors tightly to hostEntry's effective pixel rect so
+            // right-left, top-bottom, and bottom-top arrangements have zero gaps or
+            // overlaps (required by MS-RDPEDISP) even when hostPixelW/H differs from
+            // the physical screen bounds (e.g. taskbar or windowed mode).
+            var hostBounds = hostEntry.Screen.Bounds;
+            var snappedCoords = new System.Collections.Generic.Dictionary<int, (int X, int Y, int W, int H, int Scale, bool IsPrimary)>();
             foreach (var item in selected)
             {
                 var b = item.Screen.Bounds;
                 var w = item.Index == hostEntry.Index ? hostPixelW : Math.Clamp(b.Width & ~1, 200, 8192);
                 var h = item.Index == hostEntry.Index ? hostPixelH : Math.Clamp(b.Height & ~1, 200, 8192);
-                var left = b.X - remotePrimaryEntry.Screen.Bounds.X;
-                var top = b.Y - remotePrimaryEntry.Screen.Bounds.Y;
+                var x = b.X;
+                var y = b.Y;
+
+                if (item.Index != hostEntry.Index)
+                {
+                    if (b.X >= hostBounds.Right - 2)
+                        x = hostBounds.X + hostPixelW;
+                    else if (b.Right <= hostBounds.X + 2)
+                        x = hostBounds.X - w;
+
+                    if (b.Y >= hostBounds.Bottom - 2)
+                        y = hostBounds.Y + hostPixelH;
+                    else if (b.Bottom <= hostBounds.Y + 2)
+                        y = hostBounds.Y - h;
+                }
+
                 var scale = Math.Clamp((int)Math.Round(item.Screen.Scaling * 100), 100, 500);
-                layouts.Add(new RdpMonitorRect(left, top, w, h, scale, item.Index == remotePrimaryEntry.Index));
+                snappedCoords[item.Index] = (x, y, w, h, scale, item.Index == remotePrimaryEntry.Index);
+            }
+
+            var primaryCoord = snappedCoords[remotePrimaryEntry.Index];
+            var layoutByIndex = new System.Collections.Generic.Dictionary<int, RdpMonitorRect>();
+            var minLayoutX = int.MaxValue;
+            var minLayoutY = int.MaxValue;
+            var maxLayoutRight = int.MinValue;
+
+            foreach (var item in selected)
+            {
+                var c = snappedCoords[item.Index];
+                var left = c.X - primaryCoord.X;
+                var top = c.Y - primaryCoord.Y;
+                var rect = new RdpMonitorRect(left, top, c.W, c.H, c.Scale, c.IsPrimary);
+                layouts.Add(rect);
+                layoutByIndex[item.Index] = rect;
+                if (left < minLayoutX) minLayoutX = left;
+                if (top < minLayoutY) minLayoutY = top;
+                if (left + c.W > maxLayoutRight) maxLayoutRight = left + c.W;
             }
 
             // Append any user-created virtual monitors (windowed on host screen) to the right
-            var nextRight = hostEntry.Screen.Bounds.X + hostPixelW;
-            if (selected.Count > 1 && maxX > nextRight)
-                nextRight = maxX;
-            var hostBounds = hostEntry.Screen.Bounds;
+            var hostLayout = layoutByIndex[hostEntry.Index];
+            var nextRight = Math.Max(hostLayout.Left + hostLayout.Width, maxLayoutRight);
             var hostScale = Math.Clamp((int)Math.Round(hostEntry.Screen.Scaling * 100), 100, 500);
             foreach (var vId in _virtualMonitorIds)
             {
                 var vw = Math.Clamp(hostBounds.Width & ~1, 200, 8192);
                 var vh = Math.Clamp(hostBounds.Height & ~1, 200, 8192);
-                var vLeft = nextRight - remotePrimaryEntry.Screen.Bounds.X;
-                var vTop = hostBounds.Y - remotePrimaryEntry.Screen.Bounds.Y;
-                layouts.Add(new RdpMonitorRect(vLeft, vTop, vw, vh, hostScale, false));
-                sliceByIndex[vId] = new Rect(nextRight - minX, hostBounds.Y - minY, vw, vh);
+                var vRect = new RdpMonitorRect(nextRight, hostLayout.Top, vw, vh, hostScale, false);
+                layouts.Add(vRect);
+                layoutByIndex[vId] = vRect;
+                if (vRect.Left < minLayoutX) minLayoutX = vRect.Left;
+                if (vRect.Top < minLayoutY) minLayoutY = vRect.Top;
                 nextRight += vw;
+            }
+
+            // Compute every monitor's framebuffer slice directly from the normalized
+            // layout coordinates so negative left/top offsets (right-left, bottom-top)
+            // map accurately to [0..totalWidth, 0..totalHeight] in the GDI framebuffer.
+            foreach (var kv in layoutByIndex)
+            {
+                var l = kv.Value;
+                sliceByIndex[kv.Key] = new Rect(l.Left - minLayoutX, l.Top - minLayoutY, l.Width, l.Height);
             }
         }
 
