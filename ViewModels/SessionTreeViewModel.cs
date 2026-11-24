@@ -260,7 +260,6 @@ public partial class SessionTreeViewModel : ObservableObject
         target.RdpFrameStrategy = source.RdpFrameStrategy;
         target.RdpColorQuality = source.RdpColorQuality;
         target.RdpSecurityMode = source.RdpSecurityMode;
-        target.RdpApplyKeyCombinations = source.RdpApplyKeyCombinations;
         target.RdpSyncLockKeys = source.RdpSyncLockKeys;
         target.RdpEnableClipboardLock = source.RdpEnableClipboardLock;
         target.RdpClipboardEnabled = source.RdpClipboardEnabled;

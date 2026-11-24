@@ -31,7 +31,7 @@ typedef void (*cxrdp_pointer_callback)(
     int hot_y,
     const uint8_t* bgra_pixels);
 
-#define CX_RDP_BRIDGE_API_VERSION 14u
+#define CX_RDP_BRIDGE_API_VERSION 15u
 #define CX_RDP_CAPABILITY_CLIPBOARD 0x00000001u
 #define CX_RDP_CAPABILITY_DRIVE_REDIRECTION 0x00000002u
 #define CX_RDP_CAPABILITY_AUDIO_PLAYBACK 0x00000004u
@@ -68,6 +68,18 @@ typedef void (*cxrdp_pointer_callback)(
 #define CX_RDP_CAPABILITY_CLIPBOARD_FILES 0x00008000u
 #define CX_RDP_CAPABILITY_CLIPBOARD_RICH_TEXT 0x00010000u
 #define CX_RDP_CAPABILITY_CLIPBOARD_LOCK 0x00020000u
+#define CX_RDP_CAPABILITY_MULTI_MONITOR 0x00040000u
+
+typedef struct CxRdpMonitorRect
+{
+    int32_t left;
+    int32_t top;
+    uint32_t width;
+    uint32_t height;
+    uint32_t desktop_scale_factor;
+    uint32_t device_scale_factor;
+    int32_t is_primary;
+} CxRdpMonitorRect;
 
 #define CX_RDP_CLIPBOARD_IMAGE_PNG 1u
 #define CX_RDP_CLIPBOARD_IMAGE_DIB 2u
@@ -145,6 +157,7 @@ CX_RDP_API int cxrdp_set_display_scale(void* handle, int scalePercent);
    The worker applies it through the display-control channel; the host must
    keep framebuffer dimensions from the frame callback. */
 CX_RDP_API int cxrdp_update_display(void* handle, int width, int height, int scalePercent);
+CX_RDP_API int cxrdp_resize_monitors(void* handle, const CxRdpMonitorRect* monitors, int count);
 
 /* Prefer the security profile that succeeded on a previous connection to this
    host: "negotiate", "nla", "tls" or "rdp". An empty/NULL name restores

@@ -2573,11 +2573,12 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
 
         var rdp = new RdpViewModel(session, password);
         var tab = new TerminalTabViewModel(session, rdp);
+        RecordAudit(session, ConnectionAuditEventType.ConnectStarted);
+
         tab.CloseRequested += CloseTab;
         tab.PropertyChanged += OnTerminalTabPropertyChanged;
         AddTabToActiveGroup(tab);
         SelectedTab = tab;
-        RecordAudit(session, ConnectionAuditEventType.ConnectStarted);
 
         IsTerminalFullScreen = false;
         ConnectionStatusText = "RDP ready";

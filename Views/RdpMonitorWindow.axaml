@@ -1,0 +1,74 @@
+<atom:Window xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:atom="https://atomui.net"
+             xmlns:antdicons="https://atomui.net/icons/antdesign"
+             xmlns:controls="using:CxShell.Controls"
+             xmlns:views="using:CxShell.Views"
+             x:Class="CxShell.Views.RdpMonitorWindow"
+             Title="CxShell RDP Monitor"
+             Icon="/Assets/CxShellLogo.png"
+             MinWidth="480"
+             MinHeight="320"
+             IsFullScreenCaptionButtonVisible="True"
+             Background="#111111">
+    <atom:Window.RightAddOn>
+        <StackPanel Orientation="Horizontal"
+                    Spacing="4"
+                    VerticalAlignment="Center"
+                    Margin="0,0,4,0">
+            <Button Height="24"
+                    Padding="8,0"
+                    Background="Transparent"
+                    BorderThickness="0"
+                    CornerRadius="4"
+                    ToolTip.Tip="切换到无边框保留任务栏模式"
+                    Click="OnEnterKeepTaskbarClick">
+                <StackPanel Orientation="Horizontal"
+                            Spacing="4"
+                            VerticalAlignment="Center">
+                    <atom:IconPresenter Icon="{antdicons:AntDesignIconProvider Kind=LayoutOutlined}"
+                                        Width="12"
+                                        Height="12"/>
+                    <TextBlock Text="保留任务栏"
+                               FontSize="12"
+                               VerticalAlignment="Center"/>
+                </StackPanel>
+            </Button>
+            <Button Height="24"
+                    Padding="8,0"
+                    Background="Transparent"
+                    BorderThickness="0"
+                    CornerRadius="4"
+                    ToolTip.Tip="切换到沉浸全屏 (F11)"
+                    Click="OnEnterImmersiveClick">
+                <StackPanel Orientation="Horizontal"
+                            Spacing="4"
+                            VerticalAlignment="Center">
+                    <atom:IconPresenter Icon="{antdicons:AntDesignIconProvider Kind=FullscreenOutlined}"
+                                        Width="12"
+                                        Height="12"/>
+                    <TextBlock Text="沉浸全屏"
+                               FontSize="12"
+                               VerticalAlignment="Center"/>
+                </StackPanel>
+            </Button>
+        </StackPanel>
+    </atom:Window.RightAddOn>
+
+    <Grid Background="#111111">
+        <controls:RdpSliceSurface x:Name="SliceSurface"
+                                  Focusable="True"
+                                  DragDrop.AllowDrop="True"
+                                  PointerMoved="OnSurfacePointerMoved"
+                                  PointerPressed="OnSurfacePointerPressed"
+                                  PointerReleased="OnSurfacePointerReleased"
+                                  PointerWheelChanged="OnSurfacePointerWheelChanged"/>
+
+        <!-- Shared full-screen connection bar -->
+        <views:FullScreenConnectionBar x:Name="FloatingBar"
+                                       ShowTaskbarModeButton="False"
+                                       ShowFullScreenButton="True"
+                                       IsQualityVisible="False"
+                                       ZIndex="100"/>
+    </Grid>
+</atom:Window>

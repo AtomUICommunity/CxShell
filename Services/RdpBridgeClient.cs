@@ -12,6 +12,26 @@ using Renci.SshNet;
 
 namespace CxShell.Services;
 
+public readonly record struct RdpMonitorRect(
+    int Left,
+    int Top,
+    int Width,
+    int Height,
+    int DesktopScaleFactor,
+    bool IsPrimary);
+
+[StructLayout(LayoutKind.Sequential)]
+internal struct NativeMonitorRect
+{
+    public int Left;
+    public int Top;
+    public uint Width;
+    public uint Height;
+    public uint DesktopScaleFactor;
+    public uint DeviceScaleFactor;
+    public int IsPrimary;
+}
+
 public sealed class RdpFramebufferEventArgs : EventArgs
 {
     private Action? _release;
@@ -83,6 +103,8 @@ public sealed class RdpBridgeClient : IDisposable
     private const uint ClipboardFilesCapability = 0x00008000;
     private const uint ClipboardRichTextCapability = 0x00010000;
     private const uint ClipboardLockCapability = 0x00020000;
+    private const uint MultiMonitorApiVersion = 15;
+    private const uint MultiMonitorCapability = 0x00040000;
     private static readonly object DebugLogLock = new();
     private static readonly object NativeLoadFailureLock = new();
     private static readonly bool DetailedDebugLogEnabled = IsEnvironmentFlagEnabled("CXSHELL_RDP_DEBUG_LOG");
@@ -109,6 +131,7 @@ public sealed class RdpBridgeClient : IDisposable
     private bool _supportsClipboardFiles;
     private bool _supportsClipboardRichText;
     private bool _supportsClipboardLock;
+    private bool _supportsMultiMonitor;
     private readonly object _frameSync = new();
     private readonly RdpFrameComposer _frameComposer = new(enabled: FrameCoalescingEnabled, useCoverage: FrameCoverageEnabled);
     private RdpFramePresentationMode _frameMode = RdpFramePresentationMode.Auto;
@@ -283,6 +306,8 @@ public sealed class RdpBridgeClient : IDisposable
             NativeMethods.cxrdp_set_clipboard_files_callback(_handle, _clipboardFilesCallback);
         if (_supportsClipboardLock)
             NativeMethods.cxrdp_set_clipboard_lock_enabled(_handle, session.RdpEnableClipboardLock ? 1 : 0);
+        _supportsMultiMonitor = nativeApiVersion >= MultiMonitorApiVersion &&
+                                (nativeCapabilities & MultiMonitorCapability) != 0;
         if (nativeApiVersion >= GfxApiVersion && (nativeCapabilities & GfxCapability) != 0)
         {
             var gfxRequested = GraphicsPipelineForcedOn || session.RdpGraphicsPipelineEnabled;
@@ -752,6 +777,34 @@ public sealed class RdpBridgeClient : IDisposable
     {
         if (_handle != IntPtr.Zero && _supportsSyncLockKeys)
             NativeMethods.cxrdp_sync_lock_keys(_handle, flags);
+    }
+
+    public bool TryResizeMonitors(IReadOnlyList<RdpMonitorRect> monitors)
+    {
+        if (_handle == IntPtr.Zero || !_supportsMultiMonitor || monitors == null || monitors.Count == 0)
+            return false;
+
+        var array = new NativeMonitorRect[Math.Min(monitors.Count, 16)];
+        for (var i = 0; i < array.Length; i++)
+        {
+            var m = monitors[i];
+            var clampedScale = Math.Clamp(m.DesktopScaleFactor, 100, 500);
+            var deviceScale = clampedScale >= 180 ? 180u : clampedScale >= 140 ? 140u : 100u;
+            array[i] = new NativeMonitorRect
+            {
+                Left = m.Left,
+                Top = m.Top,
+                Width = (uint)Math.Max(200, m.Width),
+                Height = (uint)Math.Max(200, m.Height),
+                DesktopScaleFactor = (uint)clampedScale,
+                DeviceScaleFactor = deviceScale,
+                IsPrimary = m.IsPrimary ? 1 : 0
+            };
+        }
+
+        var rc = NativeMethods.cxrdp_resize_monitors(_handle, array, array.Length);
+        DebugLogDetailed($"multi-monitor resize count={array.Length} rc={rc}");
+        return rc == 0;
     }
 
     /// <summary>
@@ -1541,6 +1594,12 @@ public sealed class RdpBridgeClient : IDisposable
 
         [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
         public static extern void cxrdp_disconnect(IntPtr handle);
+
+        [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+        public static extern int cxrdp_resize_monitors(
+            IntPtr handle,
+            [In] NativeMonitorRect[] monitors,
+            int count);
 
         [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
         public static extern void cxrdp_send_pointer(IntPtr handle, ushort flags, ushort x, ushort y);

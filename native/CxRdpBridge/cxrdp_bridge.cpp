@@ -2916,6 +2916,18 @@ void connection_thread(CxRdpSession* session)
                 // The static addin in freerdp-client3.dll is registered as
                 // "disp"; the long DVC name is only the wire protocol name.
                 freerdp_settings_set_bool(settings, FreeRDP_SupportDisplayControl, TRUE);
+                freerdp_settings_set_bool(settings, FreeRDP_UseMultimon, TRUE);
+                freerdp_settings_set_bool(settings, FreeRDP_ForceMultimon, TRUE);
+                {
+                    rdpMonitor initialMonitor{};
+                    initialMonitor.x = 0;
+                    initialMonitor.y = 0;
+                    initialMonitor.width = static_cast<INT32>(freerdp_settings_get_uint32(settings, FreeRDP_DesktopWidth));
+                    initialMonitor.height = static_cast<INT32>(freerdp_settings_get_uint32(settings, FreeRDP_DesktopHeight));
+                    initialMonitor.is_primary = TRUE;
+                    if (initialMonitor.width > 0 && initialMonitor.height > 0)
+                        freerdp_settings_set_monitor_def_array_sorted(settings, &initialMonitor, 1);
+                }
                 const char* displayChannel[] = { DISP_CHANNEL_NAME };
                 if (!freerdp_client_add_dynamic_channel(settings, 1, displayChannel))
                 {
@@ -3182,7 +3194,8 @@ CX_RDP_API uint32_t cxrdp_get_capabilities(void)
                             CX_RDP_CAPABILITY_DIRTY_RECT |
                             CX_RDP_CAPABILITY_GFX |
                             CX_RDP_CAPABILITY_SYNC_LOCK_KEYS |
-                            CX_RDP_CAPABILITY_POINTER_SHAPE;
+                            CX_RDP_CAPABILITY_POINTER_SHAPE |
+                            CX_RDP_CAPABILITY_MULTI_MONITOR;
     if (has_native_audio_backend())
         capabilities |= CX_RDP_CAPABILITY_AUDIO_PLAYBACK | CX_RDP_CAPABILITY_MICROPHONE;
     return capabilities;
@@ -3498,6 +3511,60 @@ CX_RDP_API int cxrdp_set_display_scale(void* handle, int scalePercent)
 
     session->display_scale_percent = scalePercent;
     return 0;
+}
+
+CX_RDP_API int cxrdp_resize_monitors(
+    void* handle,
+    const CxRdpMonitorRect* monitors,
+    int count)
+{
+    auto* session = static_cast<CxRdpSession*>(handle);
+    if (!session || !session->connected.load() || !session->running.load() || !monitors || count <= 0 || count > 16)
+        return -1;
+
+    DispClientContext* disp = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(session->display_mutex);
+        disp = session->disp;
+    }
+
+    if (!disp || !disp->SendMonitorLayout)
+        return -2;
+
+    std::vector<DISPLAY_CONTROL_MONITOR_LAYOUT> layouts(static_cast<size_t>(count));
+    bool hasPrimary = false;
+    for (int i = 0; i < count; ++i)
+    {
+        const auto& src = monitors[i];
+        uint32_t w = src.width < 200u ? 200u : (src.width > 8192u ? 8192u : src.width);
+        uint32_t h = src.height < 200u ? 200u : (src.height > 8192u ? 8192u : src.height);
+        w &= ~1u;
+        h &= ~1u;
+
+        auto& dst = layouts[static_cast<size_t>(i)];
+        dst.Flags = src.is_primary != 0 ? DISPLAY_CONTROL_MONITOR_PRIMARY : 0u;
+        if (src.is_primary != 0)
+            hasPrimary = true;
+        dst.Left = src.left;
+        dst.Top = src.top;
+        dst.Width = w;
+        dst.Height = h;
+        dst.PhysicalWidth = w;
+        dst.PhysicalHeight = h;
+        dst.Orientation = ORIENTATION_LANDSCAPE;
+        dst.DesktopScaleFactor = (src.desktop_scale_factor >= 100u && src.desktop_scale_factor <= 500u)
+            ? src.desktop_scale_factor
+            : 100u;
+        dst.DeviceScaleFactor = src.device_scale_factor == 180u
+            ? 180u
+            : (src.device_scale_factor == 140u ? 140u : 100u);
+    }
+
+    if (!hasPrimary)
+        layouts[0].Flags = DISPLAY_CONTROL_MONITOR_PRIMARY;
+
+    const UINT rc = disp->SendMonitorLayout(disp, static_cast<UINT32>(count), layouts.data());
+    return rc == CHANNEL_RC_OK ? 0 : -3;
 }
 
 CX_RDP_API int cxrdp_update_display(void* handle, int width, int height, int scalePercent)

@@ -45,7 +45,13 @@ public partial class DetachedTabWindow : AtomUI.Desktop.Controls.Window
         KeepTaskbarFullScreenButton.SetValue(
             AtomUI.Desktop.Controls.ToolTip.TipProperty,
             Services.LocalizationService.Shared.Text("Toolbar.FullScreenKeepTaskbarTip"));
+        DetachedMultiMonitorButton.SetValue(
+            AtomUI.Desktop.Controls.ToolTip.TipProperty,
+            Services.LocalizationService.Shared.Text("Rdp.MultiMonitorTip"));
         Closed += OnClosed;
+        FullScreenConnectionBar.ToggleFullScreenRequested += ToggleFullScreen;
+        FullScreenConnectionBar.MultiMonitorRequested += anchor =>
+            DetachedRdpView.ToggleMultiMonitorPopup(anchor, PlacementMode.Bottom, FullScreenConnectionBar.SetExternalPopupOpen);
         PropertyChanged += OnWindowPropertyChanged;
         AddHandler(KeyDownEvent, OnWindowKeyDown, RoutingStrategies.Tunnel, handledEventsToo: true);
         _dragWatchTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(120) };
@@ -66,6 +72,7 @@ public partial class DetachedTabWindow : AtomUI.Desktop.Controls.Window
         set
         {
             _tab = value;
+            FullScreenConnectionBar.ShowMultiMonitorButton = value?.IsRdpSession == true;
             DataContext = value;
         }
     }
@@ -305,6 +312,12 @@ public partial class DetachedTabWindow : AtomUI.Desktop.Controls.Window
         SessionTreeViewModel.PersistSharedSettings();
     }
 
+    private void OnDetachedMultiMonitorClick(object? sender, RoutedEventArgs e)
+    {
+        if (sender is Control anchor)
+            DetachedRdpView.ToggleMultiMonitorPopup(anchor, PlacementMode.Bottom);
+    }
+
     private void OnKeepTaskbarFullScreenClick(object? sender, RoutedEventArgs e)
     {
         if (_keepTaskbarFullScreen.IsActive)
@@ -435,6 +448,8 @@ public partial class DetachedTabWindow : AtomUI.Desktop.Controls.Window
 
         // The main window owns the tab now. Close this window without letting
         // the close path dispose the session.
+        if (_tab?.IsRdpSession == true)
+            DetachedRdpView.ResetToSingleMonitor();
         _reattach = null;
         _closeTab = null;
         _tab = null;

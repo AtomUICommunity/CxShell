@@ -49,6 +49,7 @@ public partial class RdpViewModel : ObservableObject, IDisposable
     [ObservableProperty] private int _remoteWidth;
     [ObservableProperty] private int _remoteHeight;
     [ObservableProperty] private bool _isFitToWindow = true;
+    [ObservableProperty] private bool _isMultiMonitorActive;
     [ObservableProperty] private int _screenScalePercent = 100;
     [ObservableProperty] private bool _isClipboardChannelReady;
     [ObservableProperty] private string _remoteClipboardText = string.Empty;
@@ -92,6 +93,7 @@ public partial class RdpViewModel : ObservableObject, IDisposable
     public SessionInfo Session { get; }
     public string? Password { get; }
     public event Action<int, int, int, int, int, byte[]?>? PointerShapeChanged;
+    public event Action? FramebufferInvalidated;
     public event Action<uint, byte[]>? RemoteClipboardImageReceived;
     public event Action<string[]>? RemoteClipboardFilesReceived;
     public double FixedScaleFactor => Math.Clamp(ScreenScalePercent, 10, 500) / 100.0;
@@ -659,6 +661,17 @@ public partial class RdpViewModel : ObservableObject, IDisposable
             _client.SetClipboardImage(imageFormat, data);
     }
 
+    public void SetClipboardImage(byte[]? pngBytes, byte[]? dibBytes)
+    {
+        if (!IsConnected)
+            return;
+
+        if (dibBytes is { Length: > 0 })
+            _client.SetClipboardImage(RdpBridgeClient.ClipboardImageFormatDib, dibBytes);
+        else if (pngBytes is { Length: > 0 })
+            _client.SetClipboardImage(RdpBridgeClient.ClipboardImageFormatPng, pngBytes);
+    }
+
     public void SetClipboardFiles(IReadOnlyList<string> filePaths)
     {
         if (IsConnected)
@@ -669,6 +682,11 @@ public partial class RdpViewModel : ObservableObject, IDisposable
     {
         if (IsConnected)
             _client.SyncLockKeys(flags);
+    }
+
+    public bool TryResizeMonitors(IReadOnlyList<RdpMonitorRect> monitors)
+    {
+        return IsConnected && _client.TryResizeMonitors(monitors);
     }
 
     [RelayCommand]
@@ -730,6 +748,7 @@ public partial class RdpViewModel : ObservableObject, IDisposable
                 // per frame while still giving the Image a new source instance,
                 // which is what forces Avalonia to upload the changed pixels.
                 Framebuffer = target;
+                FramebufferInvalidated?.Invoke();
                 RemoteWidth = e.Width;
                 RemoteHeight = e.Height;
                 IsDesktopLoading = false;

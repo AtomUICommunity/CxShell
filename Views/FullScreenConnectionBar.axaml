@@ -2,6 +2,7 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:atom="https://atomui.net"
              xmlns:antdicons="https://atomui.net/icons/antdesign"
+             xmlns:views="using:CxShell.Views"
              x:Class="CxShell.Views.FullScreenConnectionBar"
              HorizontalAlignment="Center"
              VerticalAlignment="Top"
@@ -26,7 +27,7 @@
             BorderBrush="{atom:SharedTokenResource ColorBorderSecondary}"
             BorderThickness="1"
             BoxShadow="0 6 18 0 #40000000">
-        <Grid ColumnDefinitions="Auto,Auto,*,Auto,Auto,Auto"
+        <Grid ColumnDefinitions="Auto,Auto,*,Auto,Auto,Auto,Auto,Auto,Auto,Auto"
               VerticalAlignment="Stretch">
             <!-- Two pin buttons, only one visible: an outline pushpin while the
                  bar auto-hides, a filled pushpin while it is pinned. Shape
@@ -39,10 +40,7 @@
                              Width="28"
                              Height="26"
                              Padding="0"
-                             ButtonType="Default"
-                             Background="Transparent"
-                             BorderBrush="Transparent"
-                             BorderThickness="0"
+                             ButtonType="Text"
                              Focusable="False"
                              Icon="{antdicons:AntDesignIconProvider Kind=PushpinOutlined}"
                              Click="OnPinClick"/>
@@ -52,10 +50,7 @@
                              Height="26"
                              Padding="0"
                              IsVisible="False"
-                             ButtonType="Default"
-                             Background="Transparent"
-                             BorderBrush="Transparent"
-                             BorderThickness="0"
+                             ButtonType="Text"
                              Focusable="False"
                              Icon="{antdicons:AntDesignIconProvider Kind=PushpinFilled}"
                              Click="OnPinClick"/>
@@ -82,53 +77,90 @@
                 </StackPanel>
             </Panel>
 
-            <TextBlock x:Name="EndpointText"
-                       Grid.Column="2"
-                       Margin="6,0"
-                       FontSize="12"
-                       MaxLines="1"
-                       TextTrimming="CharacterEllipsis"
-                       HorizontalAlignment="Center"
-                       VerticalAlignment="Center"
-                       Foreground="{atom:SharedTokenResource ColorText}"/>
+            <Grid Grid.Column="2" VerticalAlignment="Center">
+                <TextBlock x:Name="EndpointText"
+                           Margin="6,0"
+                           FontSize="12"
+                           MaxLines="1"
+                           TextTrimming="CharacterEllipsis"
+                           HorizontalAlignment="Center"
+                           VerticalAlignment="Center"
+                           Foreground="{atom:SharedTokenResource ColorText}"/>
+
+            </Grid>
+
+            <atom:Button x:Name="MultiMonitorButton"
+                         Grid.Column="3"
+                         IsVisible="False"
+                         Height="26"
+                         Padding="6,0"
+                         ButtonType="Text"
+                         Focusable="False"
+                         VerticalAlignment="Center"
+                         Icon="{antdicons:AntDesignIconProvider Kind=DesktopOutlined}"
+                         Content="多显示器"
+                         Click="OnMultiMonitorClick"/>
+
+            <atom:Button x:Name="TaskbarModeButton"
+                         Grid.Column="4"
+                         IsVisible="False"
+                         Height="26"
+                         Padding="6,0"
+                         ButtonType="Text"
+                         Focusable="False"
+                         VerticalAlignment="Center"
+                         Content="保留任务栏"
+                         Click="OnTaskbarModeClick"/>
+
+            <Border x:Name="ExtraActionsDivider"
+                    Grid.Column="5"
+                    IsVisible="False"
+                    Width="1"
+                    Height="14"
+                    Margin="2,0"
+                    VerticalAlignment="Center"
+                    Background="{atom:SharedTokenResource ColorSplit}"/>
 
             <atom:Button x:Name="MinimizeButton"
-                         Grid.Column="3"
-                         Width="30"
+                         Grid.Column="6"
+                         Width="28"
                          Height="26"
                          Padding="0"
-                         ButtonType="Default"
-                         Background="Transparent"
-                         BorderBrush="Transparent"
-                         BorderThickness="0"
+                         ButtonType="Text"
                          Focusable="False"
                          VerticalAlignment="Center"
                          Icon="{antdicons:AntDesignIconProvider Kind=MinusOutlined}"
                          Click="OnMinimizeClick"/>
 
             <atom:Button x:Name="RestoreButton"
-                         Grid.Column="4"
-                         Width="30"
+                         Grid.Column="7"
+                         Width="28"
                          Height="26"
                          Padding="0"
-                         ButtonType="Default"
-                         Background="Transparent"
-                         BorderBrush="Transparent"
-                         BorderThickness="0"
+                         ButtonType="Text"
                          Focusable="False"
                          VerticalAlignment="Center"
-                         Icon="{antdicons:AntDesignIconProvider Kind=FullscreenExitOutlined}"
+                         Icon="{antdicons:AntDesignIconProvider Kind=SwitcherOutlined}"
                          Click="OnRestoreClick"/>
 
-            <atom:Button x:Name="CloseButton"
-                         Grid.Column="5"
-                         Width="30"
+            <atom:Button x:Name="FullScreenButton"
+                         Grid.Column="8"
+                         IsVisible="False"
+                         Width="28"
                          Height="26"
                          Padding="0"
-                         ButtonType="Default"
-                         Background="Transparent"
-                         BorderBrush="Transparent"
-                         BorderThickness="0"
+                         ButtonType="Text"
+                         Focusable="False"
+                         VerticalAlignment="Center"
+                         Icon="{antdicons:AntDesignIconProvider Kind=FullscreenOutlined}"
+                         Click="OnFullScreenClick"/>
+
+            <atom:Button x:Name="CloseButton"
+                         Grid.Column="9"
+                         Width="28"
+                         Height="26"
+                         Padding="0"
+                         ButtonType="Text"
                          Focusable="False"
                          VerticalAlignment="Center"
                          Icon="{antdicons:AntDesignIconProvider Kind=CloseOutlined}"
