@@ -818,8 +818,26 @@ public partial class RdpViewModel : ObservableObject, IDisposable
                 var target = GetTargetBitmap(e.Width, e.Height);
                 using (var locked = target.Lock())
                 {
-                    var copyBytes = Math.Min(e.PixelLength, locked.RowBytes * locked.Size.Height);
-                    Marshal.Copy(e.Pixels, 0, locked.Address, copyBytes);
+                    if (e.DirtyRect is { } dirty &&
+                        e.Stride == locked.RowBytes &&
+                        dirty.X >= 0 && dirty.Y >= 0 &&
+                        dirty.X + dirty.Width <= locked.Size.Width &&
+                        dirty.Y + dirty.Height <= locked.Size.Height)
+                    {
+                        var rowBytes = dirty.Width * 4;
+                        var xBytes = dirty.X * 4;
+                        for (var row = 0; row < dirty.Height; row++)
+                        {
+                            var offset = (dirty.Y + row) * e.Stride + xBytes;
+                            if (offset + rowBytes <= e.PixelLength)
+                                Marshal.Copy(e.Pixels, offset, IntPtr.Add(locked.Address, offset), rowBytes);
+                        }
+                    }
+                    else
+                    {
+                        var copyBytes = Math.Min(e.PixelLength, locked.RowBytes * locked.Size.Height);
+                        Marshal.Copy(e.Pixels, 0, locked.Address, copyBytes);
+                    }
                 }
 
                 // Alternating two persistent bitmaps keeps allocations at zero

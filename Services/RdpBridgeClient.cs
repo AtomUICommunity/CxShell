@@ -42,13 +42,15 @@ public sealed class RdpFramebufferEventArgs : EventArgs
         int stride,
         byte[] pixels,
         int? pixelLength = null,
-        Action? release = null)
+        Action? release = null,
+        RdpFrameDirtyRect? dirtyRect = null)
     {
         Width = width;
         Height = height;
         Stride = stride;
         Pixels = pixels;
         PixelLength = pixelLength ?? pixels.Length;
+        DirtyRect = dirtyRect;
         _release = release;
     }
 
@@ -56,6 +58,12 @@ public sealed class RdpFramebufferEventArgs : EventArgs
     public int Height { get; }
     public int Stride { get; }
     public byte[] Pixels { get; }
+
+    /// <summary>
+    /// Optional dirty region (already unioned with the previous frame for
+    /// double-buffered targets). Null means the entire framebuffer must be copied.
+    /// </summary>
+    public RdpFrameDirtyRect? DirtyRect { get; }
 
     /// <summary>
     /// Valid byte count in <see cref="Pixels"/>. A pooled array may be larger
@@ -146,6 +154,9 @@ public sealed class RdpBridgeClient : IDisposable
     private int _previousFrameHeight;
     private int _previousFrameStride;
     private string _dirtyRectSource = "none";
+    private bool _pendingFullFrameCopy = true;
+    private RdpFrameDirtyRect? _pendingCopyDirtyRect;
+    private RdpFrameDirtyRect? _lastPresentedDirtyRect;
     // Input arrives on the UI thread. Only a single atomic write is done there;
     // the presentation timer folds it into the composer under _frameSync, so
     // sending a mouse event never has to wait for a frame-copy lock.
@@ -597,6 +608,7 @@ public sealed class RdpBridgeClient : IDisposable
         bool interactive;
         bool settling;
         bool logFrame;
+        RdpFrameDirtyRect? copyRect;
 
         lock (_frameSync)
         {
@@ -620,11 +632,29 @@ public sealed class RdpBridgeClient : IDisposable
             wave = _frameComposer.InRepaintWave;
             collectMs = (long)_frameComposer.FirstFrameAge(now).TotalMilliseconds;
             dirtySource = _dirtyRectSource;
-            snapshot = ArrayPool<byte>.Shared.Rent(length);
-            Buffer.BlockCopy(_frameBuffer, 0, snapshot, 0, length);
             width = _frameWidth;
             height = _frameHeight;
             stride = _frameStride;
+            snapshot = ArrayPool<byte>.Shared.Rent(length);
+
+            var currentDirty = _pendingFullFrameCopy ? null : _pendingCopyDirtyRect;
+            if (currentDirty.HasValue && _lastPresentedDirtyRect.HasValue)
+            {
+                copyRect = ClampDirtyRect(UnionDirtyRect(currentDirty.Value, _lastPresentedDirtyRect.Value), width, height);
+            }
+            else
+            {
+                copyRect = null;
+            }
+
+            if (copyRect.HasValue)
+                CopyDirtyRectManaged(_frameBuffer, snapshot, stride, copyRect.Value);
+            else
+                Buffer.BlockCopy(_frameBuffer, 0, snapshot, 0, length);
+
+            _lastPresentedDirtyRect = currentDirty;
+            _pendingFullFrameCopy = false;
+            _pendingCopyDirtyRect = null;
             _frameDirty = false;
             interactive = _frameComposer.IsInteractive(now);
             settling = _frameComposer.InSettlingWindow(now);
@@ -659,7 +689,8 @@ public sealed class RdpBridgeClient : IDisposable
             stride,
             snapshot,
             length,
-            () => ArrayPool<byte>.Shared.Return(snapshot));
+            () => ArrayPool<byte>.Shared.Return(snapshot),
+            copyRect);
 
         try
         {
@@ -1208,33 +1239,59 @@ public sealed class RdpBridgeClient : IDisposable
                 _previousFrameWidth = width;
                 _previousFrameHeight = height;
                 _previousFrameStride = stride;
+                _pendingFullFrameCopy = true;
+                _pendingCopyDirtyRect = null;
+                _lastPresentedDirtyRect = null;
             }
 
-            Marshal.Copy(data, _frameBuffer, 0, length);
-
-            // Most Windows servers leave FreeRDP's GDI invalid region empty on
-            // the legacy bitmap-update path. Diffing against the previous batch
-            // gives a server-independent dirty region: the first batch only
-            // covers the strip that was actually painted, so the composer can
-            // hold the frame until the whole desktop has arrived.
-            // Wave classification is only needed for the first frame and the
-            // settling window. In interactive/settled mode every snapshot is
-            // published as-is, so skip the sampled full-surface diff (thousands
-            // of cache-missing reads per mouse-move batch).
-            if (dirty is null && classifyWave && FrameCoverageEnabled && FrameCoalescingEnabled)
+            var clampedDirty = dirty.HasValue ? ClampDirtyRect(dirty.Value, width, height) : null;
+            var canPartialCopy = !sizeChanged &&
+                                 !classifyWave &&
+                                 clampedDirty.HasValue &&
+                                 stride >= width * 4;
+            if (canPartialCopy)
             {
-                var diff = ComputeDirtyRectFromDiff(width, height, stride);
-                if (diff.HasValue)
+                var rect = clampedDirty!.Value;
+                CopyDirtyRectFromNative(data, _frameBuffer, stride, rect);
+                CopyDirtyRectManaged(_frameBuffer, _previousFrameBuffer, stride, rect);
+                if (!_pendingFullFrameCopy)
                 {
-                    dirty = diff;
-                    dirtySource = "diff";
+                    _pendingCopyDirtyRect = _pendingCopyDirtyRect.HasValue
+                        ? UnionDirtyRect(_pendingCopyDirtyRect.Value, rect)
+                        : rect;
                 }
             }
+            else
+            {
+                Marshal.Copy(data, _frameBuffer, 0, length);
 
-            // Keep the diff baseline fresh even when classification is idle,
-            // so switching back to wave mode never sees a stale full-screen
-            // difference. This is a plain sequential copy and stays cheap.
-            Buffer.BlockCopy(_frameBuffer, 0, _previousFrameBuffer, 0, length);
+                // Most Windows servers leave FreeRDP's GDI invalid region empty on
+                // the legacy bitmap-update path. Diffing against the previous batch
+                // gives a server-independent dirty region: the first batch only
+                // covers the strip that was actually painted, so the composer can
+                // hold the frame until the whole desktop has arrived.
+                // Wave classification is only needed for the first frame and the
+                // settling window. In interactive/settled mode every snapshot is
+                // published as-is, so skip the sampled full-surface diff (thousands
+                // of cache-missing reads per mouse-move batch).
+                if (dirty is null && classifyWave && FrameCoverageEnabled && FrameCoalescingEnabled)
+                {
+                    var diff = ComputeDirtyRectFromDiff(width, height, stride);
+                    if (diff.HasValue)
+                    {
+                        dirty = diff;
+                        dirtySource = "diff";
+                    }
+                }
+
+                // Keep the diff baseline fresh even when classification is idle,
+                // so switching back to wave mode never sees a stale full-screen
+                // difference. This is a plain sequential copy and stays cheap.
+                Buffer.BlockCopy(_frameBuffer, 0, _previousFrameBuffer, 0, length);
+                _pendingFullFrameCopy = true;
+                _pendingCopyDirtyRect = null;
+            }
+
             _dirtyRectSource = dirtySource;
             _frameWidth = width;
             _frameHeight = height;
@@ -1306,6 +1363,50 @@ public sealed class RdpBridgeClient : IDisposable
         var right = (maxColumn + 1) * width / columns;
         var bottom = (maxRow + 1) * height / rows;
         return new RdpFrameDirtyRect(left, top, Math.Max(1, right - left), Math.Max(1, bottom - top));
+    }
+
+    private static RdpFrameDirtyRect? ClampDirtyRect(RdpFrameDirtyRect rect, int width, int height)
+    {
+        var x = Math.Clamp(rect.X, 0, width);
+        var y = Math.Clamp(rect.Y, 0, height);
+        var right = Math.Clamp(rect.X + rect.Width, 0, width);
+        var bottom = Math.Clamp(rect.Y + rect.Height, 0, height);
+        var w = right - x;
+        var h = bottom - y;
+        if (w <= 0 || h <= 0)
+            return null;
+        return new RdpFrameDirtyRect(x, y, w, h);
+    }
+
+    private static RdpFrameDirtyRect UnionDirtyRect(RdpFrameDirtyRect a, RdpFrameDirtyRect b)
+    {
+        var x = Math.Min(a.X, b.X);
+        var y = Math.Min(a.Y, b.Y);
+        var right = Math.Max(a.X + a.Width, b.X + b.Width);
+        var bottom = Math.Max(a.Y + a.Height, b.Y + b.Height);
+        return new RdpFrameDirtyRect(x, y, right - x, bottom - y);
+    }
+
+    private static void CopyDirtyRectFromNative(IntPtr source, byte[] destination, int stride, RdpFrameDirtyRect rect)
+    {
+        var rowBytes = rect.Width * 4;
+        var xBytes = rect.X * 4;
+        for (var row = 0; row < rect.Height; row++)
+        {
+            var offset = (rect.Y + row) * stride + xBytes;
+            Marshal.Copy(IntPtr.Add(source, offset), destination, offset, rowBytes);
+        }
+    }
+
+    private static void CopyDirtyRectManaged(byte[] source, byte[] destination, int stride, RdpFrameDirtyRect rect)
+    {
+        var rowBytes = rect.Width * 4;
+        var xBytes = rect.X * 4;
+        for (var row = 0; row < rect.Height; row++)
+        {
+            var offset = (rect.Y + row) * stride + xBytes;
+            Buffer.BlockCopy(source, offset, destination, offset, rowBytes);
+        }
     }
 
     private void OnStatus(IntPtr userData, IntPtr message)
