@@ -337,6 +337,7 @@ public partial class SessionEditViewModel : ObservableObject
     [ObservableProperty] private bool _rdpClipboardEnabled = true;
     [ObservableProperty] private bool _rdpDisableWallpaper = true;
     [ObservableProperty] private bool _rdpGraphicsPipelineEnabled;
+    [ObservableProperty] private bool _rdpH264Enabled;
     [ObservableProperty] private bool _rdpRedirectDrives;
     [ObservableProperty] private string _rdpDriveName = "CxShell";
     [ObservableProperty] private string _rdpDrivePath = string.Empty;
@@ -1552,6 +1553,7 @@ public partial class SessionEditViewModel : ObservableObject
         RdpClipboardEnabled = session.RdpClipboardEnabled;
         RdpDisableWallpaper = session.RdpDisableWallpaper;
         RdpGraphicsPipelineEnabled = session.RdpGraphicsPipelineEnabled;
+        RdpH264Enabled = session.RdpH264Enabled;
         RdpRedirectDrives = session.RdpRedirectDrives;
         RdpDriveName = string.IsNullOrWhiteSpace(session.RdpDriveName) ? "CxShell" : session.RdpDriveName;
         RdpDrivePath = session.RdpDrivePath ?? string.Empty;
@@ -1865,6 +1867,7 @@ public partial class SessionEditViewModel : ObservableObject
         session.RdpClipboardEnabled = RdpClipboardEnabled;
         session.RdpDisableWallpaper = RdpDisableWallpaper;
         session.RdpGraphicsPipelineEnabled = RdpGraphicsPipelineEnabled;
+        session.RdpH264Enabled = RdpH264Enabled;
         session.RdpRedirectDrives = RdpRedirectDrives;
         session.RdpDriveName = string.IsNullOrWhiteSpace(RdpDriveName) ? "CxShell" : RdpDriveName.Trim();
         session.RdpDrivePath = RdpRedirectDrives ? RdpDrivePath.Trim() : string.Empty;
