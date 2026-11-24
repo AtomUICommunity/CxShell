@@ -54,6 +54,7 @@ public partial class FullScreenConnectionBar : UserControl
     private TopLevel? _topLevel;
     private bool _isShown;
     private bool _pointerInsideBar;
+    private bool _externalPopupOpen;
 
     public FullScreenConnectionBar()
     {
@@ -80,6 +81,161 @@ public partial class FullScreenConnectionBar : UserControl
 
     /// <summary>Raised when the user toggles the pin, so the host can persist it.</summary>
     public event EventHandler? PinnedChanged;
+
+    public event Action<RdpWorkspaceTabItem>? TabSelected;
+    public event Action<RdpWorkspaceTabItem>? TabCloseRequested;
+    public event Action<Control>? MultiMonitorRequested;
+    public event Action? TaskbarModeToggleRequested;
+    public event Action? ToggleFullScreenRequested;
+    public event Action? InteractionCompleted;
+#pragma warning disable CS0067
+    public event Action<PointerPressedEventArgs>? DragRestoreRequested;
+#pragma warning restore CS0067
+
+    public bool ShowTabSwitcher
+    {
+        get => TabSwitcherScroll.IsVisible;
+        set
+        {
+            TabSwitcherScroll.IsVisible = value;
+            EndpointText.IsVisible = !value;
+        }
+    }
+
+    public System.Collections.IEnumerable? TabItemsSource
+    {
+        get => FloatingTabItems.ItemsSource;
+        set => FloatingTabItems.ItemsSource = value;
+    }
+
+    public bool ShowMultiMonitorButton
+    {
+        get => MultiMonitorButton.IsVisible;
+        set
+        {
+            MultiMonitorButton.IsVisible = value;
+            UpdateExtraActionsDivider();
+        }
+    }
+
+    public bool IsMultiMonitorEnabled
+    {
+        get => MultiMonitorButton.IsEnabled;
+        set => MultiMonitorButton.IsEnabled = value;
+    }
+
+    public bool IsMultiMonitorActive { get; set; }
+
+    public bool ShowTaskbarModeButton
+    {
+        get => TaskbarModeButton.IsVisible;
+        set
+        {
+            TaskbarModeButton.IsVisible = value;
+            UpdateExtraActionsDivider();
+        }
+    }
+
+    public string TaskbarModeLabel
+    {
+        get => TaskbarModeButton.Content?.ToString() ?? "保留任务栏";
+        set => TaskbarModeButton.Content = value;
+    }
+
+    public bool ShowMinimizeButton
+    {
+        get => MinimizeButton.IsVisible;
+        set => MinimizeButton.IsVisible = value;
+    }
+
+    public bool ShowFullScreenButton
+    {
+        get => FullScreenButton.IsVisible;
+        set => FullScreenButton.IsVisible = value;
+    }
+
+    public string? RestoreToolTip
+    {
+        set => AtomToolTip.SetTip(RestoreButton, value);
+    }
+
+    public string? FullScreenToolTip
+    {
+        set => AtomToolTip.SetTip(FullScreenButton, value);
+    }
+
+    public string? CloseToolTip
+    {
+        set => AtomToolTip.SetTip(CloseButton, value);
+    }
+
+    public void SetExternalPopupOpen(bool isOpen)
+    {
+        _externalPopupOpen = isOpen;
+        if (isOpen)
+        {
+            _hideTimer.Stop();
+            if (IsFullScreenActive && !_isShown)
+            {
+                _isShown = true;
+                IsHitTestVisible = true;
+                Opacity = 1;
+            }
+        }
+        else if (IsFullScreenActive && !IsPinned)
+        {
+            ScheduleHide();
+        }
+    }
+
+    public void SetImmersiveActive(bool active) => IsFullScreenActive = active;
+
+    public void StopTimer()
+    {
+        _revealTimer.Stop();
+        _hideTimer.Stop();
+    }
+
+    private void UpdateExtraActionsDivider()
+    {
+        ExtraActionsDivider.IsVisible = MultiMonitorButton.IsVisible || TaskbarModeButton.IsVisible;
+    }
+
+    private void OnTabItemPointerPressed(object? sender, PointerPressedEventArgs e)
+    {
+        if (sender is Control { DataContext: RdpWorkspaceTabItem item })
+        {
+            TabSelected?.Invoke(item);
+            InteractionCompleted?.Invoke();
+            e.Handled = true;
+        }
+    }
+
+    private void OnCloseTabClick(object? sender, RoutedEventArgs e)
+    {
+        if (sender is Control { DataContext: RdpWorkspaceTabItem item })
+        {
+            TabCloseRequested?.Invoke(item);
+            InteractionCompleted?.Invoke();
+        }
+    }
+
+    private void OnMultiMonitorClick(object? sender, RoutedEventArgs e)
+    {
+        MultiMonitorRequested?.Invoke(MultiMonitorButton);
+    }
+
+    private void OnTaskbarModeClick(object? sender, RoutedEventArgs e)
+    {
+        TaskbarModeToggleRequested?.Invoke();
+        InteractionCompleted?.Invoke();
+    }
+
+    private void OnFullScreenClick(object? sender, RoutedEventArgs e)
+    {
+        ToggleFullScreenRequested?.Invoke();
+        InteractionCompleted?.Invoke();
+    }
 
     /// <summary>True while the host window is in either full screen mode.</summary>
     public bool IsFullScreenActive
@@ -312,6 +468,8 @@ public partial class FullScreenConnectionBar : UserControl
     private void ScheduleHide()
     {
         _hideTimer.Stop();
+        if (_externalPopupOpen)
+            return;
 
         if (IsPinned)
             return;
@@ -389,8 +547,11 @@ public partial class FullScreenConnectionBar : UserControl
         var pinTip = Text(IsPinned ? "FullScreenBar.Unpin" : "FullScreenBar.Pin");
         AtomToolTip.SetTip(PinButton, pinTip);
         AtomToolTip.SetTip(PinnedButton, pinTip);
+        AtomToolTip.SetTip(MultiMonitorButton, Text("Rdp.MultiMonitorTip"));
+        MultiMonitorButton.Content = Text("Rdp.MultiMonitor");
         AtomToolTip.SetTip(MinimizeButton, Text("FullScreenBar.Minimize"));
         AtomToolTip.SetTip(RestoreButton, Text("FullScreenBar.Restore"));
+        AtomToolTip.SetTip(FullScreenButton, Text("FullScreenBar.ToggleFullScreen"));
         AtomToolTip.SetTip(CloseButton, Text("FullScreenBar.Close"));
     }
 

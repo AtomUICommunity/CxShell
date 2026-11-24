@@ -1,6 +1,7 @@
 <UserControl xmlns="https://github.com/avaloniaui"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:atom="https://atomui.net"
+             xmlns:controls="clr-namespace:CxShell.Controls"
              xmlns:vm="clr-namespace:CxShell.ViewModels"
              x:Class="CxShell.Views.RdpView"
              x:DataType="vm:RdpViewModel"
@@ -9,28 +10,99 @@
              Background="{atom:SharedTokenResource ColorBgLayout}">
     <Grid>
         <Border x:Name="RdpViewport"
-                DragDrop.AllowDrop="True"
                 Background="#111111"
                 Cursor="Arrow"
                 ClipToBounds="True"
+                DragDrop.AllowDrop="True"
                 SizeChanged="OnViewportSizeChanged">
-            <Image x:Name="FramebufferImage"
-                   Source="{Binding Framebuffer}"
-                   Stretch="Uniform"
-                   HorizontalAlignment="Stretch"
-                   VerticalAlignment="Stretch"
-                   Cursor="Arrow"
-                   Focusable="True"
-                   PointerMoved="OnFramebufferPointerMoved"
-                   PointerPressed="OnFramebufferPointerPressed"
-                   PointerReleased="OnFramebufferPointerReleased"
-                   PointerWheelChanged="OnFramebufferPointerWheelChanged"/>
+            <Grid>
+                <Image x:Name="FramebufferImage"
+                       Source="{Binding Framebuffer}"
+                       Stretch="Uniform"
+                       HorizontalAlignment="Stretch"
+                       VerticalAlignment="Stretch"
+                       Cursor="Arrow"
+                       Focusable="True"
+                       PointerMoved="OnFramebufferPointerMoved"
+                       PointerPressed="OnFramebufferPointerPressed"
+                       PointerReleased="OnFramebufferPointerReleased"
+                       PointerWheelChanged="OnFramebufferPointerWheelChanged"/>
+                <controls:RdpSliceSurface x:Name="PrimarySliceSurface"
+                                          IsVisible="False"
+                                          Focusable="True"
+                                          PointerMoved="OnFramebufferPointerMoved"
+                                          PointerPressed="OnFramebufferPointerPressed"
+                                          PointerReleased="OnFramebufferPointerReleased"
+                                          PointerWheelChanged="OnFramebufferPointerWheelChanged"/>
+            </Grid>
         </Border>
-        <!-- Opaque loading layer: legacy RDP paints the first desktop over
-             several seconds, top to bottom. Showing those half-finished
-             buffers is exactly the visible "tile by tile" artefact, so the
-             viewport stays covered until the composer releases one complete
-             frame. -->
+
+        <Popup x:Name="MultiMonitorPopup"
+               Placement="Bottom"
+               IsLightDismissEnabled="True">
+            <Border Padding="12,10"
+                    CornerRadius="8"
+                    Background="#F218202A"
+                    BorderBrush="#5564D8FF"
+                    BorderThickness="1"
+                    BoxShadow="0 6 18 0 #77000000"
+                    MinWidth="260">
+                <StackPanel Spacing="6">
+                    <TextBlock Text="选择要启用的显示器（实时热切换）"
+                               Foreground="White"
+                               FontSize="12"
+                               FontWeight="SemiBold"/>
+                    <StackPanel x:Name="MonitorCheckboxList" Spacing="4"/>
+                    <Button x:Name="AddVirtualMonitorButton"
+                            Content="+ 新增虚拟屏（独立窗体）"
+                            Foreground="White"
+                            Background="#22FFFFFF"
+                            BorderBrush="#40FFFFFF"
+                            BorderThickness="1"
+                            CornerRadius="4"
+                            FontSize="11"
+                            Padding="8,4"
+                            HorizontalAlignment="Left"
+                            Click="OnAddVirtualMonitorClick"/>
+                    <Border Height="1" Background="#33FFFFFF" Margin="0,4"/>
+                    <TextBlock Text="带鱼屏 / 虚拟分屏模式"
+                               Foreground="#CCFFFFFF"
+                               FontSize="11"/>
+                    <StackPanel Orientation="Horizontal" Spacing="6">
+                        <Button x:Name="ModeStandardButton"
+                                Content="标准"
+                                Foreground="White"
+                                Background="#22FFFFFF"
+                                BorderBrush="#40FFFFFF"
+                                BorderThickness="1"
+                                CornerRadius="4"
+                                FontSize="11"
+                                Padding="8,4"
+                                Click="OnUltrawideModeStandardClick"/>
+                        <Button x:Name="ModeSplitDualButton"
+                                Content="单屏→远端双屏"
+                                Foreground="White"
+                                Background="#22FFFFFF"
+                                BorderBrush="#40FFFFFF"
+                                BorderThickness="1"
+                                CornerRadius="4"
+                                FontSize="11"
+                                Padding="8,4"
+                                Click="OnUltrawideModeSplitDualClick"/>
+                        <Button x:Name="ModeMergeUltrawideButton"
+                                Content="双屏→远端带鱼屏"
+                                Foreground="White"
+                                Background="#22FFFFFF"
+                                BorderBrush="#40FFFFFF"
+                                BorderThickness="1"
+                                CornerRadius="4"
+                                FontSize="11"
+                                Padding="8,4"
+                                Click="OnUltrawideModeMergeUltrawideClick"/>
+                    </StackPanel>
+                </StackPanel>
+            </Border>
+        </Popup>
         <Border IsVisible="{Binding IsDesktopLoading}"
                 Background="#FF111111"
                 Cursor="Arrow">

@@ -22,6 +22,12 @@
                                  atom:ToolTip.Tip="{Binding NewText}"
                                  atom:ToolTip.Placement="Bottom"
                                  atom:ToolTip.ShowOnDisabled="True"/>
+                    <atom:Button x:Name="EditSessionBtn"
+                                 Icon="{antdicons:AntDesignIconProvider Kind=EditOutlined}"
+                                 IsEnabled="{Binding CanUseSelectedSession}"
+                                 atom:ToolTip.Tip="{Binding PropertiesText}"
+                                 atom:ToolTip.Placement="Bottom"
+                                 atom:ToolTip.ShowOnDisabled="True"/>
                     <atom:Button x:Name="ImportSessionBtn"
                                  Icon="{antdicons:AntDesignIconProvider Kind=ImportOutlined}"
                                  atom:ToolTip.Tip="{Binding ImportText}"

@@ -1705,6 +1705,32 @@
                                 BorderThickness="1"
                                 CornerRadius="4"
                                 Padding="18">
+                            <Grid RowDefinitions="Auto,14,Auto"
+                                  ColumnDefinitions="150,420,*"
+                                  ColumnSpacing="8">
+                                <TextBlock Grid.ColumnSpan="3"
+                                           Text="{Binding [SessionEdit.RdpWindowModeSection], Source={x:Static services:LocalizationService.Shared}}"
+                                           FontWeight="SemiBold"
+                                           Foreground="{atom:SharedTokenResource ColorText}"/>
+                                <TextBlock Grid.Row="2"
+                                           Text="{Binding [SessionEdit.RdpWindowModeLabel], Source={x:Static services:LocalizationService.Shared}}"
+                                           VerticalAlignment="Center"
+                                           Foreground="{atom:SharedTokenResource ColorTextSecondary}"/>
+                                <atom:Select Grid.Row="2"
+                                             Grid.Column="1"
+                                             x:Name="RdpWindowModeSelect"
+                                             Mode="Single"
+                                             Width="320"
+                                             HorizontalAlignment="Left"
+                                             OptionsSource="{Binding RdpWindowModeOptions}"/>
+                            </Grid>
+                        </Border>
+
+                        <Border Background="{atom:SharedTokenResource ColorBgContainer}"
+                                BorderBrush="{atom:SharedTokenResource ColorBorder}"
+                                BorderThickness="1"
+                                CornerRadius="4"
+                                Padding="18">
                             <Grid RowDefinitions="Auto,14,Auto,10,Auto,12,Auto,10,Auto,10,Auto,10,Auto,10,Auto,10,Auto"
                                   ColumnDefinitions="150,420,*"
                                   ColumnSpacing="8">
@@ -1717,11 +1743,11 @@
                                     <atom:CheckBox Content="{Binding [UiText.091], Source={x:Static services:LocalizationService.Shared}}"
                                                    atom:ToolTip.Tip="{Binding [SessionEdit.RdpKeyboardHint], Source={x:Static services:LocalizationService.Shared}}"
                                                    IsChecked="{Binding RdpApplyKeyCombinations, Mode=TwoWay}"/>
-                                    <atom:CheckBox Content="Sync CapsLock / NumLock / ScrollLock state"
-                                                   atom:ToolTip.Tip="Automatically synchronize local lock key states to the remote session on connect or focus."
+                                    <atom:CheckBox Content="{Binding [SessionEdit.RdpSyncLockKeys], Source={x:Static services:LocalizationService.Shared}}"
+                                                   atom:ToolTip.Tip="{Binding [SessionEdit.RdpSyncLockKeysHint], Source={x:Static services:LocalizationService.Shared}}"
                                                    IsChecked="{Binding RdpSyncLockKeys, Mode=TwoWay}"/>
-                                    <atom:CheckBox Content="Enable clipboard large file locking (LockClipboardData)"
-                                                   atom:ToolTip.Tip="Lock clipboard file snapshots during large file transfers so copying other content does not abort transfers."
+                                    <atom:CheckBox Content="{Binding [SessionEdit.RdpEnableClipboardLock], Source={x:Static services:LocalizationService.Shared}}"
+                                                   atom:ToolTip.Tip="{Binding [SessionEdit.RdpEnableClipboardLockHint], Source={x:Static services:LocalizationService.Shared}}"
                                                    IsChecked="{Binding RdpEnableClipboardLock, Mode=TwoWay}"/>
                                 </StackPanel>
 

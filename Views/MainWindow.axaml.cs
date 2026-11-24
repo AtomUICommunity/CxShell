@@ -128,6 +128,7 @@ public partial class MainWindow : AtomWindow
         {
             CloseTabDragGhost();
             DetachedTabWindow.CloseAll();
+            RdpWorkspaceWindow.CloseAll();
             vm.Dispose();
         };
         PropertyChanged += (_, e) =>

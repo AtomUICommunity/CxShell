@@ -1,7 +1,9 @@
 <atom:Window xmlns="https://github.com/avaloniaui"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:atom="https://atomui.net"
+             xmlns:antdicons="https://atomui.net/icons/antdesign"
              xmlns:vm="using:CxShell.ViewModels"
+             xmlns:services="using:CxShell.Services"
              xmlns:views="using:CxShell.Views"
              x:Class="CxShell.Views.DetachedTabWindow"
              x:DataType="vm:TerminalTabViewModel"
@@ -18,32 +20,69 @@
          screen outline whose bottom edge is filled like a taskbar, which is the
          difference between this mode and the immersive full screen button. -->
     <atom:Window.RightAddOn>
-        <atom:Button x:Name="KeepTaskbarFullScreenButton"
-                     Width="34"
-                     Height="30"
-                     Padding="0"
-                     Background="Transparent"
-                     BorderBrush="Transparent"
-                     BorderThickness="0"
-                     VerticalAlignment="Center"
-                     Click="OnKeepTaskbarFullScreenClick"
-                     atom:ToolTip.Placement="Bottom">
-            <Panel Width="16"
-                   Height="16"
-                   HorizontalAlignment="Center"
-                   VerticalAlignment="Center">
-                <Border Margin="0.5,1.5,0.5,1.5"
-                        BorderThickness="1.2"
-                        CornerRadius="2"
-                        BorderBrush="{Binding $parent[atom:Button].Foreground}"/>
-                <Rectangle Height="2.6"
-                           Margin="3,0,3,3.2"
-                           VerticalAlignment="Bottom"
-                           RadiusX="0.7"
-                           RadiusY="0.7"
-                           Fill="{Binding $parent[atom:Button].Foreground}"/>
-            </Panel>
-        </atom:Button>
+        <StackPanel Orientation="Horizontal" Spacing="2" VerticalAlignment="Center">
+            <StackPanel.ContextMenu>
+                <ContextMenu>
+                    <MenuItem Header="{Binding [Rdp.MultiMonitorTip], Source={x:Static services:LocalizationService.Shared}}"
+                              IsVisible="{Binding IsRdpSession}"
+                              Click="OnDetachedMultiMonitorClick"/>
+                    <MenuItem Header="{Binding [Rdp.MoveToWorkspace], Source={x:Static services:LocalizationService.Shared}}"
+                              IsVisible="{Binding IsRdpSession}"
+                              Click="OnMoveToWorkspaceClick"/>
+                </ContextMenu>
+            </StackPanel.ContextMenu>
+            <atom:Button x:Name="DetachedMultiMonitorButton"
+                         IsVisible="{Binding IsRdpSession}"
+                         Width="32"
+                         Height="28"
+                         Padding="0"
+                         ButtonType="Text"
+                         Focusable="False"
+                         VerticalAlignment="Center"
+                         Icon="{antdicons:AntDesignIconProvider Kind=DesktopOutlined}"
+                         atom:ToolTip.Tip="多显示器 / 虚拟屏幕设置"
+                         atom:ToolTip.Placement="Bottom"
+                         Click="OnDetachedMultiMonitorClick"/>
+            <atom:Button x:Name="MoveToWorkspaceButton"
+                         IsVisible="{Binding IsRdpSession}"
+                         Width="32"
+                         Height="28"
+                         Padding="0"
+                         ButtonType="Text"
+                         Focusable="False"
+                         VerticalAlignment="Center"
+                         Icon="{antdicons:AntDesignIconProvider Kind=ImportOutlined}"
+                         atom:ToolTip.Tip="移入多标签 RDP 窗口（自动收敛为单屏）"
+                         atom:ToolTip.Placement="Bottom"
+                         Click="OnMoveToWorkspaceClick"/>
+            <atom:Button x:Name="KeepTaskbarFullScreenButton"
+                         IsVisible="False"
+                         Width="34"
+                         Height="30"
+                         Padding="0"
+                         Background="Transparent"
+                         BorderBrush="Transparent"
+                         BorderThickness="0"
+                         VerticalAlignment="Center"
+                         Click="OnKeepTaskbarFullScreenClick"
+                         atom:ToolTip.Placement="Bottom">
+                <Panel Width="16"
+                       Height="16"
+                       HorizontalAlignment="Center"
+                       VerticalAlignment="Center">
+                    <Border Margin="0.5,1.5,0.5,1.5"
+                            BorderThickness="1.2"
+                            CornerRadius="2"
+                            BorderBrush="{Binding $parent[atom:Button].Foreground}"/>
+                    <Rectangle Height="2.6"
+                               Margin="3,0,3,3.2"
+                               VerticalAlignment="Bottom"
+                               RadiusX="0.7"
+                               RadiusY="0.7"
+                               Fill="{Binding $parent[atom:Button].Foreground}"/>
+                </Panel>
+            </atom:Button>
+        </StackPanel>
     </atom:Window.RightAddOn>
     <Grid>
         <Grid Background="{atom:SharedTokenResource ColorBgContainer}">
@@ -51,13 +90,15 @@
                                 IsVisible="{Binding $parent[Window].DataContext.IsTerminalSession, x:CompileBindings=False}"/>
             <views:VncView DataContext="{Binding Vnc, x:CompileBindings=False}"
                            IsVisible="{Binding $parent[Window].DataContext.IsVncSession, x:CompileBindings=False}"/>
-            <views:RdpView DataContext="{Binding Rdp, x:CompileBindings=False}"
+            <views:RdpView x:Name="DetachedRdpView"
+                           DataContext="{Binding Rdp, x:CompileBindings=False}"
                            IsVisible="{Binding $parent[Window].DataContext.IsRdpSession, x:CompileBindings=False}"/>
             <views:SftpPanelView DataContext="{Binding FileTransfer, x:CompileBindings=False}"
                                  IsVisible="{Binding $parent[Window].DataContext.IsFileTransferSession, x:CompileBindings=False}"/>
         </Grid>
         <views:FullScreenConnectionBar x:Name="FullScreenConnectionBar"
                                        ZIndex="250"
+                                       ShowFullScreenButton="True"
                                        Endpoint="{Binding Session.Host}"
                                        QualityLevel="{Binding Rdp.LinkQualityLevel}"
                                        IsQualityVisible="{Binding IsRdpSession}"/>

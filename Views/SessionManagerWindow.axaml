@@ -25,6 +25,11 @@
             <StackPanel Orientation="Horizontal"
                         HorizontalAlignment="Right"
                         Spacing="8">
+                <atom:Button x:Name="EditButton"
+                             Icon="{antdicons:AntDesignIconProvider Kind=EditOutlined}"
+                             Content="{Binding PropertiesText}"
+                             IsEnabled="{Binding CanUseSelectedSession}"
+                             Click="OnEditClick"/>
                 <atom:Button x:Name="ConnectButton"
                              ButtonType="Primary"
                              Icon="{antdicons:AntDesignIconProvider Kind=LinkOutlined}"

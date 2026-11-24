@@ -155,7 +155,7 @@ public class ProxySettings : INotifyPropertyChanged
     public Guid Id { get; set; } = Guid.NewGuid();
     public string Name { get; set; } = string.Empty;
 
-    [JsonConverter(typeof(JsonStringEnumConverter))]
+    [JsonConverter(typeof(JsonStringEnumConverter<ProxyProtocol>))]
     public ProxyProtocol Protocol { get; set; } = ProxyProtocol.None;
 
     public string Host { get; set; } = string.Empty;
@@ -163,7 +163,7 @@ public class ProxySettings : INotifyPropertyChanged
     public string Username { get; set; } = string.Empty;
     public string Password { get; set; } = string.Empty;
 
-    [JsonConverter(typeof(JsonStringEnumConverter))]
+    [JsonConverter(typeof(JsonStringEnumConverter<AuthMethod>))]
     public AuthMethod AuthMethod { get; set; } = AuthMethod.Password;
 
     public string PrivateKeyPath { get; set; } = string.Empty;
@@ -228,7 +228,7 @@ public class SshTunnelRule
 {
     public Guid Id { get; set; } = Guid.NewGuid();
 
-    [JsonConverter(typeof(JsonStringEnumConverter))]
+    [JsonConverter(typeof(JsonStringEnumConverter<SshTunnelRuleType>))]
     public SshTunnelRuleType Type { get; set; } = SshTunnelRuleType.Local;
 
     public string SourceHost { get; set; } = "localhost";
@@ -379,7 +379,7 @@ public class SessionInfo
     public List<ProxySettings> ProxyServers { get; set; } = new();
     public Guid? SelectedProxyId { get; set; }
 
-    [JsonConverter(typeof(JsonStringEnumConverter))]
+    [JsonConverter(typeof(JsonStringEnumConverter<SessionProtocol>))]
     public SessionProtocol Protocol { get; set; } = SessionProtocol.SSH;
 
     /// <summary>
@@ -389,7 +389,7 @@ public class SessionInfo
     [JsonIgnore]
     public LocalTerminalProfile? LocalTerminalProfile { get; set; }
 
-    [JsonConverter(typeof(JsonStringEnumConverter))]
+    [JsonConverter(typeof(JsonStringEnumConverter<AuthMethod>))]
     public AuthMethod AuthMethod { get; set; } = AuthMethod.Password;
 
     public string Password { get; set; } = string.Empty;
@@ -522,9 +522,9 @@ public class SessionInfo
     public bool RunLoginScriptFile { get; set; }
     public string LoginScriptFilePath { get; set; } = string.Empty;
     public string LoginScriptParameters { get; set; } = string.Empty;
-    [JsonConverter(typeof(JsonStringEnumConverter))]
+    [JsonConverter(typeof(JsonStringEnumConverter<LoginScriptExecutionMode>))]
     public LoginScriptExecutionMode LoginScriptExecutionMode { get; set; } = LoginScriptExecutionMode.SendText;
-    [JsonConverter(typeof(JsonStringEnumConverter))]
+    [JsonConverter(typeof(JsonStringEnumConverter<LoginScriptExecutionTarget>))]
     public LoginScriptExecutionTarget LoginScriptExecutionTarget { get; set; } = LoginScriptExecutionTarget.Remote;
     public string LoginScriptInterpreter { get; set; } = string.Empty;
     public string SshRemoteCommand { get; set; } = string.Empty;
@@ -599,6 +599,20 @@ public class SessionInfo
     public string RdpColorQuality { get; set; } = "32";
     /// <summary>Preferred RDP security mode: Auto, Negotiate, NLA, TLS or RDP.</summary>
     public string RdpSecurityMode { get; set; } = "Auto";
+    /// <summary>RDP window mode: Default (main window tab), MultiTab (standalone multi-tab RDP window), or Standalone (detached single-session window with multi-monitor support).</summary>
+    public string RdpWindowMode { get; set; } = "Default";
+    public bool RdpOpenInStandaloneWindow { get; set; }
+
+    public string ResolveEffectiveRdpWindowMode()
+    {
+        if (string.Equals(RdpWindowMode, "MultiTab", StringComparison.OrdinalIgnoreCase))
+            return "MultiTab";
+        if (string.Equals(RdpWindowMode, "Standalone", StringComparison.OrdinalIgnoreCase))
+            return "Standalone";
+        if (string.Equals(RdpWindowMode, "Default", StringComparison.OrdinalIgnoreCase) && RdpOpenInStandaloneWindow)
+            return "MultiTab";
+        return RdpOpenInStandaloneWindow ? "MultiTab" : "Default";
+    }
     public bool RdpApplyKeyCombinations { get; set; } = true;
     public bool RdpSyncLockKeys { get; set; } = true;
     public bool RdpEnableClipboardLock { get; set; } = true;

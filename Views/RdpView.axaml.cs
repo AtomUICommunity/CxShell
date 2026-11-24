@@ -27,40 +27,72 @@ public partial class RdpView : UserControl
     private string? _lastSyncedClipboardText;
     private string? _lastSyncedClipboardImageHash;
     private string? _lastSyncedClipboardFilesKey;
-    private uint? _lastSyncedClipboardSequenceNumber;
-    private uint? _lastAppliedRemoteClipboardSequenceNumber;
+    private uint _lastSyncedLocalClipboardSeq;
+    private uint _lastAppliedRemoteClipboardSeq;
     private WindowsClipboardListener? _clipboardListener;
     private DispatcherTimer? _clipboardPollTimer;
     private WindowsRdpShortcutHook? _systemShortcutHook;
-    private double _pendingWheelY;
-    private double _lastRenderScaling = 1;
-    private DispatcherTimer? _scalingTimer;
     private Cursor? _customRemoteCursor;
     private Avalonia.Media.Imaging.WriteableBitmap? _customRemoteCursorBitmap;
+    private TopLevel? _subscribedTopLevel;
+    private static readonly IBrush PopupButtonNormalBrush = new SolidColorBrush(Color.Parse("#22FFFFFF"));
+    private static readonly IBrush PopupButtonActiveBrush = new SolidColorBrush(Color.Parse("#4464D8FF"));
+    private readonly System.Collections.Generic.HashSet<int> _selectedMonitorIndices = new();
+    private readonly System.Collections.Generic.Dictionary<int, RdpMonitorWindow> _secondaryMonitorWindows = new();
+    private readonly System.Collections.Generic.List<int> _virtualMonitorIds = new();
+    private int _nextVirtualMonitorId = 100;
+    private int? _preferredPrimaryMonitorIndex;
+    private int _ultrawideMode; // 0=standard, 1=local ultrawide -> remote dual, 2=local dual PBP -> remote single ultrawide
+    private Rect? _primarySliceRect;
+    private ushort _lastRemotePointerX;
+    private ushort _lastRemotePointerY;
+    private double _pendingWheelY;
+    private Action<bool>? _onMultiMonitorPopupOpenChanged;
+    private Control? _lastMultiMonitorAnchor;
+    private DateTime _multiMonitorPopupClosedAtUtc = DateTime.MinValue;
+
+    public bool IsMultiMonitorActive => IsCustomMonitorLayoutActive;
+    private bool IsCustomMonitorLayoutActive =>
+        _selectedMonitorIndices.Count > 1 || _virtualMonitorIds.Count > 0 || _ultrawideMode != 0;
 
     public RdpView()
     {
         InitializeComponent();
+        MultiMonitorPopup.Closed += (_, _) =>
+        {
+            _multiMonitorPopupClosedAtUtc = DateTime.UtcNow;
+            var callback = _onMultiMonitorPopupOpenChanged;
+            _onMultiMonitorPopupOpenChanged = null;
+            callback?.Invoke(false);
+        };
         AddHandler(KeyDownEvent, OnFramebufferKeyDown, RoutingStrategies.Tunnel);
         AddHandler(KeyUpEvent, OnFramebufferKeyUp, RoutingStrategies.Tunnel);
-        RdpViewport.AddHandler(DragDrop.DragOverEvent, OnViewportDragOver);
-        RdpViewport.AddHandler(DragDrop.DropEvent, OnViewportDrop);
+        AddHandler(DragDrop.DragOverEvent, OnRdpDragOver);
+        AddHandler(DragDrop.DropEvent, OnRdpDrop);
         AttachedToVisualTree += (_, _) =>
         {
             _isAttached = true;
-            _lastRenderScaling = GetRenderScaling();
             Focus();
+            StartClipboardListener();
+            SubscribeTopLevelScaling();
             if (DataContext is RdpViewModel vm)
                 ScheduleStart(vm);
             UpdateSystemShortcutHook();
-            StartClipboardListener();
         };
         DetachedFromVisualTree += (_, _) =>
         {
             _isAttached = false;
             _hasKeyboardFocus = false;
-            StopScalingTimer();
+            CloseMultiMonitorPopup();
+            CloseAllSecondaryMonitorWindows();
+            _ultrawideMode = 0;
+            _virtualMonitorIds.Clear();
+            _selectedMonitorIndices.Clear();
+            _preferredPrimaryMonitorIndex = null;
+            _primarySliceRect = null;
+            SyncMultiMonitorActiveFlag();
             StopClipboardListener();
+            UnsubscribeTopLevelScaling();
             DisposeSystemShortcutHook();
             ReleaseTrackedModifiers();
             _pendingWheelY = 0;
@@ -70,6 +102,7 @@ public partial class RdpView : UserControl
         {
             _hasKeyboardFocus = true;
             UpdateSystemShortcutHook();
+            SyncLocalLockKeysToRemote();
             _ = SyncLocalClipboardToRemoteAsync();
         };
         LostFocus += (_, _) =>
@@ -89,11 +122,10 @@ public partial class RdpView : UserControl
 
         _boundVm = vm;
         vm.PropertyChanged += OnViewModelPropertyChanged;
-        vm.PointerShapeChanged += OnPointerShapeChanged;
         vm.RemoteClipboardImageReceived += OnRemoteClipboardImageReceived;
         vm.RemoteClipboardFilesReceived += OnRemoteClipboardFilesReceived;
-        if (vm.IsConnected)
-            StartScalingTimer();
+        vm.FramebufferInvalidated += OnFramebufferInvalidated;
+        vm.PointerShapeChanged += OnPointerShapeChanged;
         ApplyScaleMode(vm);
         UpdateSystemShortcutHook();
         if (_isAttached)
@@ -114,68 +146,37 @@ public partial class RdpView : UserControl
             ApplyScaleMode(_boundVm);
         }
 
-        if (_boundVm != null && args.PropertyName == nameof(RdpViewModel.IsClipboardChannelReady) && _boundVm.IsClipboardChannelReady)
-            _ = SyncLocalClipboardToRemoteAsync();
-        if (_boundVm != null && args.PropertyName == nameof(RdpViewModel.RemoteClipboardText))
-            _ = ApplyRemoteClipboardTextAsync(_boundVm.RemoteClipboardText);
-
-        if (args.PropertyName == nameof(RdpViewModel.IsConnected))
+        if (_boundVm != null && args.PropertyName == nameof(RdpViewModel.IsConnected))
         {
-            if (_boundVm?.IsConnected == true)
+            if (_boundVm.IsConnected)
             {
-                StartScalingTimer();
                 SyncLocalLockKeysToRemote();
+                SyncMultiMonitorActiveFlag();
             }
             else
-                StopScalingTimer();
-        }
-    }
-
-    private void SyncLocalLockKeysToRemote()
-    {
-        if (!OperatingSystem.IsWindows() || DataContext is not RdpViewModel vm || !vm.IsConnected || !vm.Session.RdpSyncLockKeys)
-            return;
-
-        uint flags = 0;
-        if ((GetKeyState(0x91) & 1) != 0) // VK_SCROLL
-            flags |= 0x01;
-        if ((GetKeyState(0x90) & 1) != 0) // VK_NUMLOCK
-            flags |= 0x02;
-        if ((GetKeyState(0x14) & 1) != 0) // VK_CAPITAL
-            flags |= 0x04;
-        vm.SyncLockKeys(flags);
-    }
-
-    [System.Runtime.InteropServices.DllImport("user32.dll")]
-    private static extern short GetKeyState(int nVirtKey);
-
-    private void StartScalingTimer()
-    {
-        if (_scalingTimer != null || !_isAttached)
-            return;
-
-        _lastRenderScaling = GetRenderScaling();
-        _scalingTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(2) };
-        _scalingTimer.Tick += (_, _) =>
-        {
-            var scaling = GetRenderScaling();
-            if (Math.Abs(scaling - _lastRenderScaling) < 0.001)
-                return;
-
-            _lastRenderScaling = scaling;
-            if (DataContext is RdpViewModel vm)
             {
-                vm.ConfigureInitialDisplay(RdpViewport.Bounds.Size, GetCurrentMonitorPixelSize(), scaling);
-                vm.UpdateDpiScaling(scaling);
+                CloseMultiMonitorPopup();
+                CloseAllSecondaryMonitorWindows();
+                _ultrawideMode = 0;
+                _virtualMonitorIds.Clear();
+                _selectedMonitorIndices.Clear();
+                _preferredPrimaryMonitorIndex = null;
+                _primarySliceRect = null;
+                PrimarySliceSurface.IsVisible = false;
+                FramebufferImage.IsVisible = true;
+                SyncMultiMonitorActiveFlag();
+                ResetClipboardSyncState();
             }
-        };
-        _scalingTimer.Start();
-    }
-
-    private void StopScalingTimer()
-    {
-        _scalingTimer?.Stop();
-        _scalingTimer = null;
+        }
+        if (_boundVm != null && args.PropertyName == nameof(RdpViewModel.IsClipboardChannelReady))
+        {
+            if (_boundVm.IsClipboardChannelReady)
+                _ = SyncLocalClipboardToRemoteAsync();
+            else
+                ResetClipboardSyncState();
+        }
+        if (_boundVm != null && args.PropertyName == nameof(RdpViewModel.RemoteClipboardText))
+            _ = ApplyRemoteClipboardTextAsync(_boundVm.RemoteClipboardText);
     }
 
     private void UnbindViewModel()
@@ -184,14 +185,509 @@ public partial class RdpView : UserControl
             return;
 
         _boundVm.PropertyChanged -= OnViewModelPropertyChanged;
-        _boundVm.PointerShapeChanged -= OnPointerShapeChanged;
         _boundVm.RemoteClipboardImageReceived -= OnRemoteClipboardImageReceived;
         _boundVm.RemoteClipboardFilesReceived -= OnRemoteClipboardFilesReceived;
+        _boundVm.FramebufferInvalidated -= OnFramebufferInvalidated;
+        _boundVm.PointerShapeChanged -= OnPointerShapeChanged;
         _boundVm = null;
         ResetClipboardSyncState();
         DisposeCustomRemoteCursor();
-        StopScalingTimer();
         DisposeSystemShortcutHook();
+    }
+
+    private void ResetClipboardSyncState()
+    {
+        _lastSyncedClipboardText = null;
+        _lastSyncedClipboardImageHash = null;
+        _lastSyncedClipboardFilesKey = null;
+        _lastSyncedLocalClipboardSeq = 0;
+        _lastAppliedRemoteClipboardSeq = 0;
+    }
+
+    private void OnFramebufferInvalidated()
+    {
+        if (PrimarySliceSurface.IsVisible && DataContext is RdpViewModel vm)
+        {
+            PrimarySliceSurface.Source = vm.Framebuffer;
+            PrimarySliceSurface.InvalidateVisual();
+        }
+        else
+        {
+            FramebufferImage.InvalidateVisual();
+        }
+    }
+
+    public void ToggleMultiMonitorPopup(
+        Control anchor,
+        PlacementMode placement = PlacementMode.Bottom,
+        Action<bool>? onPopupOpenChanged = null)
+    {
+        if (TopLevel.GetTopLevel(this) is not DetachedTabWindow)
+            return;
+        if (DataContext is not RdpViewModel { IsConnected: true })
+            return;
+
+        if (MultiMonitorPopup.IsOpen)
+        {
+            var sameAnchor = ReferenceEquals(MultiMonitorPopup.PlacementTarget, anchor);
+            var previousCallback = _onMultiMonitorPopupOpenChanged;
+            _onMultiMonitorPopupOpenChanged = null;
+            MultiMonitorPopup.IsOpen = false;
+            previousCallback?.Invoke(false);
+            if (sameAnchor)
+                return;
+        }
+
+        if (ReferenceEquals(_lastMultiMonitorAnchor, anchor) &&
+            (DateTime.UtcNow - _multiMonitorPopupClosedAtUtc).TotalMilliseconds < 250)
+        {
+            _lastMultiMonitorAnchor = null;
+            return;
+        }
+
+        _lastMultiMonitorAnchor = anchor;
+        _onMultiMonitorPopupOpenChanged = onPopupOpenChanged;
+        MultiMonitorPopup.PlacementTarget = anchor;
+        MultiMonitorPopup.Placement = placement;
+        PopulateMonitorCheckboxes();
+        UpdateUltrawideModeButtonStates();
+        MultiMonitorPopup.IsOpen = true;
+        _onMultiMonitorPopupOpenChanged?.Invoke(true);
+    }
+
+    public void CloseMultiMonitorPopup()
+    {
+        if (MultiMonitorPopup.IsOpen)
+            MultiMonitorPopup.IsOpen = false;
+    }
+
+    /// <summary>
+    /// Closes all secondary / virtual monitor windows and restores single-monitor
+    /// mode before moving this RDP session back into a multi-tab window.
+    /// </summary>
+    public void ResetToSingleMonitor()
+    {
+        CloseMultiMonitorPopup();
+        CloseAllSecondaryMonitorWindows();
+        if (DataContext is RdpViewModel vm && vm.IsMultiMonitorActive)
+        {
+            vm.IsMultiMonitorActive = false;
+            var scaling = GetRenderScaling();
+            var w = Math.Max(640, (int)Math.Round(RdpViewport.Bounds.Width * scaling));
+            var h = Math.Max(480, (int)Math.Round(RdpViewport.Bounds.Height * scaling));
+            vm.TryResizeMonitors([new Services.RdpMonitorRect(0, 0, w, h, (int)Math.Round(scaling * 100), true)]);
+        }
+    }
+
+    private void SyncMultiMonitorActiveFlag()
+    {
+        if (DataContext is RdpViewModel vm)
+            vm.IsMultiMonitorActive = vm.IsConnected && IsCustomMonitorLayoutActive;
+    }
+
+    private void OnUltrawideModeStandardClick(object? sender, RoutedEventArgs e)
+    {
+        _ultrawideMode = 0;
+        UpdateUltrawideModeButtonStates();
+        ApplySelectedMonitorLayout();
+    }
+
+    private void OnUltrawideModeSplitDualClick(object? sender, RoutedEventArgs e)
+    {
+        _ultrawideMode = 1;
+        UpdateUltrawideModeButtonStates();
+        ApplySelectedMonitorLayout();
+    }
+
+    private void OnUltrawideModeMergeUltrawideClick(object? sender, RoutedEventArgs e)
+    {
+        _ultrawideMode = 2;
+        if (TopLevel.GetTopLevel(this) is Window window && window.Screens.All.Count >= 2 && _selectedMonitorIndices.Count < 2)
+        {
+            _selectedMonitorIndices.Add(0);
+            _selectedMonitorIndices.Add(1);
+            PopulateMonitorCheckboxes();
+        }
+        UpdateUltrawideModeButtonStates();
+        ApplySelectedMonitorLayout();
+    }
+
+    private void OnAddVirtualMonitorClick(object? sender, RoutedEventArgs e)
+    {
+        if (_virtualMonitorIds.Count >= 3)
+            return;
+
+        _ultrawideMode = 0;
+        _virtualMonitorIds.Add(_nextVirtualMonitorId++);
+        UpdateUltrawideModeButtonStates();
+        ApplySelectedMonitorLayout();
+        PopulateMonitorCheckboxes();
+    }
+
+    private void UpdateUltrawideModeButtonStates()
+    {
+        ModeStandardButton.FontWeight = _ultrawideMode == 0 ? FontWeight.Bold : FontWeight.Normal;
+        ModeStandardButton.Background = _ultrawideMode == 0 ? PopupButtonActiveBrush : PopupButtonNormalBrush;
+        ModeSplitDualButton.FontWeight = _ultrawideMode == 1 ? FontWeight.Bold : FontWeight.Normal;
+        ModeSplitDualButton.Background = _ultrawideMode == 1 ? PopupButtonActiveBrush : PopupButtonNormalBrush;
+        ModeMergeUltrawideButton.FontWeight = _ultrawideMode == 2 ? FontWeight.Bold : FontWeight.Normal;
+        ModeMergeUltrawideButton.Background = _ultrawideMode == 2 ? PopupButtonActiveBrush : PopupButtonNormalBrush;
+
+        var canSplitDual = false;
+        var splitReason = "需在宽屏全屏/最大化状态下开启";
+        var canMergeUltrawide = false;
+        var mergeReason = "需两块高度与 DPI 缩放一致的屏幕在全屏/最大化模式下开启";
+
+        if (TopLevel.GetTopLevel(this) is Window window)
+        {
+            var isFullOrMax = window.WindowState is WindowState.FullScreen or WindowState.Maximized;
+            var currentScreen = window.Screens.ScreenFromWindow(window) ?? window.Screens.Primary;
+            if (isFullOrMax && currentScreen != null)
+            {
+                var aspect = currentScreen.Bounds.Height > 0
+                    ? (double)currentScreen.Bounds.Width / currentScreen.Bounds.Height
+                    : 0;
+                canSplitDual = currentScreen.Bounds.Width >= 2560 || aspect >= 1.8;
+            }
+
+            var screens = window.Screens.All;
+            if (isFullOrMax && screens.Count >= 2 && _virtualMonitorIds.Count == 0)
+            {
+                var s0 = screens[0];
+                var s1 = screens[1];
+                canMergeUltrawide = s0.Bounds.Height == s1.Bounds.Height &&
+                                    Math.Abs(s0.Scaling - s1.Scaling) < 0.01;
+            }
+        }
+
+        ModeSplitDualButton.IsEnabled = canSplitDual || _ultrawideMode == 1;
+        ToolTip.SetTip(ModeSplitDualButton, canSplitDual ? "将当前带鱼屏拆分为远端左右双屏" : splitReason);
+
+        ModeMergeUltrawideButton.IsEnabled = canMergeUltrawide || _ultrawideMode == 2;
+        ToolTip.SetTip(ModeMergeUltrawideButton, canMergeUltrawide ? "将两块等高等缩放物理屏合并为远端单块带鱼屏" : mergeReason);
+    }
+
+    private void PopulateMonitorCheckboxes()
+    {
+        MonitorCheckboxList.Children.Clear();
+        if (TopLevel.GetTopLevel(this) is not Window window)
+            return;
+
+        var screens = window.Screens.All;
+        if (screens.Count == 0)
+            return;
+
+        var currentScreen = window.Screens.ScreenFromWindow(window) ?? window.Screens.Primary;
+        var currentIndex = 0;
+        for (var i = 0; i < screens.Count; i++)
+        {
+            if (currentScreen != null && screens[i].Bounds == currentScreen.Bounds)
+            {
+                currentIndex = i;
+                break;
+            }
+        }
+
+        if (_selectedMonitorIndices.Count == 0)
+            _selectedMonitorIndices.Add(currentIndex);
+
+        var activePrimaryIndex = _preferredPrimaryMonitorIndex.HasValue && _selectedMonitorIndices.Contains(_preferredPrimaryMonitorIndex.Value)
+            ? _preferredPrimaryMonitorIndex.Value
+            : currentIndex;
+
+        for (var i = 0; i < screens.Count; i++)
+        {
+            var idx = i;
+            var s = screens[i];
+            var scalePct = (int)Math.Round(s.Scaling * 100);
+            var label = $"屏幕 {i + 1} · {s.Bounds.Width}×{s.Bounds.Height} · {scalePct}%";
+            var row = new Grid
+            {
+                ColumnDefinitions = new ColumnDefinitions("*,Auto"),
+                ColumnSpacing = 8
+            };
+            var cb = new CheckBox
+            {
+                Content = label,
+                IsChecked = _selectedMonitorIndices.Contains(idx),
+                Foreground = Brushes.WhiteSmoke,
+                FontSize = 12,
+                VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center
+            };
+            cb.IsCheckedChanged += (_, _) =>
+            {
+                if (cb.IsChecked == true)
+                {
+                    _selectedMonitorIndices.Add(idx);
+                }
+                else
+                {
+                    if (_selectedMonitorIndices.Count <= 1)
+                    {
+                        cb.IsChecked = true;
+                        return;
+                    }
+                    _selectedMonitorIndices.Remove(idx);
+                    if (_preferredPrimaryMonitorIndex == idx)
+                        _preferredPrimaryMonitorIndex = null;
+                }
+
+                ApplySelectedMonitorLayout();
+                PopulateMonitorCheckboxes();
+            };
+
+            var isPrimary = idx == activePrimaryIndex;
+            var primaryBtn = new Button
+            {
+                Content = isPrimary ? "★ 主屏" : "设为主屏",
+                Foreground = Brushes.White,
+                Background = isPrimary ? PopupButtonActiveBrush : PopupButtonNormalBrush,
+                BorderBrush = new SolidColorBrush(Color.Parse("#40FFFFFF")),
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(4),
+                FontSize = 11,
+                Padding = new Thickness(6, 2),
+                IsEnabled = !isPrimary,
+                VerticalAlignment = Avalonia.Layout.VerticalAlignment.Center
+            };
+            primaryBtn.Click += (_, _) =>
+            {
+                _selectedMonitorIndices.Add(idx);
+                _preferredPrimaryMonitorIndex = idx;
+                ApplySelectedMonitorLayout();
+                PopulateMonitorCheckboxes();
+            };
+
+            Grid.SetColumn(cb, 0);
+            Grid.SetColumn(primaryBtn, 1);
+            row.Children.Add(cb);
+            row.Children.Add(primaryBtn);
+            MonitorCheckboxList.Children.Add(row);
+        }
+    }
+
+    private void ApplySelectedMonitorLayout()
+    {
+        if (DataContext is not RdpViewModel vm || !vm.IsConnected || TopLevel.GetTopLevel(this) is not Window window)
+            return;
+
+        var screens = window.Screens.All;
+        if (screens.Count == 0 || _selectedMonitorIndices.Count == 0)
+            return;
+
+        var selected = new System.Collections.Generic.List<(int Index, Avalonia.Platform.Screen Screen)>();
+        foreach (var idx in _selectedMonitorIndices)
+        {
+            if (idx >= 0 && idx < screens.Count)
+                selected.Add((idx, screens[idx]));
+        }
+
+        if (selected.Count == 0)
+            return;
+
+        selected.Sort((a, b) => a.Index.CompareTo(b.Index));
+
+        var currentScreen = window.Screens.ScreenFromWindow(window) ?? window.Screens.Primary;
+        var hostEntry = selected[0];
+        var remotePrimaryEntry = selected[0];
+        foreach (var item in selected)
+        {
+            if (currentScreen != null && item.Screen.Bounds == currentScreen.Bounds)
+                hostEntry = item;
+            if (_preferredPrimaryMonitorIndex.HasValue && item.Index == _preferredPrimaryMonitorIndex.Value)
+                remotePrimaryEntry = item;
+        }
+        if (!_preferredPrimaryMonitorIndex.HasValue)
+            remotePrimaryEntry = hostEntry;
+
+        var minX = int.MaxValue;
+        var minY = int.MaxValue;
+        var maxX = int.MinValue;
+        var maxY = int.MinValue;
+        foreach (var item in selected)
+        {
+            if (item.Screen.Bounds.X < minX) minX = item.Screen.Bounds.X;
+            if (item.Screen.Bounds.Y < minY) minY = item.Screen.Bounds.Y;
+            if (item.Screen.Bounds.Right > maxX) maxX = item.Screen.Bounds.Right;
+            if (item.Screen.Bounds.Bottom > maxY) maxY = item.Screen.Bounds.Bottom;
+        }
+
+        var hostScaleFactor = GetRenderScaling();
+        var useViewportForHost = window.WindowState != WindowState.FullScreen &&
+                                 RdpViewport.Bounds.Width >= 320 &&
+                                 RdpViewport.Bounds.Height >= 240;
+        var hostPixelW = useViewportForHost
+            ? Math.Clamp(((int)Math.Round(RdpViewport.Bounds.Width * hostScaleFactor)) & ~1, 200, 8192)
+            : Math.Clamp(hostEntry.Screen.Bounds.Width & ~1, 200, 8192);
+        var hostPixelH = useViewportForHost
+            ? Math.Clamp(((int)Math.Round(RdpViewport.Bounds.Height * hostScaleFactor)) & ~1, 200, 8192)
+            : Math.Clamp(hostEntry.Screen.Bounds.Height & ~1, 200, 8192);
+
+        // Mode 1: Single local ultrawide -> Remote virtual dual monitors (left/right 50/50 split)
+        if (_ultrawideMode == 1)
+        {
+            CloseAllSecondaryMonitorWindows();
+            _primarySliceRect = null;
+            PrimarySliceSurface.IsVisible = false;
+            FramebufferImage.IsVisible = true;
+
+            var halfW = Math.Max(200, (hostPixelW / 2) & ~1);
+            var h = Math.Max(200, hostPixelH & ~1);
+            var scale = Math.Clamp((int)Math.Round(hostEntry.Screen.Scaling * 100), 100, 500);
+            var splitLayouts = new System.Collections.Generic.List<RdpMonitorRect>
+            {
+                new(0, 0, halfW, h, scale, true),
+                new(halfW, 0, halfW, h, scale, false)
+            };
+            vm.TryResizeMonitors(splitLayouts);
+            SyncMultiMonitorActiveFlag();
+            return;
+        }
+
+        var layouts = new System.Collections.Generic.List<RdpMonitorRect>(selected.Count);
+        var sliceByIndex = new System.Collections.Generic.Dictionary<int, Rect>();
+        foreach (var item in selected)
+        {
+            var b = item.Screen.Bounds;
+            var w = item.Index == hostEntry.Index ? hostPixelW : Math.Clamp(b.Width & ~1, 200, 8192);
+            var h = item.Index == hostEntry.Index ? hostPixelH : Math.Clamp(b.Height & ~1, 200, 8192);
+            sliceByIndex[item.Index] = new Rect(b.X - minX, b.Y - minY, w, h);
+        }
+
+        // Mode 2: Local dual PBP screens -> Remote single merged ultrawide monitor
+        if (_ultrawideMode == 2 && selected.Count >= 2 && _virtualMonitorIds.Count == 0)
+        {
+            var totalW = Math.Clamp((maxX - minX) & ~1, 200, 8192);
+            var totalH = Math.Clamp((maxY - minY) & ~1, 200, 8192);
+            var scale = Math.Clamp((int)Math.Round(remotePrimaryEntry.Screen.Scaling * 100), 100, 500);
+            layouts.Add(new RdpMonitorRect(0, 0, totalW, totalH, scale, true));
+        }
+        else
+        {
+            foreach (var item in selected)
+            {
+                var b = item.Screen.Bounds;
+                var w = item.Index == hostEntry.Index ? hostPixelW : Math.Clamp(b.Width & ~1, 200, 8192);
+                var h = item.Index == hostEntry.Index ? hostPixelH : Math.Clamp(b.Height & ~1, 200, 8192);
+                var left = b.X - remotePrimaryEntry.Screen.Bounds.X;
+                var top = b.Y - remotePrimaryEntry.Screen.Bounds.Y;
+                var scale = Math.Clamp((int)Math.Round(item.Screen.Scaling * 100), 100, 500);
+                layouts.Add(new RdpMonitorRect(left, top, w, h, scale, item.Index == remotePrimaryEntry.Index));
+            }
+
+            // Append any user-created virtual monitors (windowed on host screen) to the right
+            var nextRight = hostEntry.Screen.Bounds.X + hostPixelW;
+            if (selected.Count > 1 && maxX > nextRight)
+                nextRight = maxX;
+            var hostBounds = hostEntry.Screen.Bounds;
+            var hostScale = Math.Clamp((int)Math.Round(hostEntry.Screen.Scaling * 100), 100, 500);
+            foreach (var vId in _virtualMonitorIds)
+            {
+                var vw = Math.Clamp(hostBounds.Width & ~1, 200, 8192);
+                var vh = Math.Clamp(hostBounds.Height & ~1, 200, 8192);
+                var vLeft = nextRight - remotePrimaryEntry.Screen.Bounds.X;
+                var vTop = hostBounds.Y - remotePrimaryEntry.Screen.Bounds.Y;
+                layouts.Add(new RdpMonitorRect(vLeft, vTop, vw, vh, hostScale, false));
+                sliceByIndex[vId] = new Rect(nextRight - minX, hostBounds.Y - minY, vw, vh);
+                nextRight += vw;
+            }
+        }
+
+        vm.TryResizeMonitors(layouts);
+
+        if (selected.Count == 1 && _virtualMonitorIds.Count == 0)
+        {
+            CloseAllSecondaryMonitorWindows();
+            _primarySliceRect = null;
+            PrimarySliceSurface.IsVisible = false;
+            FramebufferImage.IsVisible = true;
+            SyncMultiMonitorActiveFlag();
+            return;
+        }
+
+        _primarySliceRect = sliceByIndex[hostEntry.Index];
+        PrimarySliceSurface.Source = vm.Framebuffer;
+        PrimarySliceSurface.SourceRect = _primarySliceRect.Value;
+        PrimarySliceSurface.IsVisible = true;
+        FramebufferImage.IsVisible = false;
+
+        var activeSecondary = new System.Collections.Generic.HashSet<int>();
+        foreach (var item in selected)
+        {
+            if (item.Index == hostEntry.Index)
+                continue;
+
+            activeSecondary.Add(item.Index);
+            var slice = sliceByIndex[item.Index];
+            if (_secondaryMonitorWindows.TryGetValue(item.Index, out var existing))
+            {
+                existing.UpdateSlice(slice);
+            }
+            else
+            {
+                var monitorWin = new RdpMonitorWindow(this, vm, item.Screen, item.Index, slice, OnSecondaryMonitorCloseRequested);
+                _secondaryMonitorWindows[item.Index] = monitorWin;
+                monitorWin.Show();
+            }
+        }
+
+        for (var vi = 0; vi < _virtualMonitorIds.Count; vi++)
+        {
+            var vId = _virtualMonitorIds[vi];
+            activeSecondary.Add(vId);
+            var slice = sliceByIndex[vId];
+            if (_secondaryMonitorWindows.TryGetValue(vId, out var existing))
+            {
+                existing.UpdateSlice(slice);
+            }
+            else
+            {
+                var vTitle = $"虚拟屏 {vi + 1} · {(int)slice.Width}×{(int)slice.Height}";
+                var monitorWin = new RdpMonitorWindow(
+                    this,
+                    vm,
+                    hostEntry.Screen,
+                    vId,
+                    slice,
+                    OnSecondaryMonitorCloseRequested,
+                    startWindowed: true,
+                    customTitle: vTitle);
+                _secondaryMonitorWindows[vId] = monitorWin;
+                monitorWin.Show();
+            }
+        }
+
+        var toClose = new System.Collections.Generic.List<int>();
+        foreach (var key in _secondaryMonitorWindows.Keys)
+        {
+            if (!activeSecondary.Contains(key))
+                toClose.Add(key);
+        }
+        foreach (var key in toClose)
+        {
+            if (_secondaryMonitorWindows.Remove(key, out var win))
+                win.CloseProgrammatically();
+        }
+
+        SyncMultiMonitorActiveFlag();
+    }
+
+    private void OnSecondaryMonitorCloseRequested(int monitorIndex)
+    {
+        _selectedMonitorIndices.Remove(monitorIndex);
+        _virtualMonitorIds.Remove(monitorIndex);
+        if (_secondaryMonitorWindows.Remove(monitorIndex, out var win))
+            win.CloseProgrammatically();
+        ApplySelectedMonitorLayout();
+        UpdateUltrawideModeButtonStates();
+        SyncMultiMonitorActiveFlag();
+    }
+
+    private void CloseAllSecondaryMonitorWindows()
+    {
+        foreach (var win in _secondaryMonitorWindows.Values)
+            win.CloseProgrammatically();
+        _secondaryMonitorWindows.Clear();
     }
 
     private void OnPointerShapeChanged(int kind, int width, int height, int hotX, int hotY, byte[]? pixels)
@@ -199,7 +695,7 @@ public partial class RdpView : UserControl
         if (kind == 1)
         {
             DisposeCustomRemoteCursor();
-            FramebufferImage.Cursor = new Cursor(StandardCursorType.None);
+            ApplyCursorToAllSurfaces(new Cursor(StandardCursorType.None));
             return;
         }
 
@@ -221,7 +717,7 @@ public partial class RdpView : UserControl
                 var clampedHotX = Math.Clamp(hotX, 0, width - 1);
                 var clampedHotY = Math.Clamp(hotY, 0, height - 1);
                 var cursor = new Cursor(bitmap, new PixelPoint(clampedHotX, clampedHotY));
-                FramebufferImage.Cursor = cursor;
+                ApplyCursorToAllSurfaces(cursor);
                 DisposeCustomRemoteCursor();
                 _customRemoteCursor = cursor;
                 _customRemoteCursorBitmap = bitmap;
@@ -234,7 +730,15 @@ public partial class RdpView : UserControl
         }
 
         DisposeCustomRemoteCursor();
-        FramebufferImage.Cursor = new Cursor(StandardCursorType.Arrow);
+        ApplyCursorToAllSurfaces(new Cursor(StandardCursorType.Arrow));
+    }
+
+    private void ApplyCursorToAllSurfaces(Cursor cursor)
+    {
+        FramebufferImage.Cursor = cursor;
+        PrimarySliceSurface.Cursor = cursor;
+        foreach (var win in _secondaryMonitorWindows.Values)
+            win.SetRemoteCursor(cursor);
     }
 
     private void DisposeCustomRemoteCursor()
@@ -243,6 +747,64 @@ public partial class RdpView : UserControl
         _customRemoteCursor = null;
         _customRemoteCursorBitmap?.Dispose();
         _customRemoteCursorBitmap = null;
+    }
+
+    private void StartClipboardListener()
+    {
+        if (OperatingSystem.IsWindows())
+        {
+            if (_clipboardListener != null)
+                return;
+
+            _clipboardListener = new WindowsClipboardListener();
+            _clipboardListener.ClipboardChanged += OnLocalClipboardChanged;
+            return;
+        }
+
+        if (_clipboardPollTimer != null)
+            return;
+
+        _clipboardPollTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(800) };
+        _clipboardPollTimer.Tick += OnClipboardPollTick;
+        _clipboardPollTimer.Start();
+    }
+
+    private void StopClipboardListener()
+    {
+        if (_clipboardListener != null)
+        {
+            _clipboardListener.ClipboardChanged -= OnLocalClipboardChanged;
+            _clipboardListener.Dispose();
+            _clipboardListener = null;
+        }
+
+        if (_clipboardPollTimer != null)
+        {
+            _clipboardPollTimer.Stop();
+            _clipboardPollTimer.Tick -= OnClipboardPollTick;
+            _clipboardPollTimer = null;
+        }
+    }
+
+    private void OnClipboardPollTick(object? sender, EventArgs e)
+    {
+        if (_isAttached && DataContext is RdpViewModel { IsConnected: true, IsClipboardChannelReady: true })
+            _ = SyncLocalClipboardToRemoteAsync();
+    }
+
+    private void OnLocalClipboardChanged()
+    {
+        Dispatcher.UIThread.Post(() => _ = SyncLocalClipboardToRemoteAsync());
+    }
+
+    private void OnRemoteClipboardImageReceived(uint imageFormat, byte[] data)
+    {
+        _ = ApplyRemoteClipboardImageAsync(imageFormat, data);
+    }
+
+    private void OnRemoteClipboardFilesReceived(string[] paths)
+    {
+        _ = ApplyRemoteClipboardFilesAsync(paths);
     }
 
     private void UpdateSystemShortcutHook()
@@ -301,8 +863,10 @@ public partial class RdpView : UserControl
             ConfigureInitialDisplay(vm, e.NewSize);
             if (_isAttached)
                 vm.Start();
-            vm.RequestViewportResize(e.NewSize, GetRenderScaling());
-            _lastRenderScaling = GetRenderScaling();
+            if (IsCustomMonitorLayoutActive)
+                ApplySelectedMonitorLayout();
+            else
+                vm.RequestViewportResize(e.NewSize, GetRenderScaling());
         }
     }
 
@@ -321,6 +885,105 @@ public partial class RdpView : UserControl
     private void ConfigureInitialDisplay(RdpViewModel vm, Size viewportSize)
     {
         vm.ConfigureInitialDisplay(viewportSize, GetCurrentMonitorPixelSize(), GetRenderScaling());
+    }
+
+    private void OnRdpDragOver(object? sender, DragEventArgs e)
+    {
+        if (DataContext is RdpViewModel vm &&
+            vm.IsConnected &&
+            vm.IsClipboardChannelReady &&
+            e.DataTransfer.TryGetFiles() is { Length: > 0 })
+        {
+            e.DragEffects = DragDropEffects.Copy;
+            e.Handled = true;
+            return;
+        }
+
+        e.DragEffects = DragDropEffects.None;
+    }
+
+    private void OnRdpDrop(object? sender, DragEventArgs e)
+    {
+        if (DataContext is not RdpViewModel vm || !vm.IsConnected || !vm.IsClipboardChannelReady)
+            return;
+
+        var files = e.DataTransfer.TryGetFiles();
+        if (files == null || files.Length == 0)
+            return;
+
+        var paths = new System.Collections.Generic.List<string>(files.Length);
+        foreach (var item in files)
+        {
+            var path = item.Path?.LocalPath;
+            if (!string.IsNullOrWhiteSpace(path))
+                paths.Add(path);
+        }
+
+        if (paths.Count == 0)
+            return;
+
+        e.Handled = true;
+        var pathArray = paths.ToArray();
+        _ = DropFilesToRemoteAsync(vm, pathArray);
+    }
+
+    private async Task DropFilesToRemoteAsync(RdpViewModel vm, string[] paths)
+    {
+        vm.SetClipboardFiles(paths);
+        _lastSyncedClipboardFilesKey = string.Join("\n", paths);
+        _lastSyncedClipboardText = null;
+        _lastSyncedClipboardImageHash = null;
+        await Task.Delay(150);
+        SendClipboardPasteShortcut(vm);
+    }
+
+    private void SyncLocalLockKeysToRemote()
+    {
+        if (!OperatingSystem.IsWindows() || DataContext is not RdpViewModel vm || !vm.IsConnected || !vm.Session.RdpSyncLockKeys)
+            return;
+
+        uint flags = 0;
+        if ((GetKeyState(0x91) & 1) != 0) // VK_SCROLL
+            flags |= 0x01;
+        if ((GetKeyState(0x90) & 1) != 0) // VK_NUMLOCK
+            flags |= 0x02;
+        if ((GetKeyState(0x14) & 1) != 0) // VK_CAPITAL
+            flags |= 0x04;
+        vm.SyncLockKeys(flags);
+    }
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern short GetKeyState(int nVirtKey);
+
+    private void OnTopLevelScalingChanged(object? sender, EventArgs e)
+    {
+        if (DataContext is RdpViewModel vm)
+        {
+            if (IsCustomMonitorLayoutActive)
+                ApplySelectedMonitorLayout();
+            else
+                vm.RequestViewportResize(RdpViewport.Bounds.Size, GetRenderScaling());
+        }
+    }
+
+    private void SubscribeTopLevelScaling()
+    {
+        UnsubscribeTopLevelScaling();
+        var topLevel = TopLevel.GetTopLevel(this);
+        if (topLevel == null)
+            return;
+
+        _subscribedTopLevel = topLevel;
+        _subscribedTopLevel.ScalingChanged += OnTopLevelScalingChanged;
+    }
+
+    private void UnsubscribeTopLevelScaling()
+    {
+        if (_subscribedTopLevel == null)
+            return;
+
+        _subscribedTopLevel.ScalingChanged -= OnTopLevelScalingChanged;
+        _subscribedTopLevel = null;
     }
 
     private double GetRenderScaling()
@@ -346,7 +1009,8 @@ public partial class RdpView : UserControl
     {
         Focus();
         _ = SyncLocalClipboardToRemoteAsync();
-        var point = e.GetCurrentPoint(FramebufferImage);
+        var pointerTarget = PrimarySliceSurface.IsVisible ? (Visual)PrimarySliceSurface : FramebufferImage;
+        var point = e.GetCurrentPoint(pointerTarget);
         if (point.Properties.IsLeftButtonPressed)
             _buttonFlags |= 0x1000;
         if (point.Properties.IsMiddleButtonPressed)
@@ -413,10 +1077,99 @@ public partial class RdpView : UserControl
         SendKey(e, false);
     }
 
+    internal void ForwardKeyDown(KeyEventArgs e) => OnFramebufferKeyDown(this, e);
+    internal void ForwardKeyUp(KeyEventArgs e) => OnFramebufferKeyUp(this, e);
+    internal void ForwardDragOver(DragEventArgs e) => OnRdpDragOver(this, e);
+    internal void ForwardDrop(DragEventArgs e) => OnRdpDrop(this, e);
+    internal void ForwardGotFocus()
+    {
+        SyncLocalLockKeysToRemote();
+        _ = SyncLocalClipboardToRemoteAsync();
+    }
+
+    internal void ForwardLostFocus()
+    {
+        ReleaseTrackedModifiers();
+    }
+
+    internal void RequestClipboardSync() => _ = SyncLocalClipboardToRemoteAsync();
+
+    internal bool TryMapGlobalScreenPoint(PixelPoint screenPoint, out ushort remoteX, out ushort remoteY)
+    {
+        remoteX = 0;
+        remoteY = 0;
+
+        if (PrimarySliceSurface.IsVisible && _primarySliceRect is { Width: > 0, Height: > 0 } slice)
+        {
+            var bounds = PrimarySliceSurface.Bounds;
+            if (bounds.Width > 0 && bounds.Height > 0)
+            {
+                var topLeft = PrimarySliceSurface.PointToScreen(new Point(0, 0));
+                var bottomRight = PrimarySliceSurface.PointToScreen(new Point(bounds.Width, bounds.Height));
+                var sw = bottomRight.X - topLeft.X;
+                var sh = bottomRight.Y - topLeft.Y;
+                if (sw > 0 && sh > 0 &&
+                    screenPoint.X >= topLeft.X && screenPoint.X <= bottomRight.X &&
+                    screenPoint.Y >= topLeft.Y && screenPoint.Y <= bottomRight.Y)
+                {
+                    var relX = Math.Clamp((double)(screenPoint.X - topLeft.X) / sw, 0, 1);
+                    var relY = Math.Clamp((double)(screenPoint.Y - topLeft.Y) / sh, 0, 1);
+                    remoteX = (ushort)Math.Clamp((int)Math.Round(slice.X + relX * slice.Width), 0, ushort.MaxValue);
+                    remoteY = (ushort)Math.Clamp((int)Math.Round(slice.Y + relY * slice.Height), 0, ushort.MaxValue);
+                    return true;
+                }
+            }
+        }
+
+        foreach (var win in _secondaryMonitorWindows.Values)
+        {
+            if (win.TryMapScreenPoint(screenPoint, out remoteX, out remoteY))
+                return true;
+        }
+
+        return false;
+    }
+
     private void SendPointer(PointerEventArgs e, ushort flags)
     {
         if (DataContext is not RdpViewModel vm || FramebufferImage == null)
             return;
+
+        if (PrimarySliceSurface.IsVisible && _primarySliceRect is { Width: > 0, Height: > 0 } slice)
+        {
+            var bounds = PrimarySliceSurface.Bounds;
+            if (bounds.Width <= 0 || bounds.Height <= 0)
+                return;
+
+            var pos = e.GetPosition(PrimarySliceSurface);
+            if (pos.X < 0 || pos.X > bounds.Width || pos.Y < 0 || pos.Y > bounds.Height)
+            {
+                var screenPt = PrimarySliceSurface.PointToScreen(pos);
+                if (TryMapGlobalScreenPoint(screenPt, out var gx, out var gy))
+                {
+                    _lastRemotePointerX = gx;
+                    _lastRemotePointerY = gy;
+                    vm.SendPointer(flags, gx, gy);
+                }
+                else if (flags != 0x0800)
+                {
+                    // In gap between windows: pause move updates, but still deliver button release cleanly.
+                    vm.SendPointer(flags, _lastRemotePointerX, _lastRemotePointerY);
+                }
+                return;
+            }
+
+            var relX = Math.Clamp(pos.X / bounds.Width, 0, 1);
+            var relY = Math.Clamp(pos.Y / bounds.Height, 0, 1);
+            var vx = slice.X + relX * slice.Width;
+            var vy = slice.Y + relY * slice.Height;
+            var rx = (ushort)Math.Clamp((int)Math.Round(vx), 0, ushort.MaxValue);
+            var ry = (ushort)Math.Clamp((int)Math.Round(vy), 0, ushort.MaxValue);
+            _lastRemotePointerX = rx;
+            _lastRemotePointerY = ry;
+            vm.SendPointer(flags, rx, ry);
+            return;
+        }
 
         var (x, y) = MapPointer(
             e.GetPosition(FramebufferImage),
@@ -424,6 +1177,8 @@ public partial class RdpView : UserControl
             vm.RemoteWidth,
             vm.RemoteHeight,
             vm.IsFitToWindow);
+        _lastRemotePointerX = (ushort)x;
+        _lastRemotePointerY = (ushort)y;
         vm.SendPointer(flags, (ushort)x, (ushort)y);
     }
 
@@ -525,21 +1280,86 @@ public partial class RdpView : UserControl
         if (DataContext is not RdpViewModel vm)
             return;
 
-        var text = await TryReadLocalClipboardTextAsync();
-        if (string.IsNullOrEmpty(text))
-            return;
-
-        if (!vm.IsClipboardChannelReady)
+        var currentSeq = RdpClipboardImageHelper.GetWindowsClipboardSequenceNumber();
+        if (vm.IsClipboardChannelReady && currentSeq != 0 && currentSeq == _lastAppliedRemoteClipboardSeq)
         {
-            vm.SetClipboardText(text);
-            _lastSyncedClipboardText = text;
-            await PasteLocalClipboardTextAsync(text);
+            SendClipboardPasteShortcut(vm);
             return;
         }
 
-        vm.SetClipboardText(text);
-        _lastSyncedClipboardText = text;
-        await Task.Delay(300);
+        var seqChanged = currentSeq != 0 && currentSeq != _lastSyncedLocalClipboardSeq;
+        var clipboard = TopLevel.GetTopLevel(this)?.Clipboard;
+
+        if (vm.IsClipboardChannelReady)
+        {
+            var files = await RdpClipboardImageHelper.TryReadLocalFilesAsync(clipboard);
+            if (files is { Length: > 0 })
+            {
+                var filesKey = string.Join("\n", files);
+                var alreadySynced = !seqChanged && string.Equals(filesKey, _lastSyncedClipboardFilesKey, StringComparison.Ordinal);
+                if (!alreadySynced)
+                {
+                    vm.SetClipboardFiles(files);
+                    _lastSyncedClipboardFilesKey = filesKey;
+                    _lastSyncedClipboardText = null;
+                    _lastSyncedClipboardImageHash = null;
+                    _lastSyncedLocalClipboardSeq = currentSeq;
+                    await Task.Delay(150);
+                }
+
+                SendClipboardPasteShortcut(vm);
+                return;
+            }
+        }
+
+        var text = await TryReadLocalClipboardTextAsync();
+        if (!string.IsNullOrEmpty(text))
+        {
+            if (!vm.IsClipboardChannelReady)
+            {
+                vm.SetClipboardText(text);
+                _lastSyncedClipboardText = text;
+                _lastSyncedClipboardImageHash = null;
+                _lastSyncedClipboardFilesKey = null;
+                _lastSyncedLocalClipboardSeq = currentSeq;
+                await PasteLocalClipboardTextAsync(text);
+                return;
+            }
+
+            var alreadySynced = !seqChanged && string.Equals(text, _lastSyncedClipboardText, StringComparison.Ordinal);
+            if (!alreadySynced)
+            {
+                var (html, rtf) = await RdpClipboardImageHelper.TryReadLocalRichTextAsync(clipboard);
+                vm.SetClipboardRichText(text, html, rtf);
+                _lastSyncedClipboardText = text;
+                _lastSyncedClipboardImageHash = null;
+                _lastSyncedClipboardFilesKey = null;
+                _lastSyncedLocalClipboardSeq = currentSeq;
+                await Task.Delay(150);
+            }
+
+            SendClipboardPasteShortcut(vm);
+            return;
+        }
+
+        if (!vm.IsClipboardChannelReady)
+            return;
+
+        var image = await RdpClipboardImageHelper.TryReadLocalImageAsync(clipboard);
+        if (image == null)
+            return;
+
+        var imageAlreadySynced = !seqChanged && string.Equals(image.Hash, _lastSyncedClipboardImageHash, StringComparison.Ordinal);
+        if (!imageAlreadySynced)
+        {
+            vm.SetClipboardImage(image.PngBytes, image.DibBytes);
+            _lastSyncedClipboardImageHash = image.Hash;
+            _lastSyncedClipboardText = null;
+            _lastSyncedClipboardFilesKey = null;
+            _lastSyncedLocalClipboardSeq = currentSeq;
+            await Task.Delay(150);
+        }
+
         SendClipboardPasteShortcut(vm);
     }
 
@@ -602,207 +1422,52 @@ public partial class RdpView : UserControl
         if (_applyingRemoteClipboardText || DataContext is not RdpViewModel vm || !vm.IsClipboardChannelReady)
             return;
 
-        if (OperatingSystem.IsWindows())
-        {
-            var seq = RdpClipboardImageHelper.GetWindowsClipboardSequenceNumber();
-            if (seq != 0 &&
-                (_lastSyncedClipboardSequenceNumber == seq || _lastAppliedRemoteClipboardSequenceNumber == seq))
-            {
-                return;
-            }
-        }
+        var currentSeq = RdpClipboardImageHelper.GetWindowsClipboardSequenceNumber();
+        if (currentSeq != 0 && currentSeq == _lastAppliedRemoteClipboardSeq)
+            return;
 
+        var seqChanged = currentSeq != 0 && currentSeq != _lastSyncedLocalClipboardSeq;
         var clipboard = TopLevel.GetTopLevel(this)?.Clipboard;
 
         var files = await RdpClipboardImageHelper.TryReadLocalFilesAsync(clipboard);
         if (files is { Length: > 0 })
         {
-            var filesKey = string.Join('\n', files);
-            if (!string.Equals(filesKey, _lastSyncedClipboardFilesKey, StringComparison.Ordinal))
-            {
-                vm.SetClipboardFiles(files);
-                _lastSyncedClipboardFilesKey = filesKey;
-                _lastSyncedClipboardImageHash = null;
-                _lastSyncedClipboardText = null;
-            }
-            if (OperatingSystem.IsWindows())
-                _lastSyncedClipboardSequenceNumber = RdpClipboardImageHelper.GetWindowsClipboardSequenceNumber();
-            return;
-        }
+            var filesKey = string.Join("\n", files);
+            if (!seqChanged && string.Equals(filesKey, _lastSyncedClipboardFilesKey, StringComparison.Ordinal))
+                return;
 
-        var image = await RdpClipboardImageHelper.TryReadLocalImageAsync(clipboard);
-        if (image != null && (image.PngBytes is { Length: > 0 } || image.DibBytes is { Length: > 0 }))
-        {
-            if (!string.Equals(image.Hash, _lastSyncedClipboardImageHash, StringComparison.Ordinal))
-            {
-                if (image.DibBytes is { Length: > 0 })
-                    vm.SetClipboardImage(RdpBridgeClient.ClipboardImageFormatDib, image.DibBytes);
-                else if (image.PngBytes is { Length: > 0 })
-                    vm.SetClipboardImage(RdpBridgeClient.ClipboardImageFormatPng, image.PngBytes);
-                _lastSyncedClipboardImageHash = image.Hash;
-                _lastSyncedClipboardFilesKey = null;
-                _lastSyncedClipboardText = null;
-            }
-            if (OperatingSystem.IsWindows())
-                _lastSyncedClipboardSequenceNumber = RdpClipboardImageHelper.GetWindowsClipboardSequenceNumber();
+            vm.SetClipboardFiles(files);
+            _lastSyncedClipboardFilesKey = filesKey;
+            _lastSyncedClipboardText = null;
+            _lastSyncedClipboardImageHash = null;
+            _lastSyncedLocalClipboardSeq = currentSeq;
             return;
         }
 
         var text = await TryReadLocalClipboardTextAsync();
-        if (text == null || string.Equals(text, _lastSyncedClipboardText, StringComparison.Ordinal))
+        if (!string.IsNullOrEmpty(text))
         {
-            if (OperatingSystem.IsWindows())
-                _lastSyncedClipboardSequenceNumber = RdpClipboardImageHelper.GetWindowsClipboardSequenceNumber();
-            return;
-        }
-
-        var (htmlBytes, rtfBytes) = await RdpClipboardImageHelper.TryReadLocalRichTextAsync(clipboard);
-        if ((htmlBytes is { Length: > 0 }) || (rtfBytes is { Length: > 0 }))
-            vm.SetClipboardRichText(text, htmlBytes, rtfBytes);
-        else
-            vm.SetClipboardText(text);
-
-        _lastSyncedClipboardText = text;
-        _lastSyncedClipboardImageHash = null;
-        _lastSyncedClipboardFilesKey = null;
-        if (OperatingSystem.IsWindows())
-            _lastSyncedClipboardSequenceNumber = RdpClipboardImageHelper.GetWindowsClipboardSequenceNumber();
-    }
-
-    private void OnRemoteClipboardImageReceived(uint imageFormat, byte[] data)
-    {
-        _ = ApplyRemoteClipboardImageAsync(imageFormat, data);
-    }
-
-    private async Task ApplyRemoteClipboardImageAsync(uint imageFormat, byte[] data)
-    {
-        _applyingRemoteClipboardText = true;
-        try
-        {
-            var clipboard = TopLevel.GetTopLevel(this)?.Clipboard;
-            if (await RdpClipboardImageHelper.TryWriteLocalImageAsync(clipboard, imageFormat, data))
-            {
-                _lastSyncedClipboardImageHash = imageFormat == RdpBridgeClient.ClipboardImageFormatPng
-                    ? RdpClipboardImageHelper.ComputeHash(data, null)
-                    : RdpClipboardImageHelper.ComputeHash(null, data);
-                _lastSyncedClipboardFilesKey = null;
-                _lastSyncedClipboardText = null;
-                if (OperatingSystem.IsWindows())
-                    _lastAppliedRemoteClipboardSequenceNumber = RdpClipboardImageHelper.GetWindowsClipboardSequenceNumber();
-            }
-        }
-        catch
-        {
-        }
-        finally
-        {
-            _applyingRemoteClipboardText = false;
-        }
-    }
-
-    private void OnRemoteClipboardFilesReceived(string[] paths)
-    {
-        _ = ApplyRemoteClipboardFilesAsync(paths);
-    }
-
-    private async Task ApplyRemoteClipboardFilesAsync(string[] paths)
-    {
-        _applyingRemoteClipboardText = true;
-        try
-        {
-            var clipboard = TopLevel.GetTopLevel(this)?.Clipboard;
-            if (await RdpClipboardImageHelper.TryWriteLocalFilesAsync(clipboard, paths))
-            {
-                _lastSyncedClipboardFilesKey = string.Join('\n', paths);
-                _lastSyncedClipboardImageHash = null;
-                _lastSyncedClipboardText = null;
-                if (OperatingSystem.IsWindows())
-                    _lastAppliedRemoteClipboardSequenceNumber = RdpClipboardImageHelper.GetWindowsClipboardSequenceNumber();
-            }
-        }
-        catch
-        {
-        }
-        finally
-        {
-            _applyingRemoteClipboardText = false;
-        }
-    }
-
-    private void StartClipboardListener()
-    {
-        if (OperatingSystem.IsWindows())
-        {
-            if (_clipboardListener != null)
+            if (!seqChanged && string.Equals(text, _lastSyncedClipboardText, StringComparison.Ordinal))
                 return;
 
-            _clipboardListener = new WindowsClipboardListener();
-            _clipboardListener.ClipboardChanged += () =>
-                Dispatcher.UIThread.Post(() => _ = SyncLocalClipboardToRemoteAsync());
+            var (html, rtf) = await RdpClipboardImageHelper.TryReadLocalRichTextAsync(clipboard);
+            vm.SetClipboardRichText(text, html, rtf);
+            _lastSyncedClipboardText = text;
+            _lastSyncedClipboardImageHash = null;
+            _lastSyncedClipboardFilesKey = null;
+            _lastSyncedLocalClipboardSeq = currentSeq;
             return;
         }
 
-        if (_clipboardPollTimer != null)
+        var image = await RdpClipboardImageHelper.TryReadLocalImageAsync(clipboard);
+        if (image == null || (!seqChanged && string.Equals(image.Hash, _lastSyncedClipboardImageHash, StringComparison.Ordinal)))
             return;
 
-        _clipboardPollTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(800) };
-        _clipboardPollTimer.Tick += (_, _) => _ = SyncLocalClipboardToRemoteAsync();
-        _clipboardPollTimer.Start();
-    }
-
-    private void StopClipboardListener()
-    {
-        _clipboardListener?.Dispose();
-        _clipboardListener = null;
-        _clipboardPollTimer?.Stop();
-        _clipboardPollTimer = null;
-    }
-
-    private void ResetClipboardSyncState()
-    {
+        vm.SetClipboardImage(image.PngBytes, image.DibBytes);
+        _lastSyncedClipboardImageHash = image.Hash;
         _lastSyncedClipboardText = null;
-        _lastSyncedClipboardImageHash = null;
         _lastSyncedClipboardFilesKey = null;
-        _lastSyncedClipboardSequenceNumber = null;
-        _lastAppliedRemoteClipboardSequenceNumber = null;
-    }
-
-    private void OnViewportDragOver(object? sender, DragEventArgs e)
-    {
-        var hasFiles = e.DataTransfer.TryGetFiles()?.Any() == true;
-        e.DragEffects = hasFiles ? DragDropEffects.Copy : DragDropEffects.None;
-        e.Handled = true;
-    }
-
-    private async void OnViewportDrop(object? sender, DragEventArgs e)
-    {
-        if (DataContext is not RdpViewModel vm || !vm.IsConnected || !vm.IsClipboardChannelReady)
-            return;
-
-        var storageItems = e.DataTransfer.TryGetFiles();
-        if (storageItems == null)
-            return;
-
-        var paths = new System.Collections.Generic.List<string>();
-        foreach (var item in storageItems)
-        {
-            var localPath = item.Path.LocalPath;
-            if (!string.IsNullOrWhiteSpace(localPath) &&
-                (System.IO.File.Exists(localPath) || System.IO.Directory.Exists(localPath)))
-            {
-                paths.Add(localPath);
-            }
-        }
-
-        if (paths.Count == 0)
-            return;
-
-        e.Handled = true;
-        vm.SetClipboardFiles(paths);
-        _lastSyncedClipboardFilesKey = string.Join('\n', paths);
-        await Task.Delay(150);
-        if (vm.IsConnected)
-            SendClipboardPasteShortcut(vm);
+        _lastSyncedLocalClipboardSeq = currentSeq;
     }
 
     private async Task ApplyRemoteClipboardTextAsync(string text)
@@ -815,6 +1480,59 @@ public partial class RdpView : UserControl
             {
                 await clipboard.SetTextAsync(text);
                 _lastSyncedClipboardText = text;
+                _lastSyncedClipboardImageHash = null;
+                _lastSyncedClipboardFilesKey = null;
+                _lastAppliedRemoteClipboardSeq = RdpClipboardImageHelper.GetWindowsClipboardSequenceNumber();
+            }
+        }
+        catch
+        {
+            // Clipboard access may fail on some desktop backends.
+        }
+        finally
+        {
+            _applyingRemoteClipboardText = false;
+        }
+    }
+
+    private async Task ApplyRemoteClipboardImageAsync(uint imageFormat, byte[] data)
+    {
+        _applyingRemoteClipboardText = true;
+        try
+        {
+            var clipboard = TopLevel.GetTopLevel(this)?.Clipboard;
+            if (await RdpClipboardImageHelper.TryWriteLocalImageAsync(clipboard, imageFormat, data))
+            {
+                _lastSyncedClipboardImageHash = RdpClipboardImageHelper.ComputeHash(
+                    imageFormat == RdpBridgeClient.ClipboardImageFormatPng ? data : null,
+                    imageFormat == RdpBridgeClient.ClipboardImageFormatDib ? data : null);
+                _lastSyncedClipboardText = null;
+                _lastSyncedClipboardFilesKey = null;
+                _lastAppliedRemoteClipboardSeq = RdpClipboardImageHelper.GetWindowsClipboardSequenceNumber();
+            }
+        }
+        catch
+        {
+            // Clipboard access may fail on some desktop backends.
+        }
+        finally
+        {
+            _applyingRemoteClipboardText = false;
+        }
+    }
+
+    private async Task ApplyRemoteClipboardFilesAsync(string[] paths)
+    {
+        _applyingRemoteClipboardText = true;
+        try
+        {
+            var clipboard = TopLevel.GetTopLevel(this)?.Clipboard;
+            if (await RdpClipboardImageHelper.TryWriteLocalFilesAsync(clipboard, paths))
+            {
+                _lastSyncedClipboardFilesKey = string.Join("\n", paths);
+                _lastSyncedClipboardText = null;
+                _lastSyncedClipboardImageHash = null;
+                _lastAppliedRemoteClipboardSeq = RdpClipboardImageHelper.GetWindowsClipboardSequenceNumber();
             }
         }
         catch
