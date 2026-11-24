@@ -63,7 +63,7 @@ RDP 会话直接运行在统一的标签工作区中，并复用 CxShell 的会�
 
 | 领域 | 技术 |
 | --- | --- |
-| 运行时 | .NET 10 |
+| 运行时 | .NET 11 |
 | UI 框架 | Avalonia 12 |
 | UI 控件 | AtomUI Desktop Controls 6 |
 | MVVM | CommunityToolkit.Mvvm |
@@ -143,7 +143,7 @@ OpenCowork 仅作为架构研究参考。CxShell 不启动、不嵌入，也不�
 
 ### 基础应用
 
-- .NET 10 SDK
+- .NET 11 SDK
 - Git
 - Windows 10/11、macOS 11+ 或主流 Linux 桌面环境
 

@@ -15,7 +15,7 @@ permissions:
   contents: write
 
 env:
-  DOTNET_VERSION: "10.0.x"
+  DOTNET_VERSION: "11.0.x"
   VCPKG_REF: "a7eda31dc16994fcaa8587982eb833a8695f1b6f"
   RELEASE_TAG: ${{ github.ref_type == 'tag' && github.ref_name || inputs.tag_name }}
 
@@ -360,7 +360,7 @@ jobs:
           $publishDir = Join-Path $env:GITHUB_WORKSPACE "artifacts\publish\$rid"
           $outputDir = Join-Path $env:GITHUB_WORKSPACE "artifacts\velopack\$rid"
 
-          dotnet tool install vpk --tool-path ".tmp\vpk" --version 1.2.0
+          dotnet tool install vpk --tool-path ".tmp\vpk" --version 1.2.161
           & ".tmp\vpk\vpk.exe" pack `
             --packId "CxShell-$rid" `
             --packVersion $version `
@@ -601,7 +601,7 @@ jobs:
           publish_dir="$GITHUB_WORKSPACE/artifacts/publish/$rid"
           output_dir="$GITHUB_WORKSPACE/artifacts/velopack/$rid"
 
-          dotnet tool install vpk --tool-path ".tmp/vpk" --version 1.2.0
+          dotnet tool install vpk --tool-path ".tmp/vpk" --version 1.2.161
           ".tmp/vpk/vpk" pack \
             --packId "CxShell-$rid" \
             --packVersion "$version" \
@@ -820,7 +820,7 @@ jobs:
           # probe normally, drop the bridge next to it, and let normal assembly
           # probing find the dylib.
           dotnet build tools/RdpSmokeTest/RdpSmokeTest.csproj --configuration Release
-          smoke_dir="$GITHUB_WORKSPACE/tools/RdpSmokeTest/bin/Release/net10.0"
+          smoke_dir="$GITHUB_WORKSPACE/tools/RdpSmokeTest/bin/Release/net11.0"
           find "$app_path/Contents/MacOS" -maxdepth 1 -name "*.dylib" -exec cp {} "$smoke_dir/" \;
           dotnet exec "$smoke_dir/RdpSmokeTest.dll" --probe
 

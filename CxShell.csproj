@@ -1,7 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
     <PropertyGroup>
         <OutputType>WinExe</OutputType>
-        <TargetFramework>net10.0</TargetFramework>
+        <TargetFramework>net11.0</TargetFramework>
         <Nullable>enable</Nullable>
         <ImplicitUsings>enable</ImplicitUsings>
         <BuiltInComInteropSupport>true</BuiltInComInteropSupport>
@@ -58,25 +58,28 @@
     </ItemGroup>
 
     <ItemGroup>
-        <PackageReference Include="AtomUI.Desktop.Controls" Version="6.2.15" />
-        <PackageReference Include="AtomUI.Desktop.Controls.ColorPicker" Version="6.2.15" />
-        <PackageReference Include="AtomUI.Desktop.Controls.DataGrid" Version="6.2.15" />
+        <PackageReference Include="AtomUI.Desktop.Controls" Version="6.3.0" />
+        <PackageReference Include="AtomUI.Desktop.Controls.ColorPicker" Version="6.3.0" />
+        <PackageReference Include="AtomUI.Desktop.Controls.DataGrid" Version="6.3.0" />
+        <PackageReference Include="AtomUI.Desktop.Controls.Themes.AntDesign" Version="6.3.0" />
+        <PackageReference Include="AtomUI.Desktop.Controls.ColorPicker.Themes.AntDesign" Version="6.3.0" />
+        <PackageReference Include="AtomUI.Desktop.Controls.DataGrid.Themes.AntDesign" Version="6.3.0" />
         <PackageReference Include="Avalonia.AvaloniaEdit" Version="12.0.0" />
-        <PackageReference Include="LiveMarkdown.Avalonia" Version="2.4.0" />
-        <PackageReference Include="Avalonia.Desktop" Version="12.1.6" />
-        <PackageReference Include="Avalonia.Themes.Fluent" Version="12.1.6" />
+        <PackageReference Include="LiveMarkdown.Avalonia" Version="2.7.0" />
+        <PackageReference Include="Avalonia.Desktop" Version="12.2.0" />
+        <PackageReference Include="Avalonia.Themes.Fluent" Version="12.2.0" />
+        <PackageReference Include="Avalonia.Wayland" Version="12.2.0" />
         <PackageReference Include="AvaloniaEdit.TextMate" Version="12.0.0" />
         <PackageReference Include="BouncyCastle.Cryptography" Version="2.7.0" />
-        <PackageReference Include="FluentFTP" Version="54.2.0" />
-        <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.2" />
-        <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.9" />
-        <PackageReference Include="ReactiveUI.Avalonia" Version="12.1.1" />
-        <PackageReference Include="SSH.NET" Version="2026.0.0" />
-        <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.0" />
+        <PackageReference Include="FluentFTP" Version="55.1.0" />
+        <PackageReference Include="Microsoft.Data.Sqlite" Version="11.0.0" />
+        <PackageReference Include="ReactiveUI.Avalonia" Version="12.1.9" />
+        <PackageReference Include="SSH.NET" Version="2026.0.1" />
+        <PackageReference Include="CommunityToolkit.Mvvm" Version="8.4.2" />
         <PackageReference Include="SshNet.Agent" Version="2026.0.0" />
-        <PackageReference Include="System.IO.Ports" Version="10.0.9" />
-        <PackageReference Include="TextMateSharp.Grammars" Version="2.0.4" />
-        <PackageReference Include="Velopack" Version="1.2.0" />
+        <PackageReference Include="System.IO.Ports" Version="11.0.0" />
+        <PackageReference Include="TextMateSharp.Grammars" Version="2.0.5" />
+        <PackageReference Include="Velopack" Version="1.2.161" />
     </ItemGroup>
 
     <ItemGroup>

@@ -1,8 +1,4 @@
-using System.Linq;
-using Avalonia;
-using Avalonia.Automation;
 using Avalonia.Controls;
-using Avalonia.VisualTree;
 
 namespace CxShell.Views;
 
@@ -24,12 +20,13 @@ namespace CxShell.Views;
 /// removes only the native frame, so the drawn caption row would stay on screen.
 /// </description></item>
 /// <item><description>
-/// <see cref="HideDecorations"/> removes the drawn decoration layers.
+/// <see cref="HideDecorations"/> removes Avalonia's drawn decoration layers.
 /// </description></item>
 /// <item><description>
-/// <see cref="SuppressFullscreenPopover"/> hides the hover-revealed full
-/// screen popover that Avalonia draws in a layer above the client area, which
-/// duplicates this application's own connection bar.
+/// AtomUI 6.3.0's built-in full-screen title bar (<c>FullScreenTitleBarMode</c>,
+/// defaulting to <c>AutoHide</c> inside <c>WindowChromeLayer</c>) is disabled
+/// declaratively via <c>FullScreenTitleBarMode="Hidden"</c> on each window XAML
+/// root that hosts <see cref="FullScreenConnectionBar"/>.
 /// </description></item>
 /// </list>
 /// <para>
@@ -39,22 +36,7 @@ namespace CxShell.Views;
 /// </summary>
 internal sealed class KeepTaskbarFullScreen
 {
-    /// <summary>
-    /// Automation id Avalonia's <c>TopLevelHost</c> gives the layer that hosts
-    /// the hover-revealed full screen popover. That layer is a sibling of the
-    /// window inside the top level's visual tree (the stock layout is
-    /// underlay, window, overlay, popover), so it is invisible to a search
-    /// started at the window itself.
-    /// </summary>
-    private const string FullscreenPopoverLayerAutomationId = "PopoverWindowChrome";
-
-    /// <summary>Name AtomUI gives the border hosted by that layer.</summary>
-    private const string FullscreenHeaderFrameName = "FullscreenHeaderFrame";
-
     private readonly AtomUI.Desktop.Controls.Window _window;
-    private Control? _fullscreenPopoverLayer;
-    private bool _popoverSuppressed;
-    private IDisposable? _popoverVisibilitySubscription;
     private WindowState _windowStateBefore = WindowState.Normal;
     private bool _titleBarVisibleBefore = true;
     private bool _titleBarHidden;
@@ -154,10 +136,8 @@ internal sealed class KeepTaskbarFullScreen
     }
 
     /// <summary>
-    /// Removes Avalonia's drawn decoration layers for the immersive mode. While
-    /// the window is in <see cref="WindowState.FullScreen"/> those layers provide
-    /// the hover-revealed fullscreen popover, which would overlap the connection
-    /// bar this application draws itself.
+    /// Removes Avalonia's drawn decoration layers for the immersive mode so the
+    /// full screen window displays no vendor chrome.
     /// </summary>
     public void HideDecorations()
     {
@@ -167,8 +147,8 @@ internal sealed class KeepTaskbarFullScreen
             _decorationsHidden = true;
         }
 
-        // Re-applied on every call: entering full screen can make the platform
-        // put the window decorations back, which would revive the popover.
+        // Re-applied on every call in case entering full screen causes the
+        // platform to restore window decorations.
         _window.WindowDecorations = WindowDecorations.None;
     }
 
@@ -182,138 +162,5 @@ internal sealed class KeepTaskbarFullScreen
 
         _decorationsHidden = false;
         _window.WindowDecorations = _decorationsBefore;
-    }
-
-    /// <summary>True once the popover content has been hidden.</summary>
-    public bool IsFullscreenPopoverSuppressed => _popoverSuppressed;
-
-    /// <summary>
-    /// Removes the hover-revealed full screen popover that Avalonia draws above
-    /// the client area. <c>TopLevelHost</c> inserts a layer with automation id
-    /// <c>PopoverWindowChrome</c> as a sibling of the window and shows it as
-    /// soon as the pointer touches the top edge of a full screen window; the
-    /// content comes from AtomUI's decorations theme
-    /// (<c>FullscreenHeaderFrame</c>: a title bar high, window wide strip with
-    /// the logo, title and the full screen/close caption buttons). This
-    /// application draws its own connection bar there, so that strip has to go.
-    /// <para>
-    /// Hiding the layer is not enough: the hover handler sets
-    /// <see cref="Visual.IsVisible"/> back to true on every pointer move at the
-    /// top edge. So the hosted frame is hidden, the layer is taken out of hit
-    /// testing, and the layer's visibility is watched: every time the vendor
-    /// handler re-shows it, the frame is hidden again before the next render
-    /// pass. The layer only exists while drawn decorations exist, hence the
-    /// return value: false means nothing was found (yet), and callers retry
-    /// once the template has settled.
-    /// </para>
-    /// </summary>
-    public bool SuppressFullscreenPopover()
-    {
-        var layer = _fullscreenPopoverLayer;
-        if (layer is null || !layer.IsAttachedToVisualTree())
-        {
-            layer = _fullscreenPopoverLayer = FindFullscreenPopoverLayer();
-            _popoverVisibilitySubscription?.Dispose();
-            _popoverVisibilitySubscription = null;
-        }
-
-        if (layer is null)
-        {
-            return false;
-        }
-
-        layer.IsHitTestVisible = false;
-
-        // The hover handler only toggles the layer, so mirroring that toggle on
-        // the content keeps the strip off screen for as long as the layer lives.
-        _popoverVisibilitySubscription ??= layer
-            .GetObservable(Visual.IsVisibleProperty)
-            .Subscribe(visible =>
-            {
-                if (visible)
-                {
-                    HideFullscreenHeaderFrame(layer);
-                }
-            });
-
-        if (!HideFullscreenHeaderFrame(layer))
-        {
-            return false;
-        }
-
-        _popoverSuppressed = true;
-        return true;
-    }
-
-    /// <summary>
-    /// Releases the suppression applied by <see cref="SuppressFullscreenPopover"/>.
-    /// <para>
-    /// The hidden strip belongs to the decoration template, which outlives the
-    /// full screen session, so leaving it hidden would make the next entry look
-    /// suppressed even if the layer was rebuilt in between. Restoring it also
-    /// keeps the diagnostics honest: the log field is only meaningful when each
-    /// session reports its own result.
-    /// </para>
-    /// </summary>
-    public void ReleaseFullscreenPopoverSuppression()
-    {
-        _popoverVisibilitySubscription?.Dispose();
-        _popoverVisibilitySubscription = null;
-
-        if (_fullscreenPopoverLayer is { } layer)
-        {
-            layer.IsHitTestVisible = true;
-
-            if (FindFullscreenHeaderFrame(layer) is { } frame)
-            {
-                frame.IsVisible = true;
-            }
-        }
-
-        _popoverSuppressed = false;
-    }
-
-    /// <summary>
-    /// Hides the title bar strip hosted by the popover layer. Returns true when
-    /// the strip was found, so the caller can tell "nothing built yet" from
-    /// "already hidden".
-    /// </summary>
-    private static bool HideFullscreenHeaderFrame(Control layer)
-    {
-        if (FindFullscreenHeaderFrame(layer) is not { } frame)
-        {
-            return false;
-        }
-
-        frame.IsVisible = false;
-        return true;
-    }
-
-    private static Control? FindFullscreenHeaderFrame(Control layer) =>
-        layer.GetVisualDescendants()
-            .OfType<Control>()
-            .FirstOrDefault(control => control.Name == FullscreenHeaderFrameName);
-
-    /// <summary>
-    /// Finds the popover layer by walking up from the window: the layer is a
-    /// later sibling of the window in the top level host's visual tree.
-    /// </summary>
-    private Control? FindFullscreenPopoverLayer()
-    {
-        Visual? root = _window;
-        while (root.GetVisualParent() is { } parent)
-        {
-            root = parent;
-        }
-
-        foreach (var control in root.GetVisualDescendants().OfType<Control>())
-        {
-            if (AutomationProperties.GetAutomationId(control) == FullscreenPopoverLayerAutomationId)
-            {
-                return control;
-            }
-        }
-
-        return null;
     }
 }

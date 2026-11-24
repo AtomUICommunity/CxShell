@@ -19,7 +19,8 @@
              MinWidth="600"
              MinHeight="400"
              WindowState="Normal"
-             WindowStartupLocation="CenterScreen">
+             WindowStartupLocation="CenterScreen"
+             FullScreenTitleBarMode="Hidden">
 
     <atom:Window.LogoTemplate>
         <DataTemplate>

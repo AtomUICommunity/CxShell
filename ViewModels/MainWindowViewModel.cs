@@ -10,8 +10,7 @@ using System.Windows.Input;
 using AtomUI;
 using AtomUI.Controls;
 using AtomUI.Theme;
-using AtomUI.Theme.Algorithms;
-using AtomUI.Theme.Configuration;
+using AtomUI.DesignLanguages.AntDesign;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.ApplicationLifetimes;
@@ -375,18 +374,13 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         if (themeManager == null)
             return;
 
-        var currentTheme = themeManager.CurrentTheme;
-        var algorithms = currentTheme?.Algorithms?.ToList() ?? [ThemeAlgorithm.Default];
-        var newMode = !string.Equals(mode, ApplicationSettings.LightThemeMode, StringComparison.OrdinalIgnoreCase);
-        algorithms.RemoveAll(static algorithm => algorithm == ThemeAlgorithm.Dark);
-        if (newMode)
-            algorithms.Add(ThemeAlgorithm.Dark);
+        var appearance = string.Equals(mode, ApplicationSettings.LightThemeMode, StringComparison.OrdinalIgnoreCase)
+            ? ThemeAppearance.Light
+            : ThemeAppearance.Dark;
 
-        var result = await themeManager.ApplyThemeAsync(
-            new ThemeRequest(
-                currentTheme?.ThemeId ?? IThemeManager.DEFAULT_THEME_ID,
-                new ThemeConfigBuilder().WithAlgorithms(algorithms.ToArray()).Build(),
-                ThemeTransitionReason.UserRequest));
+        var baseSelection = themeManager.CurrentSelection
+            ?? ThemeSelection.Of<AntDesignLanguage>().WithTheme(AntDesignThemes.DaybreakBlue);
+        var result = await themeManager.ApplyAsync(baseSelection.WithAppearance(appearance));
 
         if (result.Status == ThemeTransitionStatus.Failed)
             return;
