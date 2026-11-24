@@ -136,6 +136,7 @@ struct CxRdpSession
     cxrdp_status_callback status_callback = nullptr;
     cxrdp_disconnect_callback disconnect_callback = nullptr;
     cxrdp_clipboard_text_callback clipboard_text_callback = nullptr;
+    cxrdp_pointer_callback pointer_callback = nullptr;
     void* user_data = nullptr;
     std::string last_error;
     std::mutex clipboard_mutex;
@@ -2358,6 +2359,127 @@ BOOL cx_load_channels(freerdp* instance)
     return TRUE;
 }
 
+struct CxRdpPointer
+{
+    rdpPointer pointer;
+    uint8_t* bgra;
+    int width;
+    int height;
+    int hot_x;
+    int hot_y;
+};
+
+BOOL cx_pointer_new(rdpContext* context, rdpPointer* pointer)
+{
+    if (!context || !pointer || pointer->width == 0 || pointer->height == 0)
+        return FALSE;
+
+    auto* cxPtr = reinterpret_cast<CxRdpPointer*>(pointer);
+    const size_t byteCount = static_cast<size_t>(pointer->width) * static_cast<size_t>(pointer->height) * 4u;
+    cxPtr->bgra = static_cast<uint8_t*>(std::calloc(1, byteCount));
+    if (!cxPtr->bgra)
+        return FALSE;
+
+    cxPtr->width = static_cast<int>(pointer->width);
+    cxPtr->height = static_cast<int>(pointer->height);
+    cxPtr->hot_x = static_cast<int>(pointer->xPos);
+    cxPtr->hot_y = static_cast<int>(pointer->yPos);
+
+    const BOOL ok = freerdp_image_copy_from_pointer_data(
+        cxPtr->bgra,
+        PIXEL_FORMAT_BGRA32,
+        0,
+        0,
+        0,
+        pointer->width,
+        pointer->height,
+        pointer->xorMaskData,
+        pointer->lengthXorMask,
+        pointer->andMaskData,
+        pointer->lengthAndMask,
+        pointer->xorBpp,
+        &context->gdi->palette);
+    if (!ok)
+    {
+        std::free(cxPtr->bgra);
+        cxPtr->bgra = nullptr;
+        return FALSE;
+    }
+
+    return TRUE;
+}
+
+void cx_pointer_free(rdpContext* context, rdpPointer* pointer)
+{
+    (void)context;
+    if (!pointer)
+        return;
+
+    auto* cxPtr = reinterpret_cast<CxRdpPointer*>(pointer);
+    if (cxPtr->bgra)
+    {
+        std::free(cxPtr->bgra);
+        cxPtr->bgra = nullptr;
+    }
+}
+
+BOOL cx_pointer_set(rdpContext* context, rdpPointer* pointer)
+{
+    auto* session = get_session(context);
+    if (!session || !pointer)
+        return TRUE;
+
+    auto* cxPtr = reinterpret_cast<CxRdpPointer*>(pointer);
+    if (!cxPtr->bgra || cxPtr->width <= 0 || cxPtr->height <= 0)
+        return TRUE;
+
+    std::lock_guard<std::mutex> lock(session->callback_mutex);
+    if (session->pointer_callback)
+    {
+        session->pointer_callback(
+            session->user_data,
+            CX_RDP_POINTER_CUSTOM,
+            cxPtr->width,
+            cxPtr->height,
+            cxPtr->hot_x,
+            cxPtr->hot_y,
+            cxPtr->bgra);
+    }
+    return TRUE;
+}
+
+BOOL cx_pointer_set_null(rdpContext* context)
+{
+    auto* session = get_session(context);
+    if (!session)
+        return TRUE;
+
+    std::lock_guard<std::mutex> lock(session->callback_mutex);
+    if (session->pointer_callback)
+        session->pointer_callback(session->user_data, CX_RDP_POINTER_NULL, 0, 0, 0, 0, nullptr);
+    return TRUE;
+}
+
+BOOL cx_pointer_set_default(rdpContext* context)
+{
+    auto* session = get_session(context);
+    if (!session)
+        return TRUE;
+
+    std::lock_guard<std::mutex> lock(session->callback_mutex);
+    if (session->pointer_callback)
+        session->pointer_callback(session->user_data, CX_RDP_POINTER_DEFAULT, 0, 0, 0, 0, nullptr);
+    return TRUE;
+}
+
+BOOL cx_pointer_set_position(rdpContext* context, UINT32 x, UINT32 y)
+{
+    (void)context;
+    (void)x;
+    (void)y;
+    return TRUE;
+}
+
 BOOL cx_post_connect(freerdp* instance)
 {
     if (!instance || !instance->context)
@@ -2408,6 +2530,19 @@ BOOL cx_post_connect(freerdp* instance)
     {
         notify_status(session, "RDP GFX channel not bound yet; awaiting the graphics channel.");
     }
+    if (instance->context->graphics)
+    {
+        rdpPointer pointer{};
+        pointer.size = sizeof(CxRdpPointer);
+        pointer.New = cx_pointer_new;
+        pointer.Free = cx_pointer_free;
+        pointer.Set = cx_pointer_set;
+        pointer.SetNull = cx_pointer_set_null;
+        pointer.SetDefault = cx_pointer_set_default;
+        pointer.SetPosition = cx_pointer_set_position;
+        graphics_register_pointer(instance->context->graphics, &pointer);
+    }
+
     notify_status(session, "RDP connected.");
     return TRUE;
 }
@@ -3046,7 +3181,8 @@ CX_RDP_API uint32_t cxrdp_get_capabilities(void)
                             CX_RDP_CAPABILITY_PERFORMANCE_FLAGS |
                             CX_RDP_CAPABILITY_DIRTY_RECT |
                             CX_RDP_CAPABILITY_GFX |
-                            CX_RDP_CAPABILITY_SYNC_LOCK_KEYS;
+                            CX_RDP_CAPABILITY_SYNC_LOCK_KEYS |
+                            CX_RDP_CAPABILITY_POINTER_SHAPE;
     if (has_native_audio_backend())
         capabilities |= CX_RDP_CAPABILITY_AUDIO_PLAYBACK | CX_RDP_CAPABILITY_MICROPHONE;
     return capabilities;
@@ -3097,6 +3233,18 @@ CX_RDP_API void cxrdp_set_clipboard_callback(
 
     std::lock_guard<std::mutex> lock(session->callback_mutex);
     session->clipboard_text_callback = clipboard_text_callback;
+}
+
+CX_RDP_API void cxrdp_set_pointer_callback(
+    void* handle,
+    cxrdp_pointer_callback pointer_callback)
+{
+    auto* session = static_cast<CxRdpSession*>(handle);
+    if (!session)
+        return;
+
+    std::lock_guard<std::mutex> lock(session->callback_mutex);
+    session->pointer_callback = pointer_callback;
 }
 
 CX_RDP_API int cxrdp_connect(

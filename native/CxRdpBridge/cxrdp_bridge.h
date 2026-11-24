@@ -20,8 +20,16 @@ typedef void (*cxrdp_frame_callback)(void* user_data, int width, int height, int
 typedef void (*cxrdp_status_callback)(void* user_data, const char* message);
 typedef void (*cxrdp_disconnect_callback)(void* user_data);
 typedef void (*cxrdp_clipboard_text_callback)(void* user_data, const char* text);
+typedef void (*cxrdp_pointer_callback)(
+    void* user_data,
+    int kind,
+    int width,
+    int height,
+    int hot_x,
+    int hot_y,
+    const uint8_t* bgra_pixels);
 
-#define CX_RDP_BRIDGE_API_VERSION 12u
+#define CX_RDP_BRIDGE_API_VERSION 13u
 #define CX_RDP_CAPABILITY_CLIPBOARD 0x00000001u
 #define CX_RDP_CAPABILITY_DRIVE_REDIRECTION 0x00000002u
 #define CX_RDP_CAPABILITY_AUDIO_PLAYBACK 0x00000004u
@@ -52,6 +60,12 @@ typedef void (*cxrdp_clipboard_text_callback)(void* user_data, const char* text)
 #define CX_RDP_CAPABILITY_GFX 0x00000800u
 /* The bridge can synchronize CapsLock/NumLock/ScrollLock state to the remote session. */
 #define CX_RDP_CAPABILITY_SYNC_LOCK_KEYS 0x00001000u
+/* The bridge forwards remote mouse pointer bitmaps and hotspots to the host. */
+#define CX_RDP_CAPABILITY_POINTER_SHAPE 0x00002000u
+
+#define CX_RDP_POINTER_DEFAULT 0
+#define CX_RDP_POINTER_NULL 1
+#define CX_RDP_POINTER_CUSTOM 2
 
 #define CX_RDP_AUDIO_PLAY_LOCAL 0
 #define CX_RDP_AUDIO_PLAY_REMOTE 1
@@ -83,6 +97,7 @@ CX_RDP_API void cxrdp_send_key(void* handle, uint32_t key, int down);
 CX_RDP_API void cxrdp_send_unicode_key(void* handle, uint16_t code, int down);
 CX_RDP_API void cxrdp_sync_lock_keys(void* handle, uint32_t flags);
 CX_RDP_API void cxrdp_set_clipboard_callback(void* handle, cxrdp_clipboard_text_callback clipboard_text_callback);
+CX_RDP_API void cxrdp_set_pointer_callback(void* handle, cxrdp_pointer_callback pointer_callback);
 CX_RDP_API void cxrdp_set_clipboard_text(void* handle, const char* text);
 CX_RDP_API int cxrdp_set_drive_redirection(
     void* handle,
