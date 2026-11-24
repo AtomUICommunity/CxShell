@@ -9,6 +9,7 @@
              Background="{atom:SharedTokenResource ColorBgLayout}">
     <Grid>
         <Border x:Name="RdpViewport"
+                DragDrop.AllowDrop="True"
                 Background="#111111"
                 Cursor="Arrow"
                 ClipToBounds="True"

@@ -262,6 +262,7 @@ public partial class SessionTreeViewModel : ObservableObject
         target.RdpSecurityMode = source.RdpSecurityMode;
         target.RdpApplyKeyCombinations = source.RdpApplyKeyCombinations;
         target.RdpSyncLockKeys = source.RdpSyncLockKeys;
+        target.RdpEnableClipboardLock = source.RdpEnableClipboardLock;
         target.RdpClipboardEnabled = source.RdpClipboardEnabled;
         target.RdpDisableWallpaper = source.RdpDisableWallpaper;
         target.RdpGraphicsPipelineEnabled = source.RdpGraphicsPipelineEnabled;
@@ -1185,6 +1186,7 @@ public partial class SessionTreeViewModel : ObservableObject
             RdpSecurityMode = source.RdpSecurityMode,
             RdpApplyKeyCombinations = source.RdpApplyKeyCombinations,
             RdpSyncLockKeys = source.RdpSyncLockKeys,
+            RdpEnableClipboardLock = source.RdpEnableClipboardLock,
             RdpClipboardEnabled = source.RdpClipboardEnabled,
             RdpDisableWallpaper = source.RdpDisableWallpaper,
             RdpGraphicsPipelineEnabled = source.RdpGraphicsPipelineEnabled,

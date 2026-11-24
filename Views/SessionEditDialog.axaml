@@ -1720,6 +1720,9 @@
                                     <atom:CheckBox Content="Sync CapsLock / NumLock / ScrollLock state"
                                                    atom:ToolTip.Tip="Automatically synchronize local lock key states to the remote session on connect or focus."
                                                    IsChecked="{Binding RdpSyncLockKeys, Mode=TwoWay}"/>
+                                    <atom:CheckBox Content="Enable clipboard large file locking (LockClipboardData)"
+                                                   atom:ToolTip.Tip="Lock clipboard file snapshots during large file transfers so copying other content does not abort transfers."
+                                                   IsChecked="{Binding RdpEnableClipboardLock, Mode=TwoWay}"/>
                                 </StackPanel>
 
                                 <atom:CheckBox Grid.Row="4"

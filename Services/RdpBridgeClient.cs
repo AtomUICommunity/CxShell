@@ -76,6 +76,13 @@ public sealed class RdpBridgeClient : IDisposable
     private const uint SyncLockKeysCapability = 0x00001000;
     private const uint PointerShapeApiVersion = 13;
     private const uint PointerShapeCapability = 0x00002000;
+    public const uint ClipboardImageFormatPng = 1;
+    public const uint ClipboardImageFormatDib = 2;
+    private const uint ClipboardExtendedApiVersion = 14;
+    private const uint ClipboardImageCapability = 0x00004000;
+    private const uint ClipboardFilesCapability = 0x00008000;
+    private const uint ClipboardRichTextCapability = 0x00010000;
+    private const uint ClipboardLockCapability = 0x00020000;
     private static readonly object DebugLogLock = new();
     private static readonly object NativeLoadFailureLock = new();
     private static readonly bool DetailedDebugLogEnabled = IsEnvironmentFlagEnabled("CXSHELL_RDP_DEBUG_LOG");
@@ -95,7 +102,13 @@ public sealed class RdpBridgeClient : IDisposable
     private readonly StatusCallback _statusCallback;
     private readonly DisconnectCallback _disconnectCallback;
     private readonly ClipboardTextCallback _clipboardTextCallback;
+    private readonly ClipboardImageCallback _clipboardImageCallback;
+    private readonly ClipboardFilesCallback _clipboardFilesCallback;
     private readonly PointerCallback _pointerCallback;
+    private bool _supportsClipboardImage;
+    private bool _supportsClipboardFiles;
+    private bool _supportsClipboardRichText;
+    private bool _supportsClipboardLock;
     private readonly object _frameSync = new();
     private readonly RdpFrameComposer _frameComposer = new(enabled: FrameCoalescingEnabled, useCoverage: FrameCoverageEnabled);
     private RdpFramePresentationMode _frameMode = RdpFramePresentationMode.Auto;
@@ -139,6 +152,8 @@ public sealed class RdpBridgeClient : IDisposable
     public event Action<string>? StatusChanged;
     public event Action? Disconnected;
     public event Action<string>? ClipboardTextReceived;
+    public event Action<uint, byte[]>? ClipboardImageReceived;
+    public event Action<string[]>? ClipboardFilesReceived;
     public event Action<int, int, int, int, int, byte[]?>? PointerShapeChanged;
 
     public static string DebugLogPath => Path.Combine(GetDebugLogDirectory(), "rdp-debug.log");
@@ -158,6 +173,8 @@ public sealed class RdpBridgeClient : IDisposable
         _statusCallback = OnStatus;
         _disconnectCallback = OnDisconnected;
         _clipboardTextCallback = OnClipboardText;
+        _clipboardImageCallback = OnClipboardImage;
+        _clipboardFilesCallback = OnClipboardFiles;
         _pointerCallback = OnPointer;
     }
 
@@ -251,6 +268,21 @@ public sealed class RdpBridgeClient : IDisposable
         {
             NativeMethods.cxrdp_set_pointer_callback(_handle, _pointerCallback);
         }
+
+        _supportsClipboardImage = nativeApiVersion >= ClipboardExtendedApiVersion &&
+                                  (nativeCapabilities & ClipboardImageCapability) != 0;
+        _supportsClipboardFiles = nativeApiVersion >= ClipboardExtendedApiVersion &&
+                                  (nativeCapabilities & ClipboardFilesCapability) != 0;
+        _supportsClipboardRichText = nativeApiVersion >= ClipboardExtendedApiVersion &&
+                                     (nativeCapabilities & ClipboardRichTextCapability) != 0;
+        _supportsClipboardLock = nativeApiVersion >= ClipboardExtendedApiVersion &&
+                                 (nativeCapabilities & ClipboardLockCapability) != 0;
+        if (_supportsClipboardImage)
+            NativeMethods.cxrdp_set_clipboard_image_callback(_handle, _clipboardImageCallback);
+        if (_supportsClipboardFiles)
+            NativeMethods.cxrdp_set_clipboard_files_callback(_handle, _clipboardFilesCallback);
+        if (_supportsClipboardLock)
+            NativeMethods.cxrdp_set_clipboard_lock_enabled(_handle, session.RdpEnableClipboardLock ? 1 : 0);
         if (nativeApiVersion >= GfxApiVersion && (nativeCapabilities & GfxCapability) != 0)
         {
             var gfxRequested = GraphicsPipelineForcedOn || session.RdpGraphicsPipelineEnabled;
@@ -735,6 +767,47 @@ public sealed class RdpBridgeClient : IDisposable
         DebugLogDetailed($"clipboard set local length={text?.Length ?? 0}");
         if (_handle != IntPtr.Zero)
             NativeMethods.cxrdp_set_clipboard_text(_handle, text ?? string.Empty);
+    }
+
+    public void SetClipboardRichText(string plainText, byte[]? htmlBytes, byte[]? rtfBytes)
+    {
+        if (_handle == IntPtr.Zero)
+            return;
+
+        if (_supportsClipboardRichText)
+        {
+            NativeMethods.cxrdp_set_clipboard_rich_text(
+                _handle,
+                plainText ?? string.Empty,
+                htmlBytes,
+                (uint)(htmlBytes?.Length ?? 0),
+                rtfBytes,
+                (uint)(rtfBytes?.Length ?? 0));
+        }
+        else
+        {
+            NativeMethods.cxrdp_set_clipboard_text(_handle, plainText ?? string.Empty);
+        }
+    }
+
+    public void SetClipboardImage(uint imageFormat, byte[] data)
+    {
+        if (_handle == IntPtr.Zero || !_supportsClipboardImage || data.Length == 0)
+            return;
+
+        NativeMethods.cxrdp_set_clipboard_image(_handle, imageFormat, data, (uint)data.Length);
+    }
+
+    public void SetClipboardFiles(IReadOnlyList<string> filePaths)
+    {
+        if (_handle == IntPtr.Zero || !_supportsClipboardFiles || filePaths.Count == 0)
+            return;
+
+        var joined = string.Join('\n', filePaths.Where(p => !string.IsNullOrWhiteSpace(p)));
+        if (string.IsNullOrWhiteSpace(joined))
+            return;
+
+        NativeMethods.cxrdp_set_clipboard_files(_handle, joined);
     }
 
     /// <summary>
@@ -1262,6 +1335,30 @@ public sealed class RdpBridgeClient : IDisposable
         ClipboardTextReceived?.Invoke(value);
     }
 
+    private void OnClipboardImage(IntPtr userData, uint imageFormat, IntPtr data, uint length)
+    {
+        if (data == IntPtr.Zero || length == 0)
+            return;
+
+        var copy = new byte[length];
+        Marshal.Copy(data, copy, 0, (int)length);
+        ClipboardImageReceived?.Invoke(imageFormat, copy);
+    }
+
+    private void OnClipboardFiles(IntPtr userData, IntPtr filePaths)
+    {
+        if (filePaths == IntPtr.Zero)
+            return;
+
+        var raw = Marshal.PtrToStringUTF8(filePaths);
+        if (string.IsNullOrWhiteSpace(raw))
+            return;
+
+        var paths = raw.Split(['\r', '\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (paths.Length > 0)
+            ClipboardFilesReceived?.Invoke(paths);
+    }
+
     private static string GetDebugLogDirectory()
     {
         var root = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
@@ -1389,6 +1486,12 @@ public sealed class RdpBridgeClient : IDisposable
     private delegate void ClipboardTextCallback(IntPtr userData, IntPtr text);
 
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate void ClipboardImageCallback(IntPtr userData, uint imageFormat, IntPtr data, uint length);
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate void ClipboardFilesCallback(IntPtr userData, IntPtr filePaths);
+
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     private delegate void PointerCallback(
         IntPtr userData,
         int kind,
@@ -1450,6 +1553,36 @@ public sealed class RdpBridgeClient : IDisposable
 
         [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
         public static extern void cxrdp_set_pointer_callback(IntPtr handle, PointerCallback? pointerCallback);
+
+        [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+        public static extern void cxrdp_set_clipboard_image_callback(IntPtr handle, ClipboardImageCallback? callback);
+
+        [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+        public static extern void cxrdp_set_clipboard_files_callback(IntPtr handle, ClipboardFilesCallback? callback);
+
+        [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+        public static extern void cxrdp_set_clipboard_rich_text(
+            IntPtr handle,
+            [MarshalAs(UnmanagedType.LPUTF8Str)] string plainText,
+            byte[]? htmlBytes,
+            uint htmlLength,
+            byte[]? rtfBytes,
+            uint rtfLength);
+
+        [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+        public static extern void cxrdp_set_clipboard_image(
+            IntPtr handle,
+            uint imageFormat,
+            byte[] data,
+            uint length);
+
+        [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+        public static extern void cxrdp_set_clipboard_files(
+            IntPtr handle,
+            [MarshalAs(UnmanagedType.LPUTF8Str)] string filePathsNewlineSeparated);
+
+        [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+        public static extern int cxrdp_set_clipboard_lock_enabled(IntPtr handle, int enabled);
 
         [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
         public static extern void cxrdp_sync_lock_keys(IntPtr handle, uint flags);
