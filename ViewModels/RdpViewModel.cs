@@ -92,6 +92,8 @@ public partial class RdpViewModel : ObservableObject, IDisposable
     public SessionInfo Session { get; }
     public string? Password { get; }
     public event Action<int, int, int, int, int, byte[]?>? PointerShapeChanged;
+    public event Action<uint, byte[]>? RemoteClipboardImageReceived;
+    public event Action<string[]>? RemoteClipboardFilesReceived;
     public double FixedScaleFactor => Math.Clamp(ScreenScalePercent, 10, 500) / 100.0;
     public string ScaleModeText => IsFitToWindow
         ? "Fit to window"
@@ -106,6 +108,8 @@ public partial class RdpViewModel : ObservableObject, IDisposable
         _client.FramebufferUpdated += OnFramebufferUpdated;
         _client.StatusChanged += message => Dispatcher.UIThread.Post(() => HandleStatus(message));
         _client.ClipboardTextReceived += OnClipboardTextReceived;
+        _client.ClipboardImageReceived += OnClipboardImageReceived;
+        _client.ClipboardFilesReceived += OnClipboardFilesReceived;
         _client.PointerShapeChanged += OnPointerShapeChanged;
         LocalizationService.Shared.LanguageChanged += OnLanguageChanged;
         _client.Disconnected += () => Dispatcher.UIThread.Post(() =>
@@ -643,6 +647,24 @@ public partial class RdpViewModel : ObservableObject, IDisposable
             _client.SetClipboardText(text);
     }
 
+    public void SetClipboardRichText(string plainText, byte[]? htmlBytes, byte[]? rtfBytes)
+    {
+        if (IsConnected)
+            _client.SetClipboardRichText(plainText, htmlBytes, rtfBytes);
+    }
+
+    public void SetClipboardImage(uint imageFormat, byte[] data)
+    {
+        if (IsConnected)
+            _client.SetClipboardImage(imageFormat, data);
+    }
+
+    public void SetClipboardFiles(IReadOnlyList<string> filePaths)
+    {
+        if (IsConnected)
+            _client.SetClipboardFiles(filePaths);
+    }
+
     public void SyncLockKeys(uint flags)
     {
         if (IsConnected)
@@ -756,6 +778,16 @@ public partial class RdpViewModel : ObservableObject, IDisposable
         Dispatcher.UIThread.Post(() => RemoteClipboardText = text);
     }
 
+    private void OnClipboardImageReceived(uint imageFormat, byte[] data)
+    {
+        Dispatcher.UIThread.Post(() => RemoteClipboardImageReceived?.Invoke(imageFormat, data));
+    }
+
+    private void OnClipboardFilesReceived(string[] paths)
+    {
+        Dispatcher.UIThread.Post(() => RemoteClipboardFilesReceived?.Invoke(paths));
+    }
+
     private void OnPointerShapeChanged(int kind, int width, int height, int hotX, int hotY, byte[]? pixels)
     {
         Dispatcher.UIThread.Post(() => PointerShapeChanged?.Invoke(kind, width, height, hotX, hotY, pixels));
@@ -837,6 +869,8 @@ public partial class RdpViewModel : ObservableObject, IDisposable
         CancelConnectWatchdog();
         _client.FramebufferUpdated -= OnFramebufferUpdated;
         _client.ClipboardTextReceived -= OnClipboardTextReceived;
+        _client.ClipboardImageReceived -= OnClipboardImageReceived;
+        _client.ClipboardFilesReceived -= OnClipboardFilesReceived;
         _client.PointerShapeChanged -= OnPointerShapeChanged;
         LocalizationService.Shared.LanguageChanged -= OnLanguageChanged;
         _client.Dispose();
