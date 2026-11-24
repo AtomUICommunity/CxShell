@@ -239,8 +239,11 @@ public sealed class RdpBridgeClient : IDisposable
         if (nativeApiVersion >= GfxApiVersion && (nativeCapabilities & GfxCapability) != 0)
         {
             var gfxRequested = GraphicsPipelineForcedOn || session.RdpGraphicsPipelineEnabled;
-            var gfxResult = NativeMethods.cxrdp_set_graphics_pipeline(_handle, gfxRequested ? 1 : 0);
-            DebugLog($"graphics pipeline requested={gfxRequested} session={session.RdpGraphicsPipelineEnabled} env={GraphicsPipelineForcedOn} result={gfxResult}");
+            TryInvokeOptionalNative("cxrdp_set_graphics_pipeline", () =>
+            {
+                var gfxResult = NativeMethods.cxrdp_set_graphics_pipeline(_handle, gfxRequested ? 1 : 0);
+                DebugLog($"graphics pipeline requested={gfxRequested} session={session.RdpGraphicsPipelineEnabled} env={GraphicsPipelineForcedOn} result={gfxResult}");
+            });
         }
         else
         {
@@ -258,8 +261,14 @@ public sealed class RdpBridgeClient : IDisposable
         var useFrameMarkers = _frameMode != RdpFramePresentationMode.Legacy;
         if (_frameMarkerSupported)
         {
-            var markerResult = NativeMethods.cxrdp_set_frame_marker_enabled(_handle, useFrameMarkers ? 1 : 0);
-            DebugLog($"frame markers enabled={useFrameMarkers} result={markerResult}");
+            if (!TryInvokeOptionalNative("cxrdp_set_frame_marker_enabled", () =>
+            {
+                var markerResult = NativeMethods.cxrdp_set_frame_marker_enabled(_handle, useFrameMarkers ? 1 : 0);
+                DebugLog($"frame markers enabled={useFrameMarkers} result={markerResult}");
+            }))
+            {
+                _frameMarkerSupported = false;
+            }
         }
         else if (useFrameMarkers)
         {
@@ -273,16 +282,22 @@ public sealed class RdpBridgeClient : IDisposable
             var cachedProfile = RdpSecurityProfileCache.Get(_profileCacheHost, _profileCachePort);
             if (!string.IsNullOrEmpty(cachedProfile))
             {
-                var profileResult = NativeMethods.cxrdp_set_security_profile(_handle, cachedProfile);
-                DebugLog($"security profile hint={cachedProfile} result={profileResult}");
+                TryInvokeOptionalNative("cxrdp_set_security_profile", () =>
+                {
+                    var profileResult = NativeMethods.cxrdp_set_security_profile(_handle, cachedProfile);
+                    DebugLog($"security profile hint={cachedProfile} result={profileResult}");
+                });
             }
 
             // Environment override CXSHELL_RDP_CLIPBOARD_CHANNEL=0 still wins
             // inside the bridge, so it remains a global troubleshooting switch.
-            var clipboardResult = NativeMethods.cxrdp_set_clipboard_channel(
-                _handle,
-                session.RdpClipboardEnabled ? 1 : 0);
-            DebugLog($"clipboard channel requested={session.RdpClipboardEnabled} result={clipboardResult}");
+            TryInvokeOptionalNative("cxrdp_set_clipboard_channel", () =>
+            {
+                var clipboardResult = NativeMethods.cxrdp_set_clipboard_channel(
+                    _handle,
+                    session.RdpClipboardEnabled ? 1 : 0);
+                DebugLog($"clipboard channel requested={session.RdpClipboardEnabled} result={clipboardResult}");
+            });
         }
         else
         {
@@ -292,10 +307,13 @@ public sealed class RdpBridgeClient : IDisposable
         if (nativeApiVersion >= PerformanceFlagsApiVersion &&
             (nativeCapabilities & PerformanceFlagsCapability) != 0)
         {
-            var wallpaperResult = NativeMethods.cxrdp_set_disable_wallpaper(
-                _handle,
-                session.RdpDisableWallpaper ? 1 : 0);
-            DebugLog($"disable wallpaper requested={session.RdpDisableWallpaper} result={wallpaperResult}");
+            TryInvokeOptionalNative("cxrdp_set_disable_wallpaper", () =>
+            {
+                var wallpaperResult = NativeMethods.cxrdp_set_disable_wallpaper(
+                    _handle,
+                    session.RdpDisableWallpaper ? 1 : 0);
+                DebugLog($"disable wallpaper requested={session.RdpDisableWallpaper} result={wallpaperResult}");
+            });
         }
         else
         {
@@ -1163,6 +1181,20 @@ public sealed class RdpBridgeClient : IDisposable
         if (RdpSecurityProfileCache.TryParseProfile(text, out var profile))
             RdpSecurityProfileCache.Store(_profileCacheHost, _profileCachePort, profile);
         StatusChanged?.Invoke(text);
+    }
+
+    private static bool TryInvokeOptionalNative(string exportName, Action action)
+    {
+        try
+        {
+            action();
+            return true;
+        }
+        catch (EntryPointNotFoundException)
+        {
+            DebugLog($"native bridge export missing: {exportName}; falling back.");
+            return false;
+        }
     }
 
     private void OnDisconnected(IntPtr userData)
