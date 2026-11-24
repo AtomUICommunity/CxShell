@@ -13,6 +13,7 @@
 #include <sstream>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 #if defined(_WIN32)
@@ -85,6 +86,7 @@ struct CxRdpSession
     bool openssl_providers_loaded = false;
     bool clipboard_channel_enabled = false;
     bool clipboard_channel_requested = true;
+    bool clipboard_lock_enabled = true;
     bool frame_marker_enabled = true;
     bool disable_wallpaper = true;
     bool graphics_pipeline_requested = true;
@@ -142,6 +144,7 @@ struct CxRdpSession
     std::string last_error;
     std::mutex clipboard_mutex;
     std::string local_clipboard_text;
+    std::unordered_map<uint32_t, std::string> locked_clipboard_text;
 
     // Display control (DPI remoting + in-place resize). The worker owns the
     // FreeRDP objects; a UI call only queues a request here.
@@ -793,6 +796,8 @@ UINT send_client_capabilities(CliprdrClientContext* cliprdr)
     generalCapabilitySet.capabilitySetLength = CB_CAPSTYPE_GENERAL_LEN;
     generalCapabilitySet.version = CB_CAPS_VERSION_2;
     generalCapabilitySet.generalFlags = CB_USE_LONG_FORMAT_NAMES;
+    if (!session || session->clipboard_lock_enabled)
+        generalCapabilitySet.generalFlags |= CB_CAN_LOCK_CLIPDATA;
 
     CLIPRDR_CAPABILITIES capabilities{};
     capabilities.common.msgType = CB_CLIP_CAPS;
@@ -1519,8 +1524,27 @@ UINT cx_cliprdr_server_lock_clipboard_data(
     CliprdrClientContext* cliprdr,
     const CLIPRDR_LOCK_CLIPBOARD_DATA* lockClipboardData)
 {
-    (void)cliprdr;
-    (void)lockClipboardData;
+    if (!cliprdr || !lockClipboardData)
+        return CHANNEL_RC_OK;
+
+    if (auto* session = static_cast<CxRdpSession*>(cliprdr->custom))
+    {
+        bool locked = false;
+        {
+            std::lock_guard<std::mutex> lock(session->clipboard_mutex);
+            if (session->clipboard_lock_enabled)
+            {
+                session->locked_clipboard_text[lockClipboardData->clipDataId] = session->local_clipboard_text;
+                locked = true;
+            }
+        }
+        if (locked)
+        {
+            std::ostringstream message;
+            message << "RDP clipboard data locked clipDataId=" << lockClipboardData->clipDataId;
+            notify_status(session, message.str().c_str());
+        }
+    }
     return CHANNEL_RC_OK;
 }
 
@@ -1528,8 +1552,23 @@ UINT cx_cliprdr_server_unlock_clipboard_data(
     CliprdrClientContext* cliprdr,
     const CLIPRDR_UNLOCK_CLIPBOARD_DATA* unlockClipboardData)
 {
-    (void)cliprdr;
-    (void)unlockClipboardData;
+    if (!cliprdr || !unlockClipboardData)
+        return CHANNEL_RC_OK;
+
+    if (auto* session = static_cast<CxRdpSession*>(cliprdr->custom))
+    {
+        bool unlocked = false;
+        {
+            std::lock_guard<std::mutex> lock(session->clipboard_mutex);
+            unlocked = session->locked_clipboard_text.erase(unlockClipboardData->clipDataId) > 0;
+        }
+        if (unlocked)
+        {
+            std::ostringstream message;
+            message << "RDP clipboard data unlocked clipDataId=" << unlockClipboardData->clipDataId;
+            notify_status(session, message.str().c_str());
+        }
+    }
     return CHANNEL_RC_OK;
 }
 
@@ -3204,6 +3243,7 @@ CX_RDP_API uint32_t cxrdp_get_capabilities(void)
                             CX_RDP_CAPABILITY_GFX |
                             CX_RDP_CAPABILITY_SYNC_LOCK_KEYS |
                             CX_RDP_CAPABILITY_POINTER_SHAPE |
+                            CX_RDP_CAPABILITY_CLIPBOARD_LOCK |
                             CX_RDP_CAPABILITY_MULTI_MONITOR |
                             CX_RDP_CAPABILITY_GFX_H264;
     if (has_native_audio_backend())
@@ -3748,6 +3788,21 @@ CX_RDP_API int cxrdp_set_h264_enabled(void* handle, int enabled)
     }
 
     session->h264_requested = enabled != 0;
+    return 0;
+}
+
+CX_RDP_API int cxrdp_set_clipboard_lock_enabled(void* handle, int enabled)
+{
+    auto* session = static_cast<CxRdpSession*>(handle);
+    if (!session)
+        return -1;
+    if (session->running)
+    {
+        set_error(session, "RDP clipboard lock option must be configured before connecting.");
+        return -2;
+    }
+
+    session->clipboard_lock_enabled = enabled != 0;
     return 0;
 }
 
