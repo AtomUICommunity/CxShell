@@ -69,6 +69,7 @@ typedef void (*cxrdp_pointer_callback)(
 #define CX_RDP_CAPABILITY_CLIPBOARD_RICH_TEXT 0x00010000u
 #define CX_RDP_CAPABILITY_CLIPBOARD_LOCK 0x00020000u
 #define CX_RDP_CAPABILITY_MULTI_MONITOR 0x00040000u
+#define CX_RDP_CAPABILITY_GFX_H264 0x00080000u
 
 typedef struct CxRdpMonitorRect
 {
@@ -196,6 +197,7 @@ CX_RDP_API int cxrdp_get_frame_dirty_rect(
    instead of host-side heuristics. Default: enabled.
    Requires CX_RDP_CAPABILITY_GFX (API 11). */
 CX_RDP_API int cxrdp_set_graphics_pipeline(void* handle, int enabled);
+CX_RDP_API int cxrdp_set_h264_enabled(void* handle, int enabled);
 
 CX_RDP_API const char* cxrdp_get_last_error(void* handle);
 

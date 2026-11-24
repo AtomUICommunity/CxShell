@@ -1705,7 +1705,7 @@
                                 BorderThickness="1"
                                 CornerRadius="4"
                                 Padding="18">
-                            <Grid RowDefinitions="Auto,14,Auto,10,Auto,12,Auto,10,Auto,10,Auto,10,Auto,10,Auto,10,Auto"
+                            <Grid RowDefinitions="Auto,14,Auto,10,Auto,12,Auto,10,Auto,10,Auto,10,Auto,10,Auto,10,Auto,10,Auto"
                                   ColumnDefinitions="150,420,*"
                                   ColumnSpacing="8">
                                 <TextBlock Grid.ColumnSpan="3"
@@ -1788,6 +1788,14 @@
                                                Content="{Binding [SessionEdit.RdpGraphicsPipeline], Source={x:Static services:LocalizationService.Shared}}"
                                                atom:ToolTip.Tip="{Binding [SessionEdit.RdpGraphicsPipelineHint], Source={x:Static services:LocalizationService.Shared}}"
                                                IsChecked="{Binding RdpGraphicsPipelineEnabled, Mode=TwoWay}"/>
+
+                                <atom:CheckBox Grid.Row="18"
+                                               Grid.ColumnSpan="3"
+                                               Margin="20,0,0,0"
+                                               Content="{Binding [SessionEdit.RdpH264], Source={x:Static services:LocalizationService.Shared}}"
+                                               atom:ToolTip.Tip="{Binding [SessionEdit.RdpH264Hint], Source={x:Static services:LocalizationService.Shared}}"
+                                               IsEnabled="{Binding RdpGraphicsPipelineEnabled}"
+                                               IsChecked="{Binding RdpH264Enabled, Mode=TwoWay}"/>
                             </Grid>
                         </Border>
 

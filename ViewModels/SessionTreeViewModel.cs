@@ -265,6 +265,7 @@ public partial class SessionTreeViewModel : ObservableObject
         target.RdpClipboardEnabled = source.RdpClipboardEnabled;
         target.RdpDisableWallpaper = source.RdpDisableWallpaper;
         target.RdpGraphicsPipelineEnabled = source.RdpGraphicsPipelineEnabled;
+        target.RdpH264Enabled = source.RdpH264Enabled;
         target.RdpRedirectDrives = source.RdpRedirectDrives;
         target.RdpDriveName = source.RdpDriveName;
         target.RdpDrivePath = source.RdpDrivePath;
@@ -1189,6 +1190,7 @@ public partial class SessionTreeViewModel : ObservableObject
             RdpClipboardEnabled = source.RdpClipboardEnabled,
             RdpDisableWallpaper = source.RdpDisableWallpaper,
             RdpGraphicsPipelineEnabled = source.RdpGraphicsPipelineEnabled,
+            RdpH264Enabled = source.RdpH264Enabled,
             RdpRedirectDrives = source.RdpRedirectDrives,
             RdpDriveName = source.RdpDriveName,
             RdpDrivePath = source.RdpDrivePath,

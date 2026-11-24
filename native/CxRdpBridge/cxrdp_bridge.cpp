@@ -88,6 +88,7 @@ struct CxRdpSession
     bool frame_marker_enabled = true;
     bool disable_wallpaper = true;
     bool graphics_pipeline_requested = true;
+    bool h264_requested = false;
     bool gfx_frame_mode = false;
     // EGFX is decoded by FreeRDP's GDI backend, but the client must hand the
     // RdpgfxClientContext to gdi_graphics_pipeline_init(). Without that
@@ -2840,6 +2841,11 @@ void connection_thread(CxRdpSession* session)
                 freerdp_settings_set_bool(settings, FreeRDP_SupportGraphicsPipeline, TRUE);
                 freerdp_settings_set_bool(settings, FreeRDP_GfxPlanar, TRUE);
                 freerdp_settings_set_bool(settings, FreeRDP_GfxProgressive, TRUE);
+                freerdp_settings_set_bool(settings, FreeRDP_GfxProgressiveV2, TRUE);
+                const BOOL enableH264 = session->h264_requested ? TRUE : FALSE;
+                freerdp_settings_set_bool(settings, FreeRDP_GfxH264, enableH264);
+                freerdp_settings_set_bool(settings, FreeRDP_GfxAVC444, enableH264);
+                freerdp_settings_set_bool(settings, FreeRDP_GfxAVC444v2, enableH264);
                 // A positive FrameAcknowledge makes the client send
                 // RDPGFX_FRAME_ACKNOWLEDGE; without it the server throttles the
                 // graphics channel and may stop streaming frames entirely.
@@ -2848,6 +2854,9 @@ void connection_thread(CxRdpSession* session)
             else
             {
                 freerdp_settings_set_bool(settings, FreeRDP_SupportGraphicsPipeline, FALSE);
+                freerdp_settings_set_bool(settings, FreeRDP_GfxH264, FALSE);
+                freerdp_settings_set_bool(settings, FreeRDP_GfxAVC444, FALSE);
+                freerdp_settings_set_bool(settings, FreeRDP_GfxAVC444v2, FALSE);
             }
 
             // Cheap bandwidth/CPU wins that do not change what the user sees:
@@ -3195,7 +3204,8 @@ CX_RDP_API uint32_t cxrdp_get_capabilities(void)
                             CX_RDP_CAPABILITY_GFX |
                             CX_RDP_CAPABILITY_SYNC_LOCK_KEYS |
                             CX_RDP_CAPABILITY_POINTER_SHAPE |
-                            CX_RDP_CAPABILITY_MULTI_MONITOR;
+                            CX_RDP_CAPABILITY_MULTI_MONITOR |
+                            CX_RDP_CAPABILITY_GFX_H264;
     if (has_native_audio_backend())
         capabilities |= CX_RDP_CAPABILITY_AUDIO_PLAYBACK | CX_RDP_CAPABILITY_MICROPHONE;
     return capabilities;
@@ -3723,6 +3733,21 @@ CX_RDP_API int cxrdp_set_graphics_pipeline(void* handle, int enabled)
     }
 
     session->graphics_pipeline_requested = enabled != 0;
+    return 0;
+}
+
+CX_RDP_API int cxrdp_set_h264_enabled(void* handle, int enabled)
+{
+    auto* session = static_cast<CxRdpSession*>(handle);
+    if (!session)
+        return -1;
+    if (session->running)
+    {
+        set_error(session, "RDP H.264 setting must be configured before connecting.");
+        return -2;
+    }
+
+    session->h264_requested = enabled != 0;
     return 0;
 }
 
