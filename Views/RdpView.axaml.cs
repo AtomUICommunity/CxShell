@@ -484,6 +484,15 @@ public partial class RdpView : UserControl
         }
     }
 
+    private static int ResolveMonitorScalePercent(RdpViewModel vm, double screenScaling)
+    {
+        var policy = Enum.TryParse<RdpDpiPolicy>(vm.Session.RdpDpiPolicy, true, out var parsed)
+            ? parsed
+            : RdpDpiPolicy.FollowLocal;
+        var resolved = RdpDpiScale.ResolveScalePercent(policy, screenScaling);
+        return resolved > 0 ? Math.Clamp(resolved, 100, 500) : 100;
+    }
+
     private void ApplySelectedMonitorLayout()
     {
         if (DataContext is not RdpViewModel vm || !vm.IsConnected || TopLevel.GetTopLevel(this) is not Window window)
@@ -551,7 +560,7 @@ public partial class RdpView : UserControl
 
             var halfW = Math.Max(200, (hostPixelW / 2) & ~1);
             var h = Math.Max(200, hostPixelH & ~1);
-            var scale = Math.Clamp((int)Math.Round(hostEntry.Screen.Scaling * 100), 100, 500);
+            var scale = ResolveMonitorScalePercent(vm, hostEntry.Screen.Scaling);
             var splitLayouts = new System.Collections.Generic.List<RdpMonitorRect>
             {
                 new(0, 0, halfW, h, scale, true),
@@ -581,7 +590,7 @@ public partial class RdpView : UserControl
             }
             var totalW = Math.Clamp((maxX - minX) & ~1, 200, 8192);
             var totalH = Math.Clamp((maxY - minY) & ~1, 200, 8192);
-            var scale = Math.Clamp((int)Math.Round(remotePrimaryEntry.Screen.Scaling * 100), 100, 500);
+            var scale = ResolveMonitorScalePercent(vm, remotePrimaryEntry.Screen.Scaling);
             layouts.Add(new RdpMonitorRect(0, 0, totalW, totalH, scale, true));
         }
         else
@@ -613,7 +622,7 @@ public partial class RdpView : UserControl
                         y = hostBounds.Y - h;
                 }
 
-                var scale = Math.Clamp((int)Math.Round(item.Screen.Scaling * 100), 100, 500);
+                var scale = ResolveMonitorScalePercent(vm, item.Screen.Scaling);
                 snappedCoords[item.Index] = (x, y, w, h, scale, item.Index == remotePrimaryEntry.Index);
             }
 
