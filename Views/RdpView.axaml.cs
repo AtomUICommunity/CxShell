@@ -222,7 +222,11 @@ public partial class RdpView : UserControl
         PlacementMode placement = PlacementMode.Bottom,
         Action<bool>? onPopupOpenChanged = null)
     {
-        if (TopLevel.GetTopLevel(this) is not DetachedTabWindow)
+        // A tab in the main window drives the same layout as a detached window:
+        // the tab viewport stands in for the host monitor and every extra screen
+        // opens its own window. Only a missing top level makes the popup (and
+        // the screen enumeration behind it) impossible.
+        if (TopLevel.GetTopLevel(this) is not Window)
             return;
         if (DataContext is not RdpViewModel { IsConnected: true })
             return;

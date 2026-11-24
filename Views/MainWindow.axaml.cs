@@ -93,6 +93,7 @@ public partial class MainWindow : AtomWindow
         FullScreenConnectionBar.RestoreRequested += OnFullScreenBarRestore;
         FullScreenConnectionBar.CloseRequested += OnFullScreenBarClose;
         FullScreenConnectionBar.PinnedChanged += OnFullScreenBarPinnedChanged;
+        FullScreenConnectionBar.MultiMonitorRequested += OnFullScreenBarMultiMonitorRequested;
         PropertyChanged += OnMainWindowPropertyChanged;
 
         var vm = new MainWindowViewModel();
@@ -119,10 +120,20 @@ public partial class MainWindow : AtomWindow
             {
                 ApplyAgentPanelLayout(vm);
             }
+
+            if (e.PropertyName == nameof(MainWindowViewModel.SelectedTab))
+            {
+                // Defer past the binding update so the tab's RdpView has already
+                // picked up the newly selected view model when we look for it.
+                Dispatcher.UIThread.Post(
+                    () => UpdateConnectionBarMultiMonitorState(vm),
+                    DispatcherPriority.Background);
+            }
         };
         DataContext = vm;
         LeftToolbarAddOn.DataContext = vm;
         RightToolbarAddOn.DataContext = vm;
+        UpdateConnectionBarMultiMonitorState(vm);
         WriteToolbarDiagnostics("MainWindow initialized; toolbar menus use AtomUI ContextMenu.");
         Closed += (_, _) =>
         {
@@ -1704,6 +1715,56 @@ public partial class MainWindow : AtomWindow
 
         settings.FullScreenConnectionBarPinned = FullScreenConnectionBar.IsPinned;
         SessionTreeViewModel.PersistSharedSettings();
+    }
+
+    /// <summary>
+    /// A tab-hosted RDP session drives a monitor layout just like a detached
+    /// window: the viewport stands in for the host monitor and each extra screen
+    /// opens its own window, so the connection bar needs the same entry point.
+    /// The button stays hidden for everything that is not an RDP tab, and stays
+    /// disabled when the native bridge predates the monitor-layout API so it can
+    /// never open a popup whose layout the bridge cannot apply.
+    /// </summary>
+    private void UpdateConnectionBarMultiMonitorState(MainWindowViewModel vm)
+    {
+        var rdpView = FindRdpViewFor(vm.SelectedTab);
+        FullScreenConnectionBar.ShowMultiMonitorButton = vm.SelectedTab?.IsRdpSession == true;
+        FullScreenConnectionBar.IsMultiMonitorEnabled =
+            rdpView?.DataContext is RdpViewModel { SupportsMultiMonitor: true };
+    }
+
+    /// <summary>
+    /// Locates the <see cref="RdpView"/> that currently renders
+    /// <paramref name="tab"/>. The XAML declares one instance per layout, so the
+    /// visible one wins and an off-screen sibling is only a fallback.
+    /// </summary>
+    private RdpView? FindRdpViewFor(TerminalTabViewModel? tab)
+    {
+        if (tab?.Rdp is not { } rdp)
+            return null;
+
+        RdpView? fallback = null;
+        foreach (var view in this.GetVisualDescendants().OfType<RdpView>())
+        {
+            if (!ReferenceEquals(view.DataContext, rdp))
+                continue;
+            if (view.IsEffectivelyVisible)
+                return view;
+            fallback ??= view;
+        }
+
+        return fallback;
+    }
+
+    private void OnFullScreenBarMultiMonitorRequested(AvaloniaControl anchor)
+    {
+        if (DataContext is not MainWindowViewModel vm)
+            return;
+
+        FindRdpViewFor(vm.SelectedTab)?.ToggleMultiMonitorPopup(
+            anchor,
+            Avalonia.Controls.PlacementMode.Bottom,
+            FullScreenConnectionBar.SetExternalPopupOpen);
     }
 
     /// <summary>
