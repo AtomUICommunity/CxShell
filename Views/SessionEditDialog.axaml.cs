@@ -451,6 +451,7 @@ public partial class SessionEditDialog : AtomUI.Desktop.Controls.Window
             vm.RdpDpiPolicy = GetSelectedOptionText(RdpDpiPolicySelect, vm.RdpDpiPolicy);
             vm.RdpFrameStrategy = GetSelectedOptionText(RdpFrameStrategySelect, vm.RdpFrameStrategy);
             vm.RdpColorQuality = GetSelectedOptionText(RdpColorQualitySelect, vm.RdpColorQuality);
+            vm.RdpSecurityMode = GetSelectedOptionText(RdpSecurityModeSelect, vm.RdpSecurityMode);
             vm.RdpAudioMode = GetSelectedOptionText(RdpAudioModeSelect, vm.RdpAudioMode);
             vm.VncDisplayMode = GetSelectedOptionText(VncDisplayModeSelect, vm.VncDisplayMode);
             vm.VncResizeMode = GetSelectedOptionText(VncResizeModeSelect, vm.VncResizeMode);
@@ -2763,6 +2764,7 @@ public partial class SessionEditDialog : AtomUI.Desktop.Controls.Window
         SelectOption(RdpDpiPolicySelect, vm.RdpDpiPolicy);
         SelectOption(RdpFrameStrategySelect, vm.RdpFrameStrategy);
         SelectOption(RdpColorQualitySelect, vm.RdpColorQuality);
+        SelectOption(RdpSecurityModeSelect, vm.RdpSecurityMode);
         SelectOption(RdpAudioModeSelect, vm.RdpAudioMode);
     }
 

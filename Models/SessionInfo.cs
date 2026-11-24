@@ -597,6 +597,8 @@ public class SessionInfo
     /// <summary>Frame presentation strategy: Auto, Coalesce, FrameMarker or Legacy.</summary>
     public string RdpFrameStrategy { get; set; } = "Auto";
     public string RdpColorQuality { get; set; } = "32";
+    /// <summary>Preferred RDP security mode: Auto, Negotiate, NLA, TLS or RDP.</summary>
+    public string RdpSecurityMode { get; set; } = "Auto";
     public bool RdpApplyKeyCombinations { get; set; } = true;
     public bool RdpClipboardEnabled { get; set; } = true;
     /// <summary>Send PERF_DISABLE_WALLPAPER so the server skips the desktop wallpaper.</summary>

@@ -279,13 +279,16 @@ public sealed class RdpBridgeClient : IDisposable
         if (nativeApiVersion >= FastConnectApiVersion &&
             (nativeCapabilities & FastConnectCapability) != 0)
         {
-            var cachedProfile = RdpSecurityProfileCache.Get(_profileCacheHost, _profileCachePort);
-            if (!string.IsNullOrEmpty(cachedProfile))
+            var explicitProfile = NormalizeExplicitSecurityProfile(session.RdpSecurityMode);
+            var targetProfile = !string.IsNullOrEmpty(explicitProfile)
+                ? explicitProfile
+                : RdpSecurityProfileCache.Get(_profileCacheHost, _profileCachePort);
+            if (!string.IsNullOrEmpty(targetProfile))
             {
                 TryInvokeOptionalNative("cxrdp_set_security_profile", () =>
                 {
-                    var profileResult = NativeMethods.cxrdp_set_security_profile(_handle, cachedProfile);
-                    DebugLog($"security profile hint={cachedProfile} result={profileResult}");
+                    var profileResult = NativeMethods.cxrdp_set_security_profile(_handle, targetProfile);
+                    DebugLog($"security profile hint={targetProfile} explicit={!string.IsNullOrEmpty(explicitProfile)} result={profileResult}");
                 });
             }
 
@@ -1195,6 +1198,21 @@ public sealed class RdpBridgeClient : IDisposable
             DebugLog($"native bridge export missing: {exportName}; falling back.");
             return false;
         }
+    }
+
+    internal static string NormalizeExplicitSecurityProfile(string? configuredMode)
+    {
+        if (string.IsNullOrWhiteSpace(configuredMode))
+            return string.Empty;
+
+        return configuredMode.Trim().ToLowerInvariant() switch
+        {
+            "negotiate" => "negotiate",
+            "nla" => "nla",
+            "tls" => "tls",
+            "rdp" => "rdp",
+            _ => string.Empty
+        };
     }
 
     private void OnDisconnected(IntPtr userData)

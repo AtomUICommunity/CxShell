@@ -330,6 +330,7 @@ public partial class SessionEditViewModel : ObservableObject
     [ObservableProperty] private string _rdpDpiPolicy = "FollowLocal";
     [ObservableProperty] private string _rdpFrameStrategy = "Auto";
     [ObservableProperty] private string _rdpColorQuality = "32";
+    [ObservableProperty] private string _rdpSecurityMode = "Auto";
     [ObservableProperty] private bool _rdpApplyKeyCombinations = true;
     [ObservableProperty] private bool _rdpClipboardEnabled = true;
     [ObservableProperty] private bool _rdpDisableWallpaper = true;
@@ -1036,6 +1037,14 @@ public partial class SessionEditViewModel : ObservableObject
         new SelectOption { Header = "True Color (24 bit)", Content = "24" },
         new SelectOption { Header = "Highest Quality (32 bit)", Content = "32" }
     ];
+    public ObservableCollection<ISelectOption> RdpSecurityModeOptions { get; } =
+    [
+        new SelectOption { Header = "Auto (Prefer cached / Negotiate)", Content = "Auto" },
+        new SelectOption { Header = "Negotiate (Recommended)", Content = "Negotiate" },
+        new SelectOption { Header = "NLA (CredSSP)", Content = "NLA" },
+        new SelectOption { Header = "TLS", Content = "TLS" },
+        new SelectOption { Header = "Standard RDP", Content = "RDP" }
+    ];
     public ObservableCollection<ISelectOption> RdpAudioModeOptions { get; } =
     [
         new SelectOption { Header = "Play on this computer", Content = "PlayLocal" },
@@ -1534,6 +1543,7 @@ public partial class SessionEditViewModel : ObservableObject
             : "FollowLocal";
         RdpFrameStrategy = RdpFramePresentationModes.Normalize(session.RdpFrameStrategy);
         RdpColorQuality = string.IsNullOrWhiteSpace(session.RdpColorQuality) ? "32" : session.RdpColorQuality;
+        RdpSecurityMode = string.IsNullOrWhiteSpace(session.RdpSecurityMode) ? "Auto" : session.RdpSecurityMode;
         RdpApplyKeyCombinations = session.RdpApplyKeyCombinations;
         RdpClipboardEnabled = session.RdpClipboardEnabled;
         RdpDisableWallpaper = session.RdpDisableWallpaper;
@@ -1844,6 +1854,7 @@ public partial class SessionEditViewModel : ObservableObject
             : "FollowLocal";
         session.RdpFrameStrategy = RdpFramePresentationModes.Normalize(RdpFrameStrategy);
         session.RdpColorQuality = RdpColorQuality;
+        session.RdpSecurityMode = string.IsNullOrWhiteSpace(RdpSecurityMode) ? "Auto" : RdpSecurityMode;
         session.RdpApplyKeyCombinations = RdpApplyKeyCombinations;
         session.RdpClipboardEnabled = RdpClipboardEnabled;
         session.RdpDisableWallpaper = RdpDisableWallpaper;

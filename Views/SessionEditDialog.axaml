@@ -1590,7 +1590,7 @@
                                 BorderThickness="1"
                                 CornerRadius="4"
                                 Padding="18">
-                            <Grid RowDefinitions="Auto,14,Auto,10,Auto,12,Auto,12,Auto,12,Auto,10,Auto,12,Auto,12,Auto,10,Auto"
+                            <Grid RowDefinitions="Auto,14,Auto,10,Auto,12,Auto,12,Auto,12,Auto,10,Auto,12,Auto,12,Auto,10,Auto,12,Auto"
                                   ColumnDefinitions="150,420,*"
                                   ColumnSpacing="8">
                                 <TextBlock Grid.ColumnSpan="3"
@@ -1686,6 +1686,17 @@
                                            Text="{Binding [SessionEdit.RdpFrameStrategyHint], Source={x:Static services:LocalizationService.Shared}}"
                                            TextWrapping="Wrap"
                                            Foreground="{atom:SharedTokenResource ColorTextTertiary}"/>
+
+                                <TextBlock Grid.Row="20"
+                                           Text="{Binding [SessionEdit.RdpSecurityMode], Source={x:Static services:LocalizationService.Shared}}"
+                                           VerticalAlignment="Center"
+                                           Foreground="{atom:SharedTokenResource ColorTextSecondary}"/>
+                                <atom:Select Grid.Row="20" Grid.Column="1"
+                                             x:Name="RdpSecurityModeSelect"
+                                             Mode="Single"
+                                             Width="320"
+                                             HorizontalAlignment="Left"
+                                             OptionsSource="{Binding RdpSecurityModeOptions}"/>
                             </Grid>
                         </Border>
 
