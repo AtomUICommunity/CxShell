@@ -29,6 +29,8 @@ public partial class RdpView : UserControl
     private double _pendingWheelY;
     private double _lastRenderScaling = 1;
     private DispatcherTimer? _scalingTimer;
+    private Cursor? _customRemoteCursor;
+    private Avalonia.Media.Imaging.WriteableBitmap? _customRemoteCursorBitmap;
 
     public RdpView()
     {
@@ -77,6 +79,7 @@ public partial class RdpView : UserControl
 
         _boundVm = vm;
         vm.PropertyChanged += OnViewModelPropertyChanged;
+        vm.PointerShapeChanged += OnPointerShapeChanged;
         if (vm.IsConnected)
             StartScalingTimer();
         ApplyScaleMode(vm);
@@ -169,9 +172,62 @@ public partial class RdpView : UserControl
             return;
 
         _boundVm.PropertyChanged -= OnViewModelPropertyChanged;
+        _boundVm.PointerShapeChanged -= OnPointerShapeChanged;
         _boundVm = null;
+        DisposeCustomRemoteCursor();
         StopScalingTimer();
         DisposeSystemShortcutHook();
+    }
+
+    private void OnPointerShapeChanged(int kind, int width, int height, int hotX, int hotY, byte[]? pixels)
+    {
+        if (kind == 1)
+        {
+            DisposeCustomRemoteCursor();
+            FramebufferImage.Cursor = new Cursor(StandardCursorType.None);
+            return;
+        }
+
+        if (kind == 2 && pixels != null && width > 0 && height > 0)
+        {
+            try
+            {
+                var bitmap = new Avalonia.Media.Imaging.WriteableBitmap(
+                    new PixelSize(width, height),
+                    new Vector(96, 96),
+                    Avalonia.Platform.PixelFormat.Bgra8888,
+                    Avalonia.Platform.AlphaFormat.Unpremul);
+                using (var fb = bitmap.Lock())
+                {
+                    var copyBytes = Math.Min(pixels.Length, fb.RowBytes * fb.Size.Height);
+                    System.Runtime.InteropServices.Marshal.Copy(pixels, 0, fb.Address, copyBytes);
+                }
+
+                var clampedHotX = Math.Clamp(hotX, 0, width - 1);
+                var clampedHotY = Math.Clamp(hotY, 0, height - 1);
+                var cursor = new Cursor(bitmap, new PixelPoint(clampedHotX, clampedHotY));
+                FramebufferImage.Cursor = cursor;
+                DisposeCustomRemoteCursor();
+                _customRemoteCursor = cursor;
+                _customRemoteCursorBitmap = bitmap;
+                return;
+            }
+            catch
+            {
+                // Fall back to default arrow cursor if platform cursor creation fails.
+            }
+        }
+
+        DisposeCustomRemoteCursor();
+        FramebufferImage.Cursor = new Cursor(StandardCursorType.Arrow);
+    }
+
+    private void DisposeCustomRemoteCursor()
+    {
+        _customRemoteCursor?.Dispose();
+        _customRemoteCursor = null;
+        _customRemoteCursorBitmap?.Dispose();
+        _customRemoteCursorBitmap = null;
     }
 
     private void UpdateSystemShortcutHook()

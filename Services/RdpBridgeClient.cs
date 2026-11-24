@@ -74,6 +74,8 @@ public sealed class RdpBridgeClient : IDisposable
     private const uint GfxCapability = 0x00000800;
     private const uint SyncLockKeysApiVersion = 12;
     private const uint SyncLockKeysCapability = 0x00001000;
+    private const uint PointerShapeApiVersion = 13;
+    private const uint PointerShapeCapability = 0x00002000;
     private static readonly object DebugLogLock = new();
     private static readonly object NativeLoadFailureLock = new();
     private static readonly bool DetailedDebugLogEnabled = IsEnvironmentFlagEnabled("CXSHELL_RDP_DEBUG_LOG");
@@ -93,6 +95,7 @@ public sealed class RdpBridgeClient : IDisposable
     private readonly StatusCallback _statusCallback;
     private readonly DisconnectCallback _disconnectCallback;
     private readonly ClipboardTextCallback _clipboardTextCallback;
+    private readonly PointerCallback _pointerCallback;
     private readonly object _frameSync = new();
     private readonly RdpFrameComposer _frameComposer = new(enabled: FrameCoalescingEnabled, useCoverage: FrameCoverageEnabled);
     private RdpFramePresentationMode _frameMode = RdpFramePresentationMode.Auto;
@@ -136,6 +139,7 @@ public sealed class RdpBridgeClient : IDisposable
     public event Action<string>? StatusChanged;
     public event Action? Disconnected;
     public event Action<string>? ClipboardTextReceived;
+    public event Action<int, int, int, int, int, byte[]?>? PointerShapeChanged;
 
     public static string DebugLogPath => Path.Combine(GetDebugLogDirectory(), "rdp-debug.log");
 
@@ -154,6 +158,7 @@ public sealed class RdpBridgeClient : IDisposable
         _statusCallback = OnStatus;
         _disconnectCallback = OnDisconnected;
         _clipboardTextCallback = OnClipboardText;
+        _pointerCallback = OnPointer;
     }
 
     public void Connect(
@@ -241,6 +246,11 @@ public sealed class RdpBridgeClient : IDisposable
                                 (nativeCapabilities & FrameMarkerCapability) != 0;
         _supportsSyncLockKeys = nativeApiVersion >= SyncLockKeysApiVersion &&
                                 (nativeCapabilities & SyncLockKeysCapability) != 0;
+        if (nativeApiVersion >= PointerShapeApiVersion &&
+            (nativeCapabilities & PointerShapeCapability) != 0)
+        {
+            NativeMethods.cxrdp_set_pointer_callback(_handle, _pointerCallback);
+        }
         if (nativeApiVersion >= GfxApiVersion && (nativeCapabilities & GfxCapability) != 0)
         {
             var gfxRequested = GraphicsPipelineForcedOn || session.RdpGraphicsPipelineEnabled;
@@ -1232,6 +1242,19 @@ public sealed class RdpBridgeClient : IDisposable
         Disconnected?.Invoke();
     }
 
+    private void OnPointer(IntPtr userData, int kind, int width, int height, int hotX, int hotY, IntPtr bgraPixels)
+    {
+        byte[]? copy = null;
+        if (kind == 2 && bgraPixels != IntPtr.Zero && width > 0 && height > 0)
+        {
+            var byteCount = checked(width * height * 4);
+            copy = new byte[byteCount];
+            Marshal.Copy(bgraPixels, copy, 0, byteCount);
+        }
+
+        PointerShapeChanged?.Invoke(kind, width, height, hotX, hotY, copy);
+    }
+
     private void OnClipboardText(IntPtr userData, IntPtr text)
     {
         var value = text == IntPtr.Zero ? string.Empty : Marshal.PtrToStringUTF8(text) ?? string.Empty;
@@ -1365,6 +1388,16 @@ public sealed class RdpBridgeClient : IDisposable
     [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
     private delegate void ClipboardTextCallback(IntPtr userData, IntPtr text);
 
+    [UnmanagedFunctionPointer(CallingConvention.Cdecl)]
+    private delegate void PointerCallback(
+        IntPtr userData,
+        int kind,
+        int width,
+        int height,
+        int hotX,
+        int hotY,
+        IntPtr bgraPixels);
+
     private static class NativeMethods
     {
         [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
@@ -1414,6 +1447,9 @@ public sealed class RdpBridgeClient : IDisposable
 
         [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
         public static extern void cxrdp_send_unicode_key(IntPtr handle, ushort code, int down);
+
+        [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
+        public static extern void cxrdp_set_pointer_callback(IntPtr handle, PointerCallback? pointerCallback);
 
         [DllImport(LibraryName, CallingConvention = CallingConvention.Cdecl)]
         public static extern void cxrdp_sync_lock_keys(IntPtr handle, uint flags);

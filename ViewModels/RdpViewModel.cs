@@ -91,6 +91,7 @@ public partial class RdpViewModel : ObservableObject, IDisposable
 
     public SessionInfo Session { get; }
     public string? Password { get; }
+    public event Action<int, int, int, int, int, byte[]?>? PointerShapeChanged;
     public double FixedScaleFactor => Math.Clamp(ScreenScalePercent, 10, 500) / 100.0;
     public string ScaleModeText => IsFitToWindow
         ? "Fit to window"
@@ -105,6 +106,7 @@ public partial class RdpViewModel : ObservableObject, IDisposable
         _client.FramebufferUpdated += OnFramebufferUpdated;
         _client.StatusChanged += message => Dispatcher.UIThread.Post(() => HandleStatus(message));
         _client.ClipboardTextReceived += OnClipboardTextReceived;
+        _client.PointerShapeChanged += OnPointerShapeChanged;
         LocalizationService.Shared.LanguageChanged += OnLanguageChanged;
         _client.Disconnected += () => Dispatcher.UIThread.Post(() =>
         {
@@ -754,6 +756,11 @@ public partial class RdpViewModel : ObservableObject, IDisposable
         Dispatcher.UIThread.Post(() => RemoteClipboardText = text);
     }
 
+    private void OnPointerShapeChanged(int kind, int width, int height, int hotX, int hotY, byte[]? pixels)
+    {
+        Dispatcher.UIThread.Post(() => PointerShapeChanged?.Invoke(kind, width, height, hotX, hotY, pixels));
+    }
+
     partial void OnIsConnectedChanged(bool value)
     {
         if (value)
@@ -830,6 +837,7 @@ public partial class RdpViewModel : ObservableObject, IDisposable
         CancelConnectWatchdog();
         _client.FramebufferUpdated -= OnFramebufferUpdated;
         _client.ClipboardTextReceived -= OnClipboardTextReceived;
+        _client.PointerShapeChanged -= OnPointerShapeChanged;
         LocalizationService.Shared.LanguageChanged -= OnLanguageChanged;
         _client.Dispose();
         _bitmapA?.Dispose();
