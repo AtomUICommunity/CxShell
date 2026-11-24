@@ -779,10 +779,29 @@ public sealed class RdpBridgeClient : IDisposable
             NativeMethods.cxrdp_sync_lock_keys(_handle, flags);
     }
 
+    /// <summary>Whether the loaded native bridge can drive a multi-monitor layout.</summary>
+    public bool SupportsMultiMonitor => _supportsMultiMonitor;
+
     public bool TryResizeMonitors(IReadOnlyList<RdpMonitorRect> monitors)
     {
-        if (_handle == IntPtr.Zero || !_supportsMultiMonitor || monitors == null || monitors.Count == 0)
+        if (_handle == IntPtr.Zero || monitors == null || monitors.Count == 0)
             return false;
+
+        if (!_supportsMultiMonitor)
+        {
+            // Older bridges only know how to resize a single desktop. Collapsing
+            // the layout to its primary monitor keeps "back to one screen" and
+            // window resizes working instead of silently doing nothing.
+            if (monitors.Count != 1)
+                return false;
+
+            var single = monitors[0];
+            var singleScale = single.DesktopScaleFactor > 0 ? single.DesktopScaleFactor : 100;
+            return UpdateDisplay(
+                Math.Max(200, single.Width),
+                Math.Max(200, single.Height),
+                Math.Clamp(singleScale, 50, 400));
+        }
 
         var array = new NativeMonitorRect[Math.Min(monitors.Count, 16)];
         for (var i = 0; i < array.Length; i++)

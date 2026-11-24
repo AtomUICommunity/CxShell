@@ -269,7 +269,16 @@ public partial class RdpView : UserControl
     {
         CloseMultiMonitorPopup();
         CloseAllSecondaryMonitorWindows();
-        if (DataContext is RdpViewModel vm && vm.IsMultiMonitorActive)
+        // The custom layout selection has to be cleared as well: leaving it set
+        // means the next viewport change (or DPI move) would rebuild the layout
+        // that was just torn down.
+        _selectedMonitorIndices.Clear();
+        _virtualMonitorIds.Clear();
+        _ultrawideMode = 0;
+        _primarySliceRect = null;
+        PrimarySliceSurface.IsVisible = false;
+        FramebufferImage.IsVisible = true;
+        if (DataContext is RdpViewModel vm)
         {
             vm.IsMultiMonitorActive = false;
             var scaling = GetRenderScaling();
@@ -400,7 +409,12 @@ public partial class RdpView : UserControl
             var idx = i;
             var s = screens[i];
             var scalePct = (int)Math.Round(s.Scaling * 100);
-            var label = $"屏幕 {i + 1} · {s.Bounds.Width}×{s.Bounds.Height} · {scalePct}%";
+            var label = string.Format(
+                CxShell.Services.LocalizationService.Shared.Text("Rdp.ScreenLabelFormat"),
+                i + 1,
+                (int)s.Bounds.Width,
+                (int)s.Bounds.Height,
+                scalePct);
             var row = new Grid
             {
                 ColumnDefinitions = new ColumnDefinitions("*,Auto"),
@@ -539,7 +553,11 @@ public partial class RdpView : UserControl
                 new(0, 0, halfW, h, scale, true),
                 new(halfW, 0, halfW, h, scale, false)
             };
-            vm.TryResizeMonitors(splitLayouts);
+            if (!vm.TryResizeMonitors(splitLayouts))
+            {
+                ResetToSingleMonitor();
+                return;
+            }
             SyncMultiMonitorActiveFlag();
             return;
         }
@@ -640,7 +658,14 @@ public partial class RdpView : UserControl
             }
         }
 
-        vm.TryResizeMonitors(layouts);
+        if (!vm.TryResizeMonitors(layouts))
+        {
+            // The bridge or the server refused the layout. Reverting keeps the
+            // session usable instead of leaving windows that show slices of a
+            // framebuffer the server never produced.
+            ResetToSingleMonitor();
+            return;
+        }
 
         if (selected.Count == 1 && _virtualMonitorIds.Count == 0)
         {
@@ -689,7 +714,11 @@ public partial class RdpView : UserControl
             }
             else
             {
-                var vTitle = $"虚拟屏 {vi + 1} · {(int)slice.Width}×{(int)slice.Height}";
+                var vTitle = string.Format(
+                    CxShell.Services.LocalizationService.Shared.Text("Rdp.VirtualScreenLabelFormat"),
+                    vi + 1,
+                    (int)slice.Width,
+                    (int)slice.Height);
                 var monitorWin = new RdpMonitorWindow(
                     this,
                     vm,

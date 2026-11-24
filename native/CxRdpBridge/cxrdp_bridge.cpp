@@ -3522,6 +3522,20 @@ CX_RDP_API int cxrdp_resize_monitors(
     if (!session || !session->connected.load() || !session->running.load() || !monitors || count <= 0 || count > 16)
         return -1;
 
+    // A single monitor is the ordinary "resize the remote desktop" case. Route
+    // it through the display-update path so it keeps the legacy monitor-layout
+    // fallback and the GDI surface resize when the display-control DVC is not
+    // available; going straight to SendMonitorLayout would silently no-op on
+    // hosts that never negotiated DISP.
+    if (count == 1)
+    {
+        const auto& only = monitors[0];
+        const int scale = (only.desktop_scale_factor >= 100u && only.desktop_scale_factor <= 400u)
+            ? static_cast<int>(only.desktop_scale_factor)
+            : 0;
+        return cxrdp_update_display(handle, static_cast<int>(only.width), static_cast<int>(only.height), scale);
+    }
+
     DispClientContext* disp = nullptr;
     {
         std::lock_guard<std::mutex> lock(session->display_mutex);

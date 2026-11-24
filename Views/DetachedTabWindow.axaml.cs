@@ -265,6 +265,10 @@ public partial class DetachedTabWindow : AtomUI.Desktop.Controls.Window
     {
         FullScreenConnectionBar.IsFullScreenActive =
             WindowState == WindowState.FullScreen || _keepTaskbarFullScreen.IsActive;
+        // The native bridge has to be new enough to carry the monitor-layout API,
+        // otherwise the button would open a popup that can never take effect.
+        FullScreenConnectionBar.IsMultiMonitorEnabled =
+            DetachedRdpView.DataContext is RdpViewModel { SupportsMultiMonitor: true };
     }
 
     private void OnConnectionBarMinimize(object? sender, EventArgs e)

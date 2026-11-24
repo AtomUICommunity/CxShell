@@ -684,6 +684,8 @@ public partial class RdpViewModel : ObservableObject, IDisposable
             _client.SyncLockKeys(flags);
     }
 
+    public bool SupportsMultiMonitor => _client.SupportsMultiMonitor;
+
     public bool TryResizeMonitors(IReadOnlyList<RdpMonitorRect> monitors)
     {
         return IsConnected && _client.TryResizeMonitors(monitors);
