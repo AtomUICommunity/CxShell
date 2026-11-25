@@ -898,15 +898,31 @@ jobs:
           notes="$(cat <<'EOF'
           ## What's Changed
 
-          - RDP sessions now use EGFX (MS-RDPEGFX) by default, so the first desktop appears as one complete frame like mstsc instead of being painted tile by tile. A server that rejects the graphics pipeline falls back to legacy bitmap updates automatically.
-          - Fix the multi-second freezes after showing the desktop: frame publishing now protects the first screen, gives real input priority, then settles into a low latency timer.
-          - Full screen has an mstsc style connection bar (pin, link quality, endpoint, minimize, leave full screen, close). It appears when entering full screen, on a top edge hover after half a second, and hides itself three seconds later unless pinned.
-          - Remove the black strip that stayed at the top of the screen in full screen. Esc is passed to the remote session again instead of leaving full screen.
-          - RDP sessions survive idle periods and network drops: TCP keepalive, automatic reconnect with escalating backoff, and a cancellable reconnect overlay.
-          - New per-session options: disable the remote wallpaper, choose the frame strategy, toggle the graphics pipeline, and control remote DPI scaling.
-          - Remember which security layer worked for a host so later connections skip the fallback list.
-          - Fix an intermittent session log cleanup that could delete the log file being written.
-          - Upgrade AtomUI to 6.2.15.
+          ### Multi-monitor
+
+          - Add multi-monitor and virtual screen support: choose a layout for the session and open extra borderless windows that each show one virtual screen, so the remote desktop spans the physical displays.
+          - The multi-monitor entry is reachable from the main window's connection bar and from tabs, not only from a detached window. It appears only while a session is live, and its state follows the selected tab instead of whatever was read at selection time.
+          - Going back to a single screen no longer publishes the same layout several times: identical layouts within half a second collapse into one request, which also stops the retry path from resetting a layout that had already been applied.
+
+          ### Stability
+
+          - Fix a crash when the negotiated resolution changed. The renderer could still read a framebuffer bitmap that had just been replaced and threw ObjectDisposedException on the render thread, which took the process down instead of dropping one frame. Retired bitmaps now survive one more frame, and a slice surface handed a disposed source drops it.
+
+          ### Full screen and windows
+
+          - Every full screen bar offers one way back, drawn as inward arrows. The duplicate outward full screen buttons are gone from the connection bar, the floating bar and the detached window.
+          - The detached window title row gains the keep-the-taskbar full screen entry, using the screen-with-strip glyph the main window already had, and its monitor popup moves to the title row's context menu. F11 leaves full screen in that mode.
+          - Virtual screen windows no longer enter WindowState.FullScreen. That state armed the vendor full screen popover layer, which painted a title strip along the top edge as soon as the pointer touched it; the window now folds the request into its own borderless presentation.
+
+          ### Session features
+
+          - Clipboard: cross-platform image, file and rich text support, paste by drag and drop, and locking for large files.
+          - Remote pointer shape and CapsLock/NumLock/ScrollLock state are synced with the session.
+          - Session editor gains a manual security mode selector.
+          - Enable FreeRDP UDP multitransport for lower latency sessions.
+          - Guard optional native exports so an older bridge still loads, and define WIN32_LEAN_AND_MEAN for the bridge sources.
+          - Source-generated JSON contexts and generic enum converters keep the AOT analyzer quiet, and the build is warning free.
+          - Hide the clipboard lock option until the native bridge implements it.
           EOF
           )"
 
