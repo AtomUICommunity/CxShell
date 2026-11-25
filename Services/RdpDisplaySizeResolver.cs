@@ -42,9 +42,11 @@ public static class RdpDisplaySizeResolver
 
     private static RdpDesktopSize Clamp(int width, int height)
     {
-        return new RdpDesktopSize(
-            Math.Clamp(width, MinimumWidth, MaximumWidth),
-            Math.Clamp(height, MinimumHeight, MaximumHeight));
+        // MS-RDPEDISP (DISPLAYCONTROL_MONITOR_LAYOUT) requires an even width;
+        // Windows servers silently reject odd widths.
+        var clampedWidth = Math.Clamp(width, MinimumWidth, MaximumWidth) & ~1;
+        var clampedHeight = Math.Clamp(height, MinimumHeight, MaximumHeight);
+        return new RdpDesktopSize(clampedWidth, clampedHeight);
     }
 
     private static double NormalizeRenderScaling(double renderScaling)
