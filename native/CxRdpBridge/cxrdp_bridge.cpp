@@ -4649,6 +4649,9 @@ CX_RDP_API int cxrdp_update_display(void* handle, int width, int height, int sca
         return -2;
     }
 
+    // MS-RDPEDISP requires an even width; odd widths are rejected by Windows.
+    width &= ~1;
+
     if (scalePercent != 0 && (scalePercent < 50 || scalePercent > 400))
     {
         set_error(session, "RDP display scale is out of range.");

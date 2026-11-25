@@ -152,6 +152,8 @@ public partial class RdpView : UserControl
             {
                 SyncLocalLockKeysToRemote();
                 SyncMultiMonitorActiveFlag();
+                if (!IsCustomMonitorLayoutActive)
+                    _boundVm.RequestViewportResize(RdpViewport.Bounds.Size, GetRenderScaling());
             }
             else
             {
@@ -286,7 +288,7 @@ public partial class RdpView : UserControl
         {
             vm.IsMultiMonitorActive = false;
             var scaling = GetRenderScaling();
-            var w = Math.Max(640, (int)Math.Round(RdpViewport.Bounds.Width * scaling));
+            var w = Math.Max(640, (int)Math.Round(RdpViewport.Bounds.Width * scaling)) & ~1;
             var h = Math.Max(480, (int)Math.Round(RdpViewport.Bounds.Height * scaling));
             vm.TryResizeMonitors([new Services.RdpMonitorRect(0, 0, w, h, (int)Math.Round(scaling * 100), true)]);
         }
