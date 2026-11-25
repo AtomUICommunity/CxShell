@@ -27,6 +27,16 @@ public partial class RdpViewModel : ObservableObject, IDisposable
     private CancellationTokenSource? _connectWatchdogCts;
     private int? _runtimeDesktopWidth;
     private int? _runtimeDesktopHeight;
+    private string? _lastMonitorLayoutSignature;
+    private DateTime _lastMonitorLayoutAppliedUtc;
+    /// <summary>
+    /// Window in which a repeated identical monitor layout is dropped. Coming
+    /// back to a single screen publishes a layout, the resulting desktop resize
+    /// changes the viewport, and the viewport change asks for the same layout
+    /// again - measured gaps between those repeats are 320-360 ms, so the window
+    /// has to be wider than the 300 ms that first looked sufficient.
+    /// </summary>
+    private const int MonitorLayoutDebounceMilliseconds = 500;
     private WriteableBitmap? _bitmapA;
     private WriteableBitmap? _bitmapB;
     private bool _useBitmapA;
@@ -287,6 +297,9 @@ public partial class RdpViewModel : ObservableObject, IDisposable
                 IsConnectionLost = false;
                 ReconnectStatusText = string.Empty;
                 IsConnected = true;
+                // A fresh session knows nothing about the layout we applied
+                // before the reconnect, so the next request must not be deduped.
+                _lastMonitorLayoutSignature = null;
                 _started = true;
                 _hadSession = true;
                 _suppressLostOverlay = false;
@@ -341,6 +354,7 @@ public partial class RdpViewModel : ObservableObject, IDisposable
         {
             CancelConnectWatchdog();
             IsConnected = true;
+            _lastMonitorLayoutSignature = null;
             _started = true;
             _hadSession = true;
             _suppressLostOverlay = false;
@@ -432,6 +446,7 @@ public partial class RdpViewModel : ObservableObject, IDisposable
         _suppressLostOverlay = _started || IsConnected;
 
         _client.Disconnect();
+        _lastMonitorLayoutSignature = null;
         _started = false;
         IsConnected = false;
         IsClipboardChannelReady = false;
@@ -688,7 +703,52 @@ public partial class RdpViewModel : ObservableObject, IDisposable
 
     public bool TryResizeMonitors(IReadOnlyList<RdpMonitorRect> monitors)
     {
-        return IsConnected && _client.TryResizeMonitors(monitors);
+        if (!IsConnected)
+            return false;
+
+        var signature = BuildMonitorLayoutSignature(monitors);
+        if (signature == _lastMonitorLayoutSignature &&
+            (DateTime.UtcNow - _lastMonitorLayoutAppliedUtc).TotalMilliseconds < MonitorLayoutDebounceMilliseconds)
+        {
+            // The layout that is already in force is being asked for again by a
+            // resize that our own request caused. Reporting success keeps the
+            // caller from rolling back to single screen.
+            return true;
+        }
+
+        if (!_client.TryResizeMonitors(monitors))
+        {
+            _lastMonitorLayoutSignature = null;
+            return false;
+        }
+
+        _lastMonitorLayoutSignature = signature;
+        _lastMonitorLayoutAppliedUtc = DateTime.UtcNow;
+        return true;
+    }
+
+    /// <summary>
+    /// Describes a layout by the fields that actually reach the server, so two
+    /// requests that would produce the same monitor set compare equal.
+    /// </summary>
+    private static string BuildMonitorLayoutSignature(IReadOnlyList<RdpMonitorRect> monitors)
+    {
+        if (monitors.Count == 0)
+            return string.Empty;
+
+        var builder = new System.Text.StringBuilder(monitors.Count * 24);
+        for (var i = 0; i < monitors.Count; i++)
+        {
+            var m = monitors[i];
+            builder.Append(m.Left).Append(',')
+                   .Append(m.Top).Append(',')
+                   .Append(Math.Max(200, m.Width)).Append(',')
+                   .Append(Math.Max(200, m.Height)).Append(',')
+                   .Append(Math.Clamp(m.DesktopScaleFactor, 100, 500)).Append(',')
+                   .Append(m.IsPrimary ? '1' : '0').Append(';');
+        }
+
+        return builder.ToString();
     }
 
     [RelayCommand]
