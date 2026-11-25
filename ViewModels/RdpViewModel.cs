@@ -42,6 +42,12 @@ public partial class RdpViewModel : ObservableObject, IDisposable
     private bool _useBitmapA;
     private int _bitmapWidth;
     private int _bitmapHeight;
+    /// <summary>
+    /// Framebuffer bitmaps replaced by a resolution change, kept alive until the
+    /// following frame so every consumer has rebound to the new pair before the
+    /// old one is disposed.
+    /// </summary>
+    private readonly List<WriteableBitmap> _retiredFrames = new();
     private static readonly int ConnectTimeoutSeconds = ResolveConnectTimeoutSeconds();
 
     private static int ResolveConnectTimeoutSeconds()
@@ -799,6 +805,7 @@ public partial class RdpViewModel : ObservableObject, IDisposable
         {
             try
             {
+                DisposeRetiredFrames();
                 var target = GetTargetBitmap(e.Width, e.Height);
                 using (var locked = target.Lock())
                 {
@@ -834,16 +841,10 @@ public partial class RdpViewModel : ObservableObject, IDisposable
             _bitmapHeight = height;
             _useBitmapA = false;
 
-            if (previousA is not null || previousB is not null)
-            {
-                // The old instances may still be bound to the Image; dispose
-                // them only after the next frame has replaced that binding.
-                Dispatcher.UIThread.Post(() =>
-                {
-                    previousA?.Dispose();
-                    previousB?.Dispose();
-                });
-            }
+            if (previousA is not null)
+                _retiredFrames.Add(previousA);
+            if (previousB is not null)
+                _retiredFrames.Add(previousB);
         }
 
         var target = _useBitmapA ? _bitmapA : _bitmapB;
@@ -853,6 +854,28 @@ public partial class RdpViewModel : ObservableObject, IDisposable
 
     private static WriteableBitmap CreateFrameBitmap(int width, int height) =>
         new(new PixelSize(width, height), new Vector(96, 96), PixelFormat.Bgra8888, AlphaFormat.Opaque);
+
+    /// <summary>
+    /// Disposes the frame bitmaps retired by a resolution change.
+    /// <para>
+    /// A dispatcher post is not enough: it runs on the next tick, which can still
+    /// precede the moment the frame image and the per-monitor slice surfaces
+    /// rebind to the new pair. A render pass that reads one of them in that gap
+    /// throws <see cref="ObjectDisposedException"/> on the render thread, which
+    /// takes the whole process down rather than surfacing as a failed frame.
+    /// Holding them for one more frame guarantees the rebind; the slice surface
+    /// additionally drops a stale source instead of trusting it.
+    /// </para>
+    /// </summary>
+    private void DisposeRetiredFrames()
+    {
+        if (_retiredFrames.Count == 0)
+            return;
+
+        foreach (var frame in _retiredFrames)
+            frame.Dispose();
+        _retiredFrames.Clear();
+    }
 
     private void OnClipboardTextReceived(string text)
     {
@@ -955,6 +978,7 @@ public partial class RdpViewModel : ObservableObject, IDisposable
         _client.PointerShapeChanged -= OnPointerShapeChanged;
         LocalizationService.Shared.LanguageChanged -= OnLanguageChanged;
         _client.Dispose();
+        DisposeRetiredFrames();
         _bitmapA?.Dispose();
         _bitmapB?.Dispose();
         _bitmapA = null;
