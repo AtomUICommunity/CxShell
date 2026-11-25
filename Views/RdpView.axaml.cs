@@ -32,6 +32,9 @@ public partial class RdpView : UserControl
     private WindowsClipboardListener? _clipboardListener;
     private DispatcherTimer? _clipboardPollTimer;
     private WindowsRdpShortcutHook? _systemShortcutHook;
+    private IntPtr _savedImeHwnd;
+    private IntPtr _savedImeContext;
+    private bool _imeDisabled;
     private Cursor? _customRemoteCursor;
     private Avalonia.Media.Imaging.WriteableBitmap? _customRemoteCursorBitmap;
     private TopLevel? _subscribedTopLevel;
@@ -93,6 +96,7 @@ public partial class RdpView : UserControl
             SyncMultiMonitorActiveFlag();
             StopClipboardListener();
             UnsubscribeTopLevelScaling();
+            RestoreLocalIme();
             DisposeSystemShortcutHook();
             ReleaseTrackedModifiers();
             _pendingWheelY = 0;
@@ -101,6 +105,7 @@ public partial class RdpView : UserControl
         GotFocus += (_, _) =>
         {
             _hasKeyboardFocus = true;
+            DisableLocalIme();
             UpdateSystemShortcutHook();
             SyncLocalLockKeysToRemote();
             _ = SyncLocalClipboardToRemoteAsync();
@@ -108,6 +113,7 @@ public partial class RdpView : UserControl
         LostFocus += (_, _) =>
         {
             _hasKeyboardFocus = false;
+            RestoreLocalIme();
             DisposeSystemShortcutHook();
             ReleaseTrackedModifiers();
         };
@@ -1045,6 +1051,43 @@ public partial class RdpView : UserControl
 
     [System.Runtime.InteropServices.DllImport("user32.dll")]
     private static extern short GetKeyState(int nVirtKey);
+
+    [System.Runtime.InteropServices.DllImport("imm32.dll")]
+    private static extern IntPtr ImmAssociateContext(IntPtr hWnd, IntPtr hIMC);
+
+    private void DisableLocalIme()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+
+        var hwnd = TopLevel.GetTopLevel(this)?.TryGetPlatformHandle()?.Handle ?? IntPtr.Zero;
+        if (hwnd == IntPtr.Zero)
+            return;
+
+        if (_imeDisabled)
+        {
+            if (_savedImeHwnd == hwnd)
+                return;
+            RestoreLocalIme();
+        }
+
+        _savedImeContext = ImmAssociateContext(hwnd, IntPtr.Zero);
+        _savedImeHwnd = hwnd;
+        _imeDisabled = true;
+    }
+
+    private void RestoreLocalIme()
+    {
+        if (!_imeDisabled || !OperatingSystem.IsWindows())
+            return;
+
+        if (_savedImeHwnd != IntPtr.Zero)
+            ImmAssociateContext(_savedImeHwnd, _savedImeContext);
+
+        _savedImeHwnd = IntPtr.Zero;
+        _savedImeContext = IntPtr.Zero;
+        _imeDisabled = false;
+    }
 
     private void OnTopLevelScalingChanged(object? sender, EventArgs e)
     {
