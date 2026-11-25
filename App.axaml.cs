@@ -21,6 +21,10 @@ namespace CxShell;
 public partial class App : Application
 {
     private TrayIcon? _windowsTrayIcon;
+    private NativeMenuItem? _trayShowWindowItem;
+    private NativeMenuItem? _trayExitItem;
+
+    public bool HasActiveTrayIcon => _windowsTrayIcon is { IsVisible: true };
 
     public override void Initialize()
     {
@@ -71,6 +75,7 @@ public partial class App : Application
             RegisterAtomUiWindowDecorationsTheme();
             desktop.MainWindow = new MainWindow(desktop.Args ?? Array.Empty<string>());
             InitializeWindowsTrayIcon(desktop);
+            desktop.ShutdownRequested += (_, _) => PrepareMainWindowForExit(desktop);
             desktop.Exit += (_, _) => DisposeWindowsTrayIcon();
         }
 
@@ -104,16 +109,20 @@ public partial class App : Application
         if (!OperatingSystem.IsWindows() || desktop.MainWindow is not { } mainWindow)
             return;
 
-        var showWindowItem = new NativeMenuItem("显示 CxShell");
-        showWindowItem.Click += (_, _) => ShowMainWindow(desktop);
+        _trayShowWindowItem = new NativeMenuItem(LocalizationService.Shared.Text("Tray.ShowWindow"));
+        _trayShowWindowItem.Click += (_, _) => ShowMainWindow(desktop);
 
-        var exitItem = new NativeMenuItem("退出");
-        exitItem.Click += (_, _) => desktop.Shutdown();
+        _trayExitItem = new NativeMenuItem(LocalizationService.Shared.Text("Tray.Exit"));
+        _trayExitItem.Click += (_, _) =>
+        {
+            PrepareMainWindowForExit(desktop);
+            desktop.Shutdown();
+        };
 
         var menu = new NativeMenu();
-        menu.Items.Add(showWindowItem);
+        menu.Items.Add(_trayShowWindowItem);
         menu.Items.Add(new NativeMenuItemSeparator());
-        menu.Items.Add(exitItem);
+        menu.Items.Add(_trayExitItem);
 
         _windowsTrayIcon = new TrayIcon
         {
@@ -127,6 +136,21 @@ public partial class App : Application
         var trayIcons = new TrayIcons();
         trayIcons.Add(_windowsTrayIcon);
         TrayIcon.SetIcons(this, trayIcons);
+        LocalizationService.Shared.LanguageChanged += OnTrayLanguageChanged;
+    }
+
+    private void OnTrayLanguageChanged(object? sender, EventArgs e)
+    {
+        if (_trayShowWindowItem != null)
+            _trayShowWindowItem.Header = LocalizationService.Shared.Text("Tray.ShowWindow");
+        if (_trayExitItem != null)
+            _trayExitItem.Header = LocalizationService.Shared.Text("Tray.Exit");
+    }
+
+    private static void PrepareMainWindowForExit(IClassicDesktopStyleApplicationLifetime desktop)
+    {
+        if (desktop.MainWindow is MainWindow mainWindow)
+            mainWindow.PrepareForExit();
     }
 
     private static void ShowMainWindow(IClassicDesktopStyleApplicationLifetime desktop)
@@ -134,15 +158,20 @@ public partial class App : Application
         if (desktop.MainWindow is not { } mainWindow)
             return;
 
+        if (!mainWindow.IsVisible)
+            mainWindow.Show();
+
         if (mainWindow.WindowState == WindowState.Minimized)
             mainWindow.WindowState = WindowState.Normal;
 
-        mainWindow.Show();
         mainWindow.Activate();
     }
 
     private void DisposeWindowsTrayIcon()
     {
+        LocalizationService.Shared.LanguageChanged -= OnTrayLanguageChanged;
+        _trayShowWindowItem = null;
+        _trayExitItem = null;
         _windowsTrayIcon?.Dispose();
         _windowsTrayIcon = null;
         TrayIcon.SetIcons(this, new TrayIcons());

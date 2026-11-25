@@ -67,6 +67,8 @@ public partial class MainWindow : AtomWindow
     private readonly KeepTaskbarFullScreen _keepTaskbarFullScreen;
     private Avalonia.Controls.WindowState _windowStateBeforeFullScreen = Avalonia.Controls.WindowState.Normal;
     private bool _restoreFullScreenAfterMinimize;
+    private bool _allowClose;
+    private bool _hasCompletedInitialLoad;
 
     public MainWindow()
         : this(Array.Empty<string>())
@@ -139,6 +141,8 @@ public partial class MainWindow : AtomWindow
         WriteToolbarDiagnostics("MainWindow initialized; toolbar menus use AtomUI ContextMenu.");
         Closed += (_, _) =>
         {
+            _commandLineHandoffServer?.Dispose();
+            _commandLineHandoffServer = null;
             CloseTabDragGhost();
             DetachedTabWindow.CloseAll();
             vm.Dispose();
@@ -163,6 +167,39 @@ public partial class MainWindow : AtomWindow
         QueueApplySftpPanelWidth(vm);
     }
 
+    public void PrepareForExit()
+    {
+        _allowClose = true;
+    }
+
+    internal static bool ShouldMinimizeToTrayOnClose(
+        bool allowClose,
+        bool hasActiveTrayIcon,
+        bool minimizeToTrayOnClose,
+        Avalonia.Controls.WindowCloseReason closeReason)
+    {
+        if (allowClose || !hasActiveTrayIcon || !minimizeToTrayOnClose)
+            return false;
+
+        return closeReason is not (
+            Avalonia.Controls.WindowCloseReason.ApplicationShutdown or
+            Avalonia.Controls.WindowCloseReason.OSShutdown);
+    }
+
+    protected override void OnClosing(Avalonia.Controls.WindowClosingEventArgs e)
+    {
+        var hasActiveTrayIcon = Avalonia.Application.Current is App { HasActiveTrayIcon: true };
+        var minimizeToTray = SessionTreeViewModel.SharedSettings?.MinimizeToTrayOnClose ?? true;
+        if (ShouldMinimizeToTrayOnClose(_allowClose, hasActiveTrayIcon, minimizeToTray, e.CloseReason))
+        {
+            e.Cancel = true;
+            Hide();
+            return;
+        }
+
+        base.OnClosing(e);
+    }
+
     protected override void OnLoaded(RoutedEventArgs e)
     {
         base.OnLoaded(e);
@@ -172,9 +209,14 @@ public partial class MainWindow : AtomWindow
                 $"leftVisible={LeftToolbarAddOn.IsVisible}; rightVisible={RightToolbarAddOn.IsVisible}."),
             DispatcherPriority.ApplicationIdle);
         StartCommandLineHandoffServer();
-        StartRdpSmokeIfRequested();
-        HandleCommandLineLaunchIfRequested();
-        ShowSessionManagerOnStartupIfNeeded();
+        var isInitialLoad = !_hasCompletedInitialLoad;
+        _hasCompletedInitialLoad = true;
+        if (isInitialLoad)
+        {
+            StartRdpSmokeIfRequested();
+            HandleCommandLineLaunchIfRequested();
+            ShowSessionManagerOnStartupIfNeeded();
+        }
         if (DataContext is MainWindowViewModel vm)
         {
             AttachTabReorderHandlers();
@@ -189,7 +231,8 @@ public partial class MainWindow : AtomWindow
                 _isQuickSessionActivationReady = true;
             }, DispatcherPriority.ApplicationIdle);
             UpdateApplicationSuspension(vm);
-            vm.StartAutomaticUpdateCheck(_startupArgs);
+            if (isInitialLoad)
+                vm.StartAutomaticUpdateCheck(_startupArgs);
         }
     }
 
@@ -201,8 +244,6 @@ public partial class MainWindow : AtomWindow
         DetachTabReorderHandlers();
         if (DataContext is MainWindowViewModel vm)
             vm.SetApplicationSuspended(true);
-        _commandLineHandoffServer?.Dispose();
-        _commandLineHandoffServer = null;
         base.OnUnloaded(e);
     }
 
@@ -1615,6 +1656,9 @@ public partial class MainWindow : AtomWindow
         {
             try
             {
+                if (!IsVisible)
+                    Show();
+
                 if (WindowState == Avalonia.Controls.WindowState.Minimized)
                     WindowState = Avalonia.Controls.WindowState.Normal;
 

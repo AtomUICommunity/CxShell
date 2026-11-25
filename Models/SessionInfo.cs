@@ -318,6 +318,7 @@ public class ApplicationSettings
     public string UiLanguage { get; set; } = "zh-CN";
     public string ThemeMode { get; set; } = DarkThemeMode;
     public bool ShowSessionManagerOnStartup { get; set; } = true;
+    public bool MinimizeToTrayOnClose { get; set; } = true;
     public bool AutoCheckForUpdates { get; set; } = true;
     public bool IncludePrereleaseUpdates { get; set; }
     public AgentProviderSettings AgentProvider { get; set; } = new();

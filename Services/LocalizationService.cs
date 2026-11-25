@@ -1018,6 +1018,10 @@ public sealed class LocalizationService : INotifyPropertyChanged
         EnglishTexts["ApplicationSettings.Title"] = "Application Settings";
         EnglishTexts["ApplicationSettings.General"] = "Settings that apply to CxShell rather than an individual connection";
         EnglishTexts["ApplicationSettings.Startup"] = "Startup";
+        EnglishTexts["ApplicationSettings.Window"] = "Window";
+        EnglishTexts["ApplicationSettings.MinimizeToTrayOnClose"] = "Minimize to notification area when closing the main window";
+        EnglishTexts["Tray.ShowWindow"] = "Show CxShell";
+        EnglishTexts["Tray.Exit"] = "Exit";
         EnglishTexts["ApplicationSettings.Appearance"] = "Appearance";
         EnglishTexts["ApplicationSettings.BackgroundImage"] = "Background Image";
         EnglishTexts["ApplicationSettings.BackgroundImageDescription"] = "Used by terminals when the session does not configure its own background image.";
@@ -1583,6 +1587,10 @@ public sealed class LocalizationService : INotifyPropertyChanged
         ChineseTexts["ApplicationSettings.Title"] = "\u5e94\u7528\u8bbe\u7f6e";
         ChineseTexts["ApplicationSettings.General"] = "\u8fd9\u4e9b\u8bbe\u7f6e\u9002\u7528\u4e8e CxShell \u6574\u4f53\uff0c\u4e0d\u9488\u5bf9\u5355\u4e2a\u8fde\u63a5";
         ChineseTexts["ApplicationSettings.Startup"] = "\u542f\u52a8";
+        ChineseTexts["ApplicationSettings.Window"] = "\u7a97\u53e3";
+        ChineseTexts["ApplicationSettings.MinimizeToTrayOnClose"] = "\u5173\u95ed\u4e3b\u7a97\u53e3\u65f6\u6700\u5c0f\u5316\u5230\u901a\u77e5\u680f";
+        ChineseTexts["Tray.ShowWindow"] = "\u663e\u793a CxShell";
+        ChineseTexts["Tray.Exit"] = "\u9000\u51fa";
         ChineseTexts["ApplicationSettings.Appearance"] = "\u5916\u89c2";
         ChineseTexts["ApplicationSettings.BackgroundImage"] = "\u80cc\u666f\u56fe";
         ChineseTexts["ApplicationSettings.BackgroundImageDescription"] = "\u4f1a\u8bdd\u672a\u5355\u72ec\u914d\u7f6e\u80cc\u666f\u56fe\u65f6\uff0c\u7ec8\u7aef\u4f7f\u7528\u6b64\u5168\u5c40\u80cc\u666f\u3002";
