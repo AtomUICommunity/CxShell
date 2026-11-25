@@ -69,7 +69,6 @@ public partial class RdpMonitorWindow : AtomUI.Desktop.Controls.Window
         FloatingBar.CloseToolTip = "关闭此屏";
         FloatingBar.MinimizeRequested += (_, _) => WindowState = WindowState.Minimized;
         FloatingBar.RestoreRequested += (_, _) => OnFloatingBarRestoreRequested();
-        FloatingBar.ToggleFullScreenRequested += OnFloatingBarToggleFullScreenRequested;
         FloatingBar.TaskbarModeToggleRequested += OnToggleImmersiveModeClick;
         FloatingBar.CloseRequested += (_, _) => _onCloseRequested(_monitorIndex);
         FloatingBar.InteractionCompleted += () => SliceSurface.Focus();
@@ -150,18 +149,36 @@ public partial class RdpMonitorWindow : AtomUI.Desktop.Controls.Window
 
     private void OnWindowPropertyChanged(object? sender, AvaloniaPropertyChangedEventArgs e)
     {
-        if (_updatingGeometry || !_isWindowed || e.Property != WindowStateProperty)
+        if (_updatingGeometry || e.Property != WindowStateProperty)
             return;
 
         var state = WindowState;
-        var isImmersive = state is WindowState.Maximized or WindowState.FullScreen;
+
+        // This window only has two presentations: a framed window and a
+        // borderless window sized to the monitor. Entering
+        // WindowState.FullScreen would activate AtomUI's full screen popover
+        // layer, which paints a window wide title bar strip (logo, title,
+        // leave-full-screen and close) along the top edge as soon as the
+        // pointer touches it. The caption button goes down that path, so fold
+        // the state back into the borderless presentation instead of letting
+        // the vendor chrome take over.
+        if (state == WindowState.FullScreen)
+        {
+            _isWindowed = false;
+            _keepTaskbar = false;
+            WindowState = WindowState.Normal;
+            ApplyWindowGeometry();
+            return;
+        }
+
+        if (!_isWindowed)
+            return;
+
+        var isImmersive = state == WindowState.Maximized;
         IsTitleBarVisible = !isImmersive;
-        WindowDecorations = state == WindowState.FullScreen
-            ? WindowDecorations.None
-            : WindowDecorations.Full;
+        WindowDecorations = WindowDecorations.Full;
         FloatingBar.ShowMinimizeButton = true;
         FloatingBar.RestoreToolTip = "还原窗口";
-        FloatingBar.FullScreenToolTip = "切换全屏 (F11)";
         FloatingBar.TaskbarModeLabel = "保留任务栏";
         FloatingBar.SetImmersiveActive(isImmersive);
     }
@@ -193,7 +210,6 @@ public partial class RdpMonitorWindow : AtomUI.Desktop.Controls.Window
                 Height = h / scaling;
                 FloatingBar.ShowMinimizeButton = true;
                 FloatingBar.RestoreToolTip = "还原窗口";
-                FloatingBar.FullScreenToolTip = "切换全屏 (F11)";
                 FloatingBar.TaskbarModeLabel = "保留任务栏";
                 FloatingBar.SetImmersiveActive(false);
                 return;
@@ -209,8 +225,8 @@ public partial class RdpMonitorWindow : AtomUI.Desktop.Controls.Window
             Width = rect.Width / scaling;
             Height = rect.Height / scaling;
             FloatingBar.ShowMinimizeButton = false;
+            // The window already fills the monitor: only the way back matters.
             FloatingBar.RestoreToolTip = "窗口化";
-            FloatingBar.FullScreenToolTip = "切换窗口化 / 沉浸全屏 (F11)";
             FloatingBar.TaskbarModeLabel = _keepTaskbar ? "真全屏" : "保留任务栏";
             FloatingBar.SetImmersiveActive(true);
         }
@@ -245,30 +261,6 @@ public partial class RdpMonitorWindow : AtomUI.Desktop.Controls.Window
         else if (WindowState is WindowState.Maximized or WindowState.FullScreen)
         {
             WindowState = WindowState.Normal;
-        }
-
-        SliceSurface.Focus();
-    }
-
-    private void OnFloatingBarToggleFullScreenRequested()
-    {
-        if (_isWindowed)
-        {
-            if (WindowState == WindowState.FullScreen)
-            {
-                WindowState = WindowState.Normal;
-            }
-            else
-            {
-                _isWindowed = false;
-                _keepTaskbar = false;
-                ApplyWindowGeometry();
-            }
-        }
-        else
-        {
-            _isWindowed = true;
-            ApplyWindowGeometry();
         }
 
         SliceSurface.Focus();
@@ -317,14 +309,6 @@ public partial class RdpMonitorWindow : AtomUI.Desktop.Controls.Window
     {
         _isWindowed = false;
         _keepTaskbar = true;
-        ApplyWindowGeometry();
-        SliceSurface.Focus();
-    }
-
-    private void OnEnterImmersiveClick(object? sender, RoutedEventArgs e)
-    {
-        _isWindowed = false;
-        _keepTaskbar = false;
         ApplyWindowGeometry();
         SliceSurface.Focus();
     }

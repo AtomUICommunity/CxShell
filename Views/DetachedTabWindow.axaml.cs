@@ -45,11 +45,7 @@ public partial class DetachedTabWindow : AtomUI.Desktop.Controls.Window
         KeepTaskbarFullScreenButton.SetValue(
             AtomUI.Desktop.Controls.ToolTip.TipProperty,
             Services.LocalizationService.Shared.Text("Toolbar.FullScreenKeepTaskbarTip"));
-        DetachedMultiMonitorButton.SetValue(
-            AtomUI.Desktop.Controls.ToolTip.TipProperty,
-            Services.LocalizationService.Shared.Text("Rdp.MultiMonitorTip"));
         Closed += OnClosed;
-        FullScreenConnectionBar.ToggleFullScreenRequested += ToggleFullScreen;
         FullScreenConnectionBar.MultiMonitorRequested += anchor =>
             DetachedRdpView.ToggleMultiMonitorPopup(anchor, PlacementMode.Bottom, FullScreenConnectionBar.SetExternalPopupOpen);
         PropertyChanged += OnWindowPropertyChanged;
@@ -71,9 +67,34 @@ public partial class DetachedTabWindow : AtomUI.Desktop.Controls.Window
         get => _tab;
         set
         {
+            if (ReferenceEquals(_tab, value))
+                return;
+
+            if (_tab?.Rdp is { } previous)
+                previous.PropertyChanged -= OnRdpSessionChanged;
+
             _tab = value;
             FullScreenConnectionBar.ShowMultiMonitorButton = value?.IsRdpSession == true;
+            if (_tab?.Rdp is { } rdp)
+                rdp.PropertyChanged += OnRdpSessionChanged;
             DataContext = value;
+            UpdateConnectionBarState();
+        }
+    }
+
+    /// <summary>
+    /// The bridge only reports its monitor-layout capability once a connect
+    /// attempt starts, so the bar cannot rely on the state it read when the
+    /// window opened: recompute whenever the session connects, disconnects, or
+    /// changes the layout it drives.
+    /// </summary>
+    private void OnRdpSessionChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName is nameof(RdpViewModel.IsConnected) or
+            nameof(RdpViewModel.SupportsMultiMonitor) or
+            nameof(RdpViewModel.IsMultiMonitorActive))
+        {
+            UpdateConnectionBarState();
         }
     }
 
@@ -267,8 +288,11 @@ public partial class DetachedTabWindow : AtomUI.Desktop.Controls.Window
             WindowState == WindowState.FullScreen || _keepTaskbarFullScreen.IsActive;
         // The native bridge has to be new enough to carry the monitor-layout API,
         // otherwise the button would open a popup that can never take effect.
+        // A layout can only be published while the session is live, so the
+        // connected state gates the button as well.
         FullScreenConnectionBar.IsMultiMonitorEnabled =
-            DetachedRdpView.DataContext is RdpViewModel { SupportsMultiMonitor: true };
+            DetachedRdpView.DataContext is RdpViewModel { SupportsMultiMonitor: true, IsConnected: true };
+        FullScreenConnectionBar.IsMultiMonitorActive = DetachedRdpView.IsMultiMonitorActive;
     }
 
     private void OnConnectionBarMinimize(object? sender, EventArgs e)
@@ -316,10 +340,13 @@ public partial class DetachedTabWindow : AtomUI.Desktop.Controls.Window
         SessionTreeViewModel.PersistSharedSettings();
     }
 
-    private void OnDetachedMultiMonitorClick(object? sender, RoutedEventArgs e)
+    /// <summary>
+    /// Opens the monitor popup from the title bar context menu. The menu item is
+    /// gone by the time the popup is placed, so the panel itself is the anchor.
+    /// </summary>
+    private void OnDetachedMultiMonitorMenuClick(object? sender, RoutedEventArgs e)
     {
-        if (sender is Control anchor)
-            DetachedRdpView.ToggleMultiMonitorPopup(anchor, PlacementMode.Bottom);
+        DetachedRdpView.ToggleMultiMonitorPopup(TitleBarAddOnPanel, PlacementMode.Bottom);
     }
 
     private void OnKeepTaskbarFullScreenClick(object? sender, RoutedEventArgs e)
@@ -351,8 +378,16 @@ public partial class DetachedTabWindow : AtomUI.Desktop.Controls.Window
 
     private void ToggleFullScreen()
     {
+        // Leaving the taskbar mode is what F11 means while it is active: the
+        // previous behaviour abandoned the mode and immediately entered the
+        // immersive one, so the key could only ever add chrome-less full screen
+        // and never take it away.
         if (_keepTaskbarFullScreen.IsActive)
-            _keepTaskbarFullScreen.Abandon();
+        {
+            _keepTaskbarFullScreen.Leave();
+            UpdateConnectionBarState();
+            return;
+        }
 
         if (WindowState == WindowState.FullScreen)
         {

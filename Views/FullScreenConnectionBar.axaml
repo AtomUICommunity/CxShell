@@ -27,7 +27,7 @@
             BorderBrush="{atom:SharedTokenResource ColorBorderSecondary}"
             BorderThickness="1"
             BoxShadow="0 6 18 0 #40000000">
-        <Grid ColumnDefinitions="Auto,Auto,*,Auto,Auto,Auto,Auto,Auto,Auto,Auto"
+        <Grid ColumnDefinitions="Auto,Auto,*,Auto,Auto,Auto,Auto,Auto,Auto"
               VerticalAlignment="Stretch">
             <!-- Two pin buttons, only one visible: an outline pushpin while the
                  bar auto-hides, a filled pushpin while it is pinned. Shape
@@ -132,6 +132,12 @@
                          Icon="{antdicons:AntDesignIconProvider Kind=MinusOutlined}"
                          Click="OnMinimizeClick"/>
 
+            <!-- Leaving full screen is the only full-screen action the bar
+                 offers: four arrows pointing inward, the mirror of the glyph
+                 the caption button uses to enter. There is deliberately no
+                 matching "enter full screen" button here - the caption button
+                 already carries that, and two identical-looking arrows next to
+                 the close button only made the bar ambiguous. -->
             <atom:Button x:Name="RestoreButton"
                          Grid.Column="7"
                          Width="28"
@@ -140,23 +146,11 @@
                          ButtonType="Text"
                          Focusable="False"
                          VerticalAlignment="Center"
-                         Icon="{antdicons:AntDesignIconProvider Kind=SwitcherOutlined}"
+                         Icon="{antdicons:AntDesignIconProvider Kind=FullscreenExitOutlined}"
                          Click="OnRestoreClick"/>
 
-            <atom:Button x:Name="FullScreenButton"
-                         Grid.Column="8"
-                         IsVisible="False"
-                         Width="28"
-                         Height="26"
-                         Padding="0"
-                         ButtonType="Text"
-                         Focusable="False"
-                         VerticalAlignment="Center"
-                         Icon="{antdicons:AntDesignIconProvider Kind=FullscreenOutlined}"
-                         Click="OnFullScreenClick"/>
-
             <atom:Button x:Name="CloseButton"
-                         Grid.Column="9"
+                         Grid.Column="8"
                          Width="28"
                          Height="26"
                          Padding="0"

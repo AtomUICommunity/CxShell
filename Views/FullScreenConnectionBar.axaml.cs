@@ -1,11 +1,16 @@
 using System;
+using AtomUI.Data;
+using AtomUI.Theme.Resources;
 using Avalonia;
 using Avalonia.Controls;
+using Avalonia.Controls.Primitives;
 using Avalonia.Input;
 using Avalonia.Interactivity;
+using Avalonia.Media;
 using Avalonia.Threading;
 using Avalonia.VisualTree;
 using CxShell.Services;
+using CxShell.ViewModels;
 using AtomToolTip = AtomUI.Desktop.Controls.ToolTip;
 
 namespace CxShell.Views;
@@ -84,7 +89,6 @@ public partial class FullScreenConnectionBar : UserControl
 
     public event Action<Control>? MultiMonitorRequested;
     public event Action? TaskbarModeToggleRequested;
-    public event Action? ToggleFullScreenRequested;
     public event Action? InteractionCompleted;
 #pragma warning disable CS0067
     public event Action<PointerPressedEventArgs>? DragRestoreRequested;
@@ -106,7 +110,25 @@ public partial class FullScreenConnectionBar : UserControl
         set => MultiMonitorButton.IsEnabled = value;
     }
 
-    public bool IsMultiMonitorActive { get; set; }
+    private bool _isMultiMonitorActive;
+
+    /// <summary>
+    /// True while the session really drives a custom monitor layout. The label
+    /// picks up the accent colour in that case, so the bar shows at a glance
+    /// whether the remote desktop still spans a single screen.
+    /// </summary>
+    public bool IsMultiMonitorActive
+    {
+        get => _isMultiMonitorActive;
+        set
+        {
+            if (_isMultiMonitorActive == value)
+                return;
+
+            _isMultiMonitorActive = value;
+            UpdateMultiMonitorVisual();
+        }
+    }
 
     public bool ShowTaskbarModeButton
     {
@@ -130,20 +152,9 @@ public partial class FullScreenConnectionBar : UserControl
         set => MinimizeButton.IsVisible = value;
     }
 
-    public bool ShowFullScreenButton
-    {
-        get => FullScreenButton.IsVisible;
-        set => FullScreenButton.IsVisible = value;
-    }
-
     public string? RestoreToolTip
     {
         set => AtomToolTip.SetTip(RestoreButton, value);
-    }
-
-    public string? FullScreenToolTip
-    {
-        set => AtomToolTip.SetTip(FullScreenButton, value);
     }
 
     public string? CloseToolTip
@@ -183,6 +194,23 @@ public partial class FullScreenConnectionBar : UserControl
         ExtraActionsDivider.IsVisible = MultiMonitorButton.IsVisible || TaskbarModeButton.IsVisible;
     }
 
+    /// <summary>
+    /// Accents the multi-monitor entry while a layout is in force. Clearing the
+    /// local value instead of assigning a fallback colour keeps the button on
+    /// its themed foreground once the session is back to a single screen.
+    /// </summary>
+    private void UpdateMultiMonitorVisual()
+    {
+        if (_isMultiMonitorActive)
+        {
+            MultiMonitorButton.Foreground = new SolidColorBrush(
+                ThemeTokenColorHelper.GetColor(SharedTokenKind.ColorPrimary, Color.Parse("#1677FF")));
+            return;
+        }
+
+        MultiMonitorButton.ClearValue(TemplatedControl.ForegroundProperty);
+    }
+
     private void OnMultiMonitorClick(object? sender, RoutedEventArgs e)
     {
         MultiMonitorRequested?.Invoke(MultiMonitorButton);
@@ -191,12 +219,6 @@ public partial class FullScreenConnectionBar : UserControl
     private void OnTaskbarModeClick(object? sender, RoutedEventArgs e)
     {
         TaskbarModeToggleRequested?.Invoke();
-        InteractionCompleted?.Invoke();
-    }
-
-    private void OnFullScreenClick(object? sender, RoutedEventArgs e)
-    {
-        ToggleFullScreenRequested?.Invoke();
         InteractionCompleted?.Invoke();
     }
 
@@ -514,7 +536,6 @@ public partial class FullScreenConnectionBar : UserControl
         MultiMonitorButton.Content = Text("Rdp.MultiMonitor");
         AtomToolTip.SetTip(MinimizeButton, Text("FullScreenBar.Minimize"));
         AtomToolTip.SetTip(RestoreButton, Text("FullScreenBar.Restore"));
-        AtomToolTip.SetTip(FullScreenButton, Text("FullScreenBar.ToggleFullScreen"));
         AtomToolTip.SetTip(CloseButton, Text("FullScreenBar.Close"));
     }
 
