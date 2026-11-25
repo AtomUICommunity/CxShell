@@ -6,6 +6,8 @@
 #include <codecvt>
 #include <cctype>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <iomanip>
 #include <cstdlib>
 #include <locale>
@@ -65,6 +67,32 @@ extern "C" {
 
 namespace
 {
+struct LocalClipboardFileEntry
+{
+    std::string relative_name;
+    std::filesystem::path full_path;
+    bool is_directory = false;
+    uint64_t file_size = 0;
+    uint64_t last_write_time = 0;
+};
+
+struct RemoteClipboardFileEntry
+{
+    std::string relative_name;
+    std::filesystem::path local_path;
+    bool is_directory = false;
+    uint64_t expected_size = 0;
+    uint64_t received_bytes = 0;
+    bool size_known = false;
+};
+
+constexpr uint32_t CX_CLIPRDR_FORMAT_PNG = 0xC001u;
+constexpr uint32_t CX_CLIPRDR_FORMAT_FILE_GROUP_DESCRIPTOR_W = 0xC002u;
+constexpr uint32_t CX_CLIPRDR_FORMAT_HTML = 0xC003u;
+constexpr uint32_t CX_CLIPRDR_FORMAT_RTF = 0xC004u;
+constexpr uint32_t CX_CLIPRDR_FORMAT_FILE_CONTENTS = 0xC005u;
+constexpr uint32_t CX_CLIPRDR_FILE_CHUNK_SIZE = 65536u;
+
 struct CxRdpSession
 {
     freerdp* instance = nullptr;
@@ -133,18 +161,36 @@ struct CxRdpSession
     bool client_capabilities_sent = false;
     std::chrono::steady_clock::time_point cliprdr_connected_at{};
     uint32_t clipboard_requested_format = 0;
+    uint32_t clipboard_requested_image_format = 0;
+    bool clipboard_requested_files = false;
     uint64_t local_clipboard_revision = 0;
     uint64_t offered_clipboard_revision = 0;
     cxrdp_frame_callback frame_callback = nullptr;
     cxrdp_status_callback status_callback = nullptr;
     cxrdp_disconnect_callback disconnect_callback = nullptr;
     cxrdp_clipboard_text_callback clipboard_text_callback = nullptr;
+    cxrdp_clipboard_image_callback clipboard_image_callback = nullptr;
+    cxrdp_clipboard_files_callback clipboard_files_callback = nullptr;
     cxrdp_pointer_callback pointer_callback = nullptr;
     void* user_data = nullptr;
     std::string last_error;
     std::mutex clipboard_mutex;
+    int local_clipboard_kind = 0; // 0=text, 1=image, 2=files
     std::string local_clipboard_text;
+    std::vector<uint8_t> local_clipboard_html;
+    std::vector<uint8_t> local_clipboard_rtf;
+    std::vector<uint8_t> local_clipboard_png;
+    std::vector<uint8_t> local_clipboard_dib;
+    std::vector<LocalClipboardFileEntry> local_clipboard_files;
     std::unordered_map<uint32_t, std::string> locked_clipboard_text;
+    std::unordered_map<uint32_t, std::vector<LocalClipboardFileEntry>> locked_clipboard_files;
+    std::vector<RemoteClipboardFileEntry> remote_clipboard_files;
+    std::vector<std::string> remote_clipboard_top_level_paths;
+    size_t remote_file_download_index = 0;
+    uint32_t remote_file_stream_id = 1;
+    bool remote_file_requesting_size = false;
+    int last_upload_progress_pct = -1;
+    int last_download_progress_pct = -1;
 
     // Display control (DPI remoting + in-place resize). The worker owns the
     // FreeRDP objects; a UI call only queues a request here.
@@ -431,6 +477,254 @@ void notify_clipboard_text(CxRdpSession* session, const std::string& text)
         session->clipboard_text_callback(session->user_data, text.c_str());
 }
 
+void notify_clipboard_image(CxRdpSession* session, uint32_t imageFormat, const uint8_t* data, uint32_t length)
+{
+    if (!session || !data || length == 0)
+        return;
+
+    std::lock_guard<std::mutex> lock(session->callback_mutex);
+    if (session->clipboard_image_callback)
+        session->clipboard_image_callback(session->user_data, imageFormat, data, length);
+}
+
+void notify_clipboard_files(CxRdpSession* session, const std::vector<std::string>& paths)
+{
+    if (!session || paths.empty())
+        return;
+
+    std::ostringstream joined;
+    for (size_t i = 0; i < paths.size(); ++i)
+    {
+        if (i > 0)
+            joined << '\n';
+        joined << paths[i];
+    }
+
+    const auto payload = joined.str();
+    std::lock_guard<std::mutex> lock(session->callback_mutex);
+    if (session->clipboard_files_callback)
+        session->clipboard_files_callback(session->user_data, payload.c_str());
+}
+
+uint64_t get_file_last_write_time(const std::filesystem::path& path)
+{
+#if defined(_WIN32)
+    WIN32_FILE_ATTRIBUTE_DATA attrData{};
+    if (!GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &attrData))
+        return 0;
+
+    return (static_cast<uint64_t>(attrData.ftLastWriteTime.dwHighDateTime) << 32) |
+           static_cast<uint64_t>(attrData.ftLastWriteTime.dwLowDateTime);
+#else
+    (void)path;
+    return 0;
+#endif
+}
+
+std::vector<BYTE> serialize_file_group_descriptor_w(const std::vector<LocalClipboardFileEntry>& files)
+{
+    constexpr size_t descriptorSize = 592;
+    const uint32_t count = static_cast<uint32_t>(files.size());
+    std::vector<BYTE> buffer(4 + static_cast<size_t>(count) * descriptorSize, 0);
+
+    buffer[0] = static_cast<BYTE>(count & 0xFFu);
+    buffer[1] = static_cast<BYTE>((count >> 8) & 0xFFu);
+    buffer[2] = static_cast<BYTE>((count >> 16) & 0xFFu);
+    buffer[3] = static_cast<BYTE>((count >> 24) & 0xFFu);
+
+    std::wstring_convert<std::codecvt_utf8_utf16<char16_t>, char16_t> converter;
+    for (size_t i = 0; i < files.size(); ++i)
+    {
+        const auto& entry = files[i];
+        BYTE* dst = buffer.data() + 4 + i * descriptorSize;
+
+        // dwFlags: FD_ATTRIBUTES (0x04) | FD_FILESIZE (0x40) | FD_PROGRESSUI (0x4000) [| FD_WRITESTIME (0x20)]
+        uint32_t flags = 0x00004044u;
+        if (entry.last_write_time != 0)
+        {
+            flags |= 0x00000020u;
+            const uint32_t writeTimeLow = static_cast<uint32_t>(entry.last_write_time & 0xFFFFFFFFu);
+            const uint32_t writeTimeHigh = static_cast<uint32_t>((entry.last_write_time >> 32) & 0xFFFFFFFFu);
+            std::memcpy(dst + 56, &writeTimeLow, 4);
+            std::memcpy(dst + 60, &writeTimeHigh, 4);
+        }
+        std::memcpy(dst + 0, &flags, 4);
+
+        const uint32_t attrs = entry.is_directory ? 0x00000010u : 0x00000020u;
+        std::memcpy(dst + 36, &attrs, 4);
+
+        const uint32_t sizeHigh = static_cast<uint32_t>((entry.file_size >> 32) & 0xFFFFFFFFu);
+        const uint32_t sizeLow = static_cast<uint32_t>(entry.file_size & 0xFFFFFFFFu);
+        std::memcpy(dst + 64, &sizeHigh, 4);
+        std::memcpy(dst + 68, &sizeLow, 4);
+
+        std::u16string utf16Name;
+        try
+        {
+            utf16Name = converter.from_bytes(entry.relative_name);
+        }
+        catch (const std::range_error&)
+        {
+            for (const unsigned char ch : entry.relative_name)
+                utf16Name.push_back(ch < 0x80 ? static_cast<char16_t>(ch) : u'_');
+        }
+
+        const size_t maxChars = 259;
+        const size_t charCount = utf16Name.size() < maxChars ? utf16Name.size() : maxChars;
+        for (size_t c = 0; c < charCount; ++c)
+        {
+            const uint16_t ch = static_cast<uint16_t>(utf16Name[c]);
+            dst[72 + c * 2] = static_cast<BYTE>(ch & 0xFFu);
+            dst[72 + c * 2 + 1] = static_cast<BYTE>((ch >> 8) & 0xFFu);
+        }
+    }
+
+    return buffer;
+}
+
+bool parse_file_group_descriptor_w(
+    const BYTE* data,
+    uint32_t length,
+    const std::filesystem::path& baseDir,
+    std::vector<RemoteClipboardFileEntry>& outFiles,
+    std::vector<std::string>& outTopLevelPaths)
+{
+    outFiles.clear();
+    outTopLevelPaths.clear();
+    if (!data || length < 4)
+        return false;
+
+    uint32_t count = 0;
+    std::memcpy(&count, data, 4);
+    constexpr size_t descriptorSize = 592;
+    if (count == 0 || 4 + static_cast<size_t>(count) * descriptorSize > length)
+        return false;
+
+    std::wstring_convert<std::codecvt_utf8_utf16<char16_t>, char16_t> converter;
+    for (uint32_t i = 0; i < count; ++i)
+    {
+        const BYTE* src = data + 4 + static_cast<size_t>(i) * descriptorSize;
+        uint32_t attrs = 0;
+        uint32_t sizeHigh = 0;
+        uint32_t sizeLow = 0;
+        std::memcpy(&attrs, src + 36, 4);
+        std::memcpy(&sizeHigh, src + 64, 4);
+        std::memcpy(&sizeLow, src + 68, 4);
+
+        std::u16string utf16Name;
+        for (size_t c = 0; c < 260; ++c)
+        {
+            const uint16_t ch = static_cast<uint16_t>(src[72 + c * 2] | (static_cast<uint16_t>(src[72 + c * 2 + 1]) << 8));
+            if (ch == 0)
+                break;
+            utf16Name.push_back(static_cast<char16_t>(ch));
+        }
+
+        std::string relName;
+        try
+        {
+            relName = converter.to_bytes(utf16Name);
+        }
+        catch (const std::range_error&)
+        {
+            continue;
+        }
+
+        if (relName.empty() || relName.find("..") != std::string::npos)
+            continue;
+
+        std::filesystem::path relPath = std::filesystem::u8path(relName);
+        RemoteClipboardFileEntry entry{};
+        entry.relative_name = relName;
+        entry.local_path = baseDir / relPath;
+        entry.is_directory = (attrs & 0x00000010u) != 0;
+        entry.expected_size = (static_cast<uint64_t>(sizeHigh) << 32) | sizeLow;
+        entry.size_known = entry.expected_size > 0;
+        outFiles.push_back(entry);
+
+        if (relName.find('\\') == std::string::npos && relName.find('/') == std::string::npos)
+            outTopLevelPaths.push_back(entry.local_path.u8string());
+    }
+
+    return !outFiles.empty();
+}
+
+UINT request_next_remote_file_chunk(CliprdrClientContext* cliprdr, CxRdpSession* session)
+{
+    if (!cliprdr || !session || !cliprdr->ClientFileContentsRequest)
+        return CHANNEL_RC_OK;
+
+    CLIPRDR_FILE_CONTENTS_REQUEST req{};
+    bool hasWork = false;
+    std::vector<std::string> completedPaths;
+
+    {
+        std::lock_guard<std::mutex> lock(session->clipboard_mutex);
+        while (session->remote_file_download_index < session->remote_clipboard_files.size())
+        {
+            auto& entry = session->remote_clipboard_files[session->remote_file_download_index];
+            if (entry.is_directory)
+            {
+                std::error_code ec;
+                std::filesystem::create_directories(entry.local_path, ec);
+                ++session->remote_file_download_index;
+                continue;
+            }
+
+            if (entry.size_known && entry.received_bytes >= entry.expected_size)
+            {
+                if (entry.expected_size == 0)
+                {
+                    std::error_code ec;
+                    std::filesystem::create_directories(entry.local_path.parent_path(), ec);
+                    std::ofstream emptyFile(entry.local_path, std::ios::binary | std::ios::trunc);
+                }
+                ++session->remote_file_download_index;
+                continue;
+            }
+
+            req.common.msgType = CB_FILECONTENTS_REQUEST;
+            req.streamId = ++session->remote_file_stream_id;
+            req.listIndex = static_cast<UINT32>(session->remote_file_download_index);
+            if (!entry.size_known)
+            {
+                req.dwFlags = FILECONTENTS_SIZE;
+                req.cbRequested = 8;
+                session->remote_file_requesting_size = true;
+            }
+            else
+            {
+                req.dwFlags = FILECONTENTS_RANGE;
+                req.nPositionLow = static_cast<UINT32>(entry.received_bytes & 0xFFFFFFFFu);
+                req.nPositionHigh = static_cast<UINT32>((entry.received_bytes >> 32) & 0xFFFFFFFFu);
+                const uint64_t remaining = entry.expected_size - entry.received_bytes;
+                req.cbRequested = static_cast<UINT32>(remaining < CX_CLIPRDR_FILE_CHUNK_SIZE ? remaining : CX_CLIPRDR_FILE_CHUNK_SIZE);
+                session->remote_file_requesting_size = false;
+            }
+            hasWork = true;
+            break;
+        }
+
+        if (!hasWork && !session->remote_clipboard_top_level_paths.empty())
+        {
+            completedPaths = session->remote_clipboard_top_level_paths;
+            session->remote_clipboard_top_level_paths.clear();
+            session->remote_clipboard_files.clear();
+        }
+    }
+
+    if (hasWork)
+        return cliprdr->ClientFileContentsRequest(cliprdr, &req);
+
+    if (!completedPaths.empty())
+    {
+        notify_status(session, "RDP clipboard remote files downloaded.");
+        notify_clipboard_files(session, completedPaths);
+    }
+
+    return CHANNEL_RC_OK;
+}
+
 std::string normalize_clipboard_newlines(const std::string& value)
 {
     std::string normalized;
@@ -689,6 +983,20 @@ const char* clipboard_format_name(uint32_t formatId)
         return "CF_OEMTEXT";
     case CF_UNICODETEXT:
         return "CF_UNICODETEXT";
+    case CF_DIB:
+        return "CF_DIB";
+    case CF_DIBV5:
+        return "CF_DIBV5";
+    case CX_CLIPRDR_FORMAT_PNG:
+        return "PNG";
+    case CX_CLIPRDR_FORMAT_HTML:
+        return "HTML Format";
+    case CX_CLIPRDR_FORMAT_RTF:
+        return "Rich Text Format";
+    case CX_CLIPRDR_FORMAT_FILE_GROUP_DESCRIPTOR_W:
+        return "FileGroupDescriptorW";
+    case CX_CLIPRDR_FORMAT_FILE_CONTENTS:
+        return "FileContents";
     default:
         return "UNKNOWN";
     }
@@ -795,7 +1103,11 @@ UINT send_client_capabilities(CliprdrClientContext* cliprdr)
     generalCapabilitySet.capabilitySetType = CB_CAPSTYPE_GENERAL;
     generalCapabilitySet.capabilitySetLength = CB_CAPSTYPE_GENERAL_LEN;
     generalCapabilitySet.version = CB_CAPS_VERSION_2;
-    generalCapabilitySet.generalFlags = CB_USE_LONG_FORMAT_NAMES;
+    generalCapabilitySet.generalFlags =
+        CB_USE_LONG_FORMAT_NAMES |
+        CB_STREAM_FILECLIP_ENABLED |
+        CB_FILECLIP_NO_FILE_PATHS |
+        CB_HUGE_FILE_SUPPORT_ENABLED;
     if (!session || session->clipboard_lock_enabled)
         generalCapabilitySet.generalFlags |= CB_CAN_LOCK_CLIPDATA;
 
@@ -824,24 +1136,105 @@ UINT send_client_format_list(CliprdrClientContext* cliprdr)
     if (!cliprdr || !cliprdr->ClientFormatList)
         return CHANNEL_RC_OK;
 
-    CLIPRDR_FORMAT formats[3]{};
-    formats[0].formatId = CF_UNICODETEXT;
-    formats[1].formatId = CF_TEXT;
-    formats[2].formatId = CF_OEMTEXT;
+    auto* session = static_cast<CxRdpSession*>(cliprdr->custom);
+    int kind = 0;
+    bool hasPng = false;
+    bool hasDib = false;
+    bool hasFiles = false;
+    bool hasHtml = false;
+    bool hasRtf = false;
+    if (session)
+    {
+        std::lock_guard<std::mutex> lock(session->clipboard_mutex);
+        kind = session->local_clipboard_kind;
+        hasPng = !session->local_clipboard_png.empty();
+        hasDib = !session->local_clipboard_dib.empty();
+        hasFiles = !session->local_clipboard_files.empty();
+        hasHtml = !session->local_clipboard_html.empty();
+        hasRtf = !session->local_clipboard_rtf.empty();
+    }
+
+    std::vector<CLIPRDR_FORMAT> formats;
+    static char pngFormatName[] = "PNG";
+    static char fileGroupDescriptorName[] = "FileGroupDescriptorW";
+    static char fileContentsName[] = "FileContents";
+    static char htmlFormatName[] = "HTML Format";
+    static char rtfFormatName[] = "Rich Text Format";
+    const char* kindLabel = "text";
+
+    if (kind == 2 && hasFiles)
+    {
+        kindLabel = "files";
+        CLIPRDR_FORMAT fileFormat{};
+        fileFormat.formatId = CX_CLIPRDR_FORMAT_FILE_GROUP_DESCRIPTOR_W;
+        fileFormat.formatName = fileGroupDescriptorName;
+        formats.push_back(fileFormat);
+
+        CLIPRDR_FORMAT fileContentsFormat{};
+        fileContentsFormat.formatId = CX_CLIPRDR_FORMAT_FILE_CONTENTS;
+        fileContentsFormat.formatName = fileContentsName;
+        formats.push_back(fileContentsFormat);
+    }
+    else if (kind == 1 && (hasPng || hasDib))
+    {
+        kindLabel = "image";
+        if (hasDib)
+        {
+            CLIPRDR_FORMAT dibFormat{};
+            dibFormat.formatId = CF_DIB;
+            formats.push_back(dibFormat);
+        }
+        if (hasPng)
+        {
+            CLIPRDR_FORMAT pngFormat{};
+            pngFormat.formatId = CX_CLIPRDR_FORMAT_PNG;
+            pngFormat.formatName = pngFormatName;
+            formats.push_back(pngFormat);
+        }
+    }
+    else
+    {
+        CLIPRDR_FORMAT unicodeFormat{};
+        unicodeFormat.formatId = CF_UNICODETEXT;
+        formats.push_back(unicodeFormat);
+
+        CLIPRDR_FORMAT textFormat{};
+        textFormat.formatId = CF_TEXT;
+        formats.push_back(textFormat);
+
+        CLIPRDR_FORMAT oemFormat{};
+        oemFormat.formatId = CF_OEMTEXT;
+        formats.push_back(oemFormat);
+
+        if (hasHtml)
+        {
+            CLIPRDR_FORMAT htmlFormat{};
+            htmlFormat.formatId = CX_CLIPRDR_FORMAT_HTML;
+            htmlFormat.formatName = htmlFormatName;
+            formats.push_back(htmlFormat);
+        }
+
+        if (hasRtf)
+        {
+            CLIPRDR_FORMAT rtfFormat{};
+            rtfFormat.formatId = CX_CLIPRDR_FORMAT_RTF;
+            rtfFormat.formatName = rtfFormatName;
+            formats.push_back(rtfFormat);
+        }
+    }
 
     CLIPRDR_FORMAT_LIST formatList{};
     formatList.common.msgType = CB_FORMAT_LIST;
     formatList.common.msgFlags = 0;
-    formatList.common.dataLen = sizeof(formats);
-    formatList.numFormats = static_cast<UINT32>(sizeof(formats) / sizeof(formats[0]));
-    formatList.formats = formats;
+    formatList.common.dataLen = static_cast<UINT32>(formats.size() * sizeof(CLIPRDR_FORMAT));
+    formatList.numFormats = static_cast<UINT32>(formats.size());
+    formatList.formats = formats.data();
 
-    auto* session = static_cast<CxRdpSession*>(cliprdr->custom);
     const UINT rc = cliprdr->ClientFormatList(cliprdr, &formatList);
     if (session)
     {
         std::ostringstream message;
-        message << "RDP clipboard offered local text formats. rc=" << rc;
+        message << "RDP clipboard offered local " << kindLabel << " formats. rc=" << rc;
         notify_status(session, message.str().c_str());
     }
 
@@ -1462,29 +1855,83 @@ UINT cx_cliprdr_server_format_list(CliprdrClientContext* cliprdr, const CLIPRDR_
         return CHANNEL_RC_OK;
 
     auto* session = static_cast<CxRdpSession*>(cliprdr->custom);
-    uint32_t selectedFormat = 0;
+    uint32_t selectedTextFormat = 0;
+    uint32_t selectedImageFormat = 0;
+    uint32_t selectedImageKind = 0;
+    uint32_t selectedFilesFormat = 0;
 
     for (UINT32 index = 0; index < formatList->numFormats; ++index)
     {
-        const uint32_t formatId = formatList->formats[index].formatId;
+        const auto& fmt = formatList->formats[index];
+        const uint32_t formatId = fmt.formatId;
         if (formatId == CF_UNICODETEXT)
         {
-            selectedFormat = CF_UNICODETEXT;
-            break;
+            selectedTextFormat = CF_UNICODETEXT;
+        }
+        else if (formatId == CF_TEXT && selectedTextFormat == 0)
+        {
+            selectedTextFormat = CF_TEXT;
+        }
+        else if (formatId == CF_OEMTEXT && selectedTextFormat == 0)
+        {
+            selectedTextFormat = CF_OEMTEXT;
         }
 
-        if (formatId == CF_TEXT && selectedFormat == 0)
-            selectedFormat = CF_TEXT;
-        else if (formatId == CF_OEMTEXT && selectedFormat == 0)
-            selectedFormat = CF_OEMTEXT;
+        if (fmt.formatName && equals_ignore_case(fmt.formatName, "FileGroupDescriptorW"))
+        {
+            selectedFilesFormat = formatId;
+        }
+        else if (fmt.formatName &&
+                 (equals_ignore_case(fmt.formatName, "PNG") || equals_ignore_case(fmt.formatName, "image/png")))
+        {
+            selectedImageFormat = formatId;
+            selectedImageKind = CX_RDP_CLIPBOARD_IMAGE_PNG;
+        }
+        else if (formatId == CF_DIB && selectedImageKind != CX_RDP_CLIPBOARD_IMAGE_PNG)
+        {
+            selectedImageFormat = CF_DIB;
+            selectedImageKind = CX_RDP_CLIPBOARD_IMAGE_DIB;
+        }
+        else if (formatId == CF_DIBV5 && selectedImageFormat == 0)
+        {
+            selectedImageFormat = CF_DIBV5;
+            selectedImageKind = CX_RDP_CLIPBOARD_IMAGE_DIB;
+        }
+    }
+
+    uint32_t selectedFormat = 0;
+    uint32_t requestedImageKind = 0;
+    bool requestedFiles = false;
+    if (selectedFilesFormat != 0)
+    {
+        selectedFormat = selectedFilesFormat;
+        requestedFiles = true;
+    }
+    else if (selectedTextFormat == CF_UNICODETEXT)
+    {
+        selectedFormat = selectedTextFormat;
+    }
+    else if (selectedImageFormat != 0)
+    {
+        selectedFormat = selectedImageFormat;
+        requestedImageKind = selectedImageKind;
+    }
+    else
+    {
+        selectedFormat = selectedTextFormat;
     }
 
     if (session)
     {
+        {
+            std::lock_guard<std::mutex> lock(session->clipboard_mutex);
+            session->clipboard_requested_image_format = requestedImageKind;
+            session->clipboard_requested_files = requestedFiles;
+        }
         mark_cliprdr_confirmed(session, "remote formats");
         std::ostringstream message;
         message << "RDP clipboard remote formats received. count=" << formatList->numFormats
-                << " selected=" << clipboard_format_name(selectedFormat);
+                << " selected=" << (requestedFiles ? "FileGroupDescriptorW" : (requestedImageKind == CX_RDP_CLIPBOARD_IMAGE_PNG ? "PNG" : clipboard_format_name(selectedFormat)));
         notify_status(session, message.str().c_str());
     }
 
@@ -1535,6 +1982,8 @@ UINT cx_cliprdr_server_lock_clipboard_data(
             if (session->clipboard_lock_enabled)
             {
                 session->locked_clipboard_text[lockClipboardData->clipDataId] = session->local_clipboard_text;
+                if (!session->local_clipboard_files.empty())
+                    session->locked_clipboard_files[lockClipboardData->clipDataId] = session->local_clipboard_files;
                 locked = true;
             }
         }
@@ -1560,7 +2009,9 @@ UINT cx_cliprdr_server_unlock_clipboard_data(
         bool unlocked = false;
         {
             std::lock_guard<std::mutex> lock(session->clipboard_mutex);
-            unlocked = session->locked_clipboard_text.erase(unlockClipboardData->clipDataId) > 0;
+            const bool unlockedText = session->locked_clipboard_text.erase(unlockClipboardData->clipDataId) > 0;
+            const bool unlockedFiles = session->locked_clipboard_files.erase(unlockClipboardData->clipDataId) > 0;
+            unlocked = unlockedText || unlockedFiles;
         }
         if (unlocked)
         {
@@ -1590,7 +2041,97 @@ UINT cx_cliprdr_server_format_data_request(
     response.common.dataLen = 0;
     response.requestedFormatData = nullptr;
 
-    if (session && is_supported_text_format(formatDataRequest->requestedFormatId))
+    if (session && formatDataRequest->requestedFormatId == CX_CLIPRDR_FORMAT_FILE_GROUP_DESCRIPTOR_W)
+    {
+        std::vector<LocalClipboardFileEntry> files;
+        {
+            std::lock_guard<std::mutex> lock(session->clipboard_mutex);
+            if (session->local_clipboard_kind == 2 && !session->local_clipboard_files.empty())
+                files = session->local_clipboard_files;
+        }
+
+        if (!files.empty())
+        {
+            data = serialize_file_group_descriptor_w(files);
+            response.common.msgFlags = CB_RESPONSE_OK;
+            response.common.dataLen = static_cast<UINT32>(data.size());
+            response.requestedFormatData = data.data();
+
+            std::ostringstream message;
+            message << "RDP clipboard remote requested local file list. count=" << files.size()
+                    << " bytes=" << data.size();
+            notify_status(session, message.str().c_str());
+        }
+    }
+    else if (session && formatDataRequest->requestedFormatId == CF_DIB)
+    {
+        {
+            std::lock_guard<std::mutex> lock(session->clipboard_mutex);
+            if (session->local_clipboard_kind == 1 && !session->local_clipboard_dib.empty())
+                data.assign(session->local_clipboard_dib.begin(), session->local_clipboard_dib.end());
+        }
+
+        if (!data.empty())
+        {
+            response.common.msgFlags = CB_RESPONSE_OK;
+            response.common.dataLen = static_cast<UINT32>(data.size());
+            response.requestedFormatData = data.data();
+
+            std::ostringstream message;
+            message << "RDP clipboard remote requested local image. format=CF_DIB bytes=" << data.size();
+            notify_status(session, message.str().c_str());
+        }
+    }
+    else if (session && formatDataRequest->requestedFormatId == CX_CLIPRDR_FORMAT_PNG)
+    {
+        {
+            std::lock_guard<std::mutex> lock(session->clipboard_mutex);
+            if (session->local_clipboard_kind == 1 && !session->local_clipboard_png.empty())
+                data.assign(session->local_clipboard_png.begin(), session->local_clipboard_png.end());
+        }
+
+        if (!data.empty())
+        {
+            response.common.msgFlags = CB_RESPONSE_OK;
+            response.common.dataLen = static_cast<UINT32>(data.size());
+            response.requestedFormatData = data.data();
+
+            std::ostringstream message;
+            message << "RDP clipboard remote requested local image. format=PNG bytes=" << data.size();
+            notify_status(session, message.str().c_str());
+        }
+    }
+    else if (session && formatDataRequest->requestedFormatId == CX_CLIPRDR_FORMAT_HTML)
+    {
+        {
+            std::lock_guard<std::mutex> lock(session->clipboard_mutex);
+            if (session->local_clipboard_kind == 0 && !session->local_clipboard_html.empty())
+                data.assign(session->local_clipboard_html.begin(), session->local_clipboard_html.end());
+        }
+
+        if (!data.empty())
+        {
+            response.common.msgFlags = CB_RESPONSE_OK;
+            response.common.dataLen = static_cast<UINT32>(data.size());
+            response.requestedFormatData = data.data();
+        }
+    }
+    else if (session && formatDataRequest->requestedFormatId == CX_CLIPRDR_FORMAT_RTF)
+    {
+        {
+            std::lock_guard<std::mutex> lock(session->clipboard_mutex);
+            if (session->local_clipboard_kind == 0 && !session->local_clipboard_rtf.empty())
+                data.assign(session->local_clipboard_rtf.begin(), session->local_clipboard_rtf.end());
+        }
+
+        if (!data.empty())
+        {
+            response.common.msgFlags = CB_RESPONSE_OK;
+            response.common.dataLen = static_cast<UINT32>(data.size());
+            response.requestedFormatData = data.data();
+        }
+    }
+    else if (session && is_supported_text_format(formatDataRequest->requestedFormatId))
     {
         std::string text;
         {
@@ -1638,17 +2179,65 @@ UINT cx_cliprdr_server_format_data_response(
         return CHANNEL_RC_OK;
 
     uint32_t requestedFormat = 0;
+    uint32_t requestedImageKind = 0;
+    bool requestedFiles = false;
     {
         std::lock_guard<std::mutex> lock(session->clipboard_mutex);
         requestedFormat = session->clipboard_requested_format;
+        requestedImageKind = session->clipboard_requested_image_format;
+        requestedFiles = session->clipboard_requested_files;
         session->clipboard_requested_format = 0;
+        session->clipboard_requested_image_format = 0;
+        session->clipboard_requested_files = false;
+    }
+
+    const auto* data = formatDataResponse->requestedFormatData;
+    const auto length = formatDataResponse->common.dataLen;
+
+    if (requestedFiles)
+    {
+        if (data && length > 0)
+        {
+            const auto stamp = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                   std::chrono::system_clock::now().time_since_epoch())
+                                   .count();
+            std::error_code ec;
+            const auto baseDir = std::filesystem::temp_directory_path(ec) / "CxShell-RdpClip" / std::to_string(stamp);
+            std::filesystem::create_directories(baseDir, ec);
+
+            std::vector<RemoteClipboardFileEntry> parsedFiles;
+            std::vector<std::string> topLevelPaths;
+            if (parse_file_group_descriptor_w(data, length, baseDir, parsedFiles, topLevelPaths))
+            {
+                {
+                    std::lock_guard<std::mutex> lock(session->clipboard_mutex);
+                    session->remote_clipboard_files = std::move(parsedFiles);
+                    session->remote_clipboard_top_level_paths = std::move(topLevelPaths);
+                    session->remote_file_download_index = 0;
+                    session->remote_file_requesting_size = false;
+                }
+                return request_next_remote_file_chunk(cliprdr, session);
+            }
+        }
+        return CHANNEL_RC_OK;
+    }
+
+    if (requestedImageKind != 0)
+    {
+        if (data && length > 0)
+        {
+            std::ostringstream message;
+            message << "RDP clipboard remote image received. kind=" << requestedImageKind
+                    << " bytes=" << length;
+            notify_status(session, message.str().c_str());
+            notify_clipboard_image(session, requestedImageKind, data, length);
+        }
+        return CHANNEL_RC_OK;
     }
 
     if (!is_supported_text_format(requestedFormat))
         return CHANNEL_RC_OK;
 
-    const auto* data = formatDataResponse->requestedFormatData;
-    const auto length = formatDataResponse->common.dataLen;
     {
         std::ostringstream message;
         message << "RDP clipboard remote data received. format="
@@ -1664,18 +2253,242 @@ UINT cx_cliprdr_server_file_contents_request(
     CliprdrClientContext* cliprdr,
     const CLIPRDR_FILE_CONTENTS_REQUEST* fileContentsRequest)
 {
-    (void)cliprdr;
-    (void)fileContentsRequest;
-    return CHANNEL_RC_OK;
+    if (!cliprdr || !fileContentsRequest || !cliprdr->ClientFileContentsResponse)
+        return CHANNEL_RC_OK;
+
+    auto* session = static_cast<CxRdpSession*>(cliprdr->custom);
+    CLIPRDR_FILE_CONTENTS_RESPONSE response{};
+    response.common.msgType = CB_FILECONTENTS_RESPONSE;
+    response.common.msgFlags = CB_RESPONSE_FAIL;
+    response.streamId = fileContentsRequest->streamId;
+
+    LocalClipboardFileEntry entry{};
+    bool found = false;
+    if (session)
+    {
+        std::lock_guard<std::mutex> lock(session->clipboard_mutex);
+        if (fileContentsRequest->haveClipDataId)
+        {
+            const auto it = session->locked_clipboard_files.find(fileContentsRequest->clipDataId);
+            if (it != session->locked_clipboard_files.end() &&
+                fileContentsRequest->listIndex < it->second.size())
+            {
+                entry = it->second[fileContentsRequest->listIndex];
+                found = true;
+            }
+        }
+        if (!found &&
+            session->local_clipboard_kind == 2 &&
+            fileContentsRequest->listIndex < session->local_clipboard_files.size())
+        {
+            entry = session->local_clipboard_files[fileContentsRequest->listIndex];
+            found = true;
+        }
+    }
+
+    static constexpr BYTE kEmptyPayload = 0;
+    std::vector<BYTE> payload;
+    if (found && (fileContentsRequest->dwFlags & FILECONTENTS_SIZE) != 0)
+    {
+        payload.resize(8);
+        const uint64_t size = entry.file_size;
+        std::memcpy(payload.data(), &size, 8);
+        response.common.msgFlags = CB_RESPONSE_OK;
+        response.cbRequested = 8;
+        response.requestedData = payload.data();
+    }
+    else if (found && !entry.is_directory && (fileContentsRequest->dwFlags & FILECONTENTS_RANGE) != 0)
+    {
+        const uint64_t offset =
+            (static_cast<uint64_t>(fileContentsRequest->nPositionHigh) << 32) |
+            fileContentsRequest->nPositionLow;
+        const uint32_t toRead = fileContentsRequest->cbRequested;
+#if defined(_WIN32)
+        HANDLE hFile = CreateFileW(
+            entry.full_path.c_str(),
+            GENERIC_READ,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            nullptr,
+            OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL,
+            nullptr);
+        if (hFile == INVALID_HANDLE_VALUE)
+        {
+            if (session)
+            {
+                std::ostringstream msg;
+                msg << "RDP clipboard file contents read failed: could not open "
+                    << entry.relative_name << " (error=" << GetLastError() << ")";
+                notify_status(session, msg.str().c_str());
+            }
+        }
+        else
+        {
+            bool readOk = true;
+            uint32_t bytesRead = 0;
+            DWORD winErr = 0;
+            if (toRead > 0)
+            {
+                LARGE_INTEGER liOffset{};
+                liOffset.QuadPart = static_cast<LONGLONG>(offset);
+                if (!SetFilePointerEx(hFile, liOffset, nullptr, FILE_BEGIN))
+                {
+                    readOk = false;
+                    winErr = GetLastError();
+                }
+                else
+                {
+                    payload.resize(toRead);
+                    DWORD chunkRead = 0;
+                    if (!ReadFile(hFile, payload.data(), toRead, &chunkRead, nullptr))
+                    {
+                        readOk = false;
+                        winErr = GetLastError();
+                    }
+                    else
+                    {
+                        bytesRead = static_cast<uint32_t>(chunkRead);
+                    }
+                }
+            }
+            CloseHandle(hFile);
+
+            if (readOk)
+            {
+                payload.resize(bytesRead);
+                response.common.msgFlags = CB_RESPONSE_OK;
+                response.cbRequested = bytesRead;
+                response.requestedData = payload.empty() ? &kEmptyPayload : payload.data();
+            }
+            else if (session)
+            {
+                std::ostringstream msg;
+                msg << "RDP clipboard file contents read failed: " << entry.relative_name
+                    << " (error=" << winErr << ")";
+                notify_status(session, msg.str().c_str());
+            }
+        }
+#else
+        std::ifstream file(entry.full_path, std::ios::binary);
+        if (file)
+        {
+            uint32_t bytesRead = 0;
+            if (toRead > 0)
+            {
+                file.seekg(static_cast<std::streamoff>(offset), std::ios::beg);
+                payload.resize(toRead);
+                file.read(reinterpret_cast<char*>(payload.data()), static_cast<std::streamsize>(toRead));
+                bytesRead = static_cast<uint32_t>(file.gcount());
+            }
+            payload.resize(bytesRead);
+            response.common.msgFlags = CB_RESPONSE_OK;
+            response.cbRequested = bytesRead;
+            response.requestedData = payload.empty() ? &kEmptyPayload : payload.data();
+        }
+#endif
+
+        if (response.common.msgFlags == CB_RESPONSE_OK && session && entry.file_size > 0)
+        {
+            const uint64_t sent = offset + response.cbRequested;
+            const int pct = static_cast<int>(sent >= entry.file_size ? 100 : (sent * 100) / entry.file_size);
+            bool shouldNotify = false;
+            {
+                std::lock_guard<std::mutex> lock(session->clipboard_mutex);
+                if (pct == 100 || session->last_upload_progress_pct < 0 || pct - session->last_upload_progress_pct >= 10)
+                {
+                    session->last_upload_progress_pct = pct == 100 ? -1 : pct;
+                    shouldNotify = true;
+                }
+            }
+            if (shouldNotify)
+            {
+                std::ostringstream msg;
+                msg << "RDP clipboard uploading " << entry.relative_name << " (" << pct << "%)";
+                notify_status(session, msg.str().c_str());
+            }
+        }
+    }
+
+    return cliprdr->ClientFileContentsResponse(cliprdr, &response);
 }
 
 UINT cx_cliprdr_server_file_contents_response(
     CliprdrClientContext* cliprdr,
     const CLIPRDR_FILE_CONTENTS_RESPONSE* fileContentsResponse)
 {
-    (void)cliprdr;
-    (void)fileContentsResponse;
-    return CHANNEL_RC_OK;
+    if (!cliprdr || !fileContentsResponse)
+        return CHANNEL_RC_OK;
+
+    auto* session = static_cast<CxRdpSession*>(cliprdr->custom);
+    if (!session)
+        return CHANNEL_RC_OK;
+
+    if ((fileContentsResponse->common.msgFlags & CB_RESPONSE_FAIL) != 0)
+    {
+        std::lock_guard<std::mutex> lock(session->clipboard_mutex);
+        session->remote_clipboard_files.clear();
+        session->remote_clipboard_top_level_paths.clear();
+        return CHANNEL_RC_OK;
+    }
+
+    std::string progressMessage;
+    {
+        std::lock_guard<std::mutex> lock(session->clipboard_mutex);
+        if (session->remote_file_download_index < session->remote_clipboard_files.size())
+        {
+            auto& entry = session->remote_clipboard_files[session->remote_file_download_index];
+            if (session->remote_file_requesting_size)
+            {
+                if (fileContentsResponse->cbRequested >= 8 && fileContentsResponse->requestedData)
+                {
+                    uint64_t size = 0;
+                    std::memcpy(&size, fileContentsResponse->requestedData, 8);
+                    entry.expected_size = size;
+                }
+                entry.size_known = true;
+                session->remote_file_requesting_size = false;
+            }
+            else
+            {
+                std::error_code ec;
+                std::filesystem::create_directories(entry.local_path.parent_path(), ec);
+                const auto mode = entry.received_bytes == 0
+                                      ? (std::ios::binary | std::ios::trunc)
+                                      : (std::ios::binary | std::ios::app);
+                std::ofstream out(entry.local_path, mode);
+                if (out && fileContentsResponse->requestedData && fileContentsResponse->cbRequested > 0)
+                {
+                    out.write(
+                        reinterpret_cast<const char*>(fileContentsResponse->requestedData),
+                        static_cast<std::streamsize>(fileContentsResponse->cbRequested));
+                    entry.received_bytes += fileContentsResponse->cbRequested;
+                    if (entry.expected_size > 0)
+                    {
+                        const int pct = static_cast<int>(
+                            entry.received_bytes >= entry.expected_size
+                                ? 100
+                                : (entry.received_bytes * 100) / entry.expected_size);
+                        if (pct == 100 || session->last_download_progress_pct < 0 || pct - session->last_download_progress_pct >= 10)
+                        {
+                            session->last_download_progress_pct = pct == 100 ? -1 : pct;
+                            std::ostringstream msg;
+                            msg << "RDP clipboard downloading " << entry.relative_name << " (" << pct << "%)";
+                            progressMessage = msg.str();
+                        }
+                    }
+                }
+                else
+                {
+                    entry.received_bytes = entry.expected_size;
+                }
+            }
+        }
+    }
+
+    if (!progressMessage.empty())
+        notify_status(session, progressMessage.c_str());
+
+    return request_next_remote_file_chunk(cliprdr, session);
 }
 
 void initialize_cliprdr(CxRdpSession* session, CliprdrClientContext* cliprdr)
@@ -1693,6 +2506,12 @@ void initialize_cliprdr(CxRdpSession* session, CliprdrClientContext* cliprdr)
         session->client_capabilities_sent = false;
         session->cliprdr_connected_at = std::chrono::steady_clock::now();
         session->clipboard_requested_format = 0;
+        session->clipboard_requested_image_format = 0;
+        session->clipboard_requested_files = false;
+        session->remote_clipboard_files.clear();
+        session->remote_clipboard_top_level_paths.clear();
+        session->remote_file_download_index = 0;
+        session->remote_file_requesting_size = false;
     }
 
     cliprdr->custom = session;
@@ -1729,6 +2548,12 @@ void uninitialize_cliprdr(CxRdpSession* session, CliprdrClientContext* cliprdr)
         session->cliprdr_wait_logged = false;
         session->client_capabilities_sent = false;
         session->clipboard_requested_format = 0;
+        session->clipboard_requested_image_format = 0;
+        session->clipboard_requested_files = false;
+        session->remote_clipboard_files.clear();
+        session->remote_clipboard_top_level_paths.clear();
+        session->remote_file_download_index = 0;
+        session->remote_file_requesting_size = false;
     }
 }
 
@@ -3243,6 +4068,9 @@ CX_RDP_API uint32_t cxrdp_get_capabilities(void)
                             CX_RDP_CAPABILITY_GFX |
                             CX_RDP_CAPABILITY_SYNC_LOCK_KEYS |
                             CX_RDP_CAPABILITY_POINTER_SHAPE |
+                            CX_RDP_CAPABILITY_CLIPBOARD_IMAGE |
+                            CX_RDP_CAPABILITY_CLIPBOARD_FILES |
+                            CX_RDP_CAPABILITY_CLIPBOARD_RICH_TEXT |
                             CX_RDP_CAPABILITY_CLIPBOARD_LOCK |
                             CX_RDP_CAPABILITY_MULTI_MONITOR |
                             CX_RDP_CAPABILITY_GFX_H264;
@@ -3296,6 +4124,30 @@ CX_RDP_API void cxrdp_set_clipboard_callback(
 
     std::lock_guard<std::mutex> lock(session->callback_mutex);
     session->clipboard_text_callback = clipboard_text_callback;
+}
+
+CX_RDP_API void cxrdp_set_clipboard_image_callback(
+    void* handle,
+    cxrdp_clipboard_image_callback clipboard_image_callback)
+{
+    auto* session = static_cast<CxRdpSession*>(handle);
+    if (!session)
+        return;
+
+    std::lock_guard<std::mutex> lock(session->callback_mutex);
+    session->clipboard_image_callback = clipboard_image_callback;
+}
+
+CX_RDP_API void cxrdp_set_clipboard_files_callback(
+    void* handle,
+    cxrdp_clipboard_files_callback clipboard_files_callback)
+{
+    auto* session = static_cast<CxRdpSession*>(handle);
+    if (!session)
+        return;
+
+    std::lock_guard<std::mutex> lock(session->callback_mutex);
+    session->clipboard_files_callback = clipboard_files_callback;
 }
 
 CX_RDP_API void cxrdp_set_pointer_callback(
@@ -3449,7 +4301,161 @@ CX_RDP_API void cxrdp_set_clipboard_text(void* handle, const char* text)
 
     {
         std::lock_guard<std::mutex> lock(session->clipboard_mutex);
+        session->local_clipboard_kind = 0;
         session->local_clipboard_text = text ? text : "";
+        session->local_clipboard_html.clear();
+        session->local_clipboard_rtf.clear();
+        session->local_clipboard_png.clear();
+        session->local_clipboard_dib.clear();
+        session->local_clipboard_files.clear();
+        ++session->local_clipboard_revision;
+    }
+}
+
+CX_RDP_API void cxrdp_set_clipboard_rich_text(
+    void* handle,
+    const char* plain_text,
+    const uint8_t* html_bytes,
+    uint32_t html_length,
+    const uint8_t* rtf_bytes,
+    uint32_t rtf_length)
+{
+    auto* session = static_cast<CxRdpSession*>(handle);
+    if (!session)
+        return;
+
+    {
+        std::lock_guard<std::mutex> lock(session->clipboard_mutex);
+        session->local_clipboard_kind = 0;
+        session->local_clipboard_text = plain_text ? plain_text : "";
+        if (html_bytes && html_length > 0)
+            session->local_clipboard_html.assign(html_bytes, html_bytes + html_length);
+        else
+            session->local_clipboard_html.clear();
+        if (rtf_bytes && rtf_length > 0)
+            session->local_clipboard_rtf.assign(rtf_bytes, rtf_bytes + rtf_length);
+        else
+            session->local_clipboard_rtf.clear();
+        session->local_clipboard_png.clear();
+        session->local_clipboard_dib.clear();
+        session->local_clipboard_files.clear();
+        ++session->local_clipboard_revision;
+    }
+}
+
+CX_RDP_API void cxrdp_set_clipboard_image(
+    void* handle,
+    uint32_t image_format,
+    const uint8_t* data,
+    uint32_t length)
+{
+    auto* session = static_cast<CxRdpSession*>(handle);
+    if (!session || !data || length == 0)
+        return;
+
+    if (image_format != CX_RDP_CLIPBOARD_IMAGE_PNG &&
+        image_format != CX_RDP_CLIPBOARD_IMAGE_DIB)
+        return;
+
+    {
+        std::lock_guard<std::mutex> lock(session->clipboard_mutex);
+        session->local_clipboard_kind = 1;
+        session->local_clipboard_text.clear();
+        session->local_clipboard_html.clear();
+        session->local_clipboard_rtf.clear();
+        session->local_clipboard_files.clear();
+        if (image_format == CX_RDP_CLIPBOARD_IMAGE_PNG)
+        {
+            session->local_clipboard_png.assign(data, data + length);
+            session->local_clipboard_dib.clear();
+        }
+        else
+        {
+            session->local_clipboard_dib.assign(data, data + length);
+            session->local_clipboard_png.clear();
+        }
+        ++session->local_clipboard_revision;
+    }
+}
+
+CX_RDP_API void cxrdp_set_clipboard_files(void* handle, const char* file_paths_newline_separated)
+{
+    auto* session = static_cast<CxRdpSession*>(handle);
+    if (!session || !file_paths_newline_separated)
+        return;
+
+    std::vector<LocalClipboardFileEntry> entries;
+    std::istringstream stream(file_paths_newline_separated);
+    std::string line;
+    while (std::getline(stream, line))
+    {
+        if (!line.empty() && line.back() == '\r')
+            line.pop_back();
+        while (line.size() > 1 && (line.back() == '\\' || line.back() == '/'))
+        {
+            if (line.size() == 3 && std::isalpha(static_cast<unsigned char>(line[0])) && line[1] == ':')
+                break;
+            line.pop_back();
+        }
+        if (line.empty())
+            continue;
+
+        std::error_code ec;
+        const auto rootPath = std::filesystem::u8path(line);
+        if (!std::filesystem::exists(rootPath, ec))
+            continue;
+
+        const auto rootName = rootPath.filename().u8string();
+        if (rootName.empty())
+            continue;
+
+        if (std::filesystem::is_directory(rootPath, ec))
+        {
+            entries.push_back({rootName, rootPath, true, 0, get_file_last_write_time(rootPath)});
+            for (auto it = std::filesystem::recursive_directory_iterator(
+                     rootPath,
+                     std::filesystem::directory_options::skip_permission_denied,
+                     ec);
+                 !ec && it != std::filesystem::recursive_directory_iterator();
+                 it.increment(ec))
+            {
+                const auto& item = *it;
+                const auto rel = std::filesystem::relative(item.path(), rootPath, ec);
+                if (ec)
+                {
+                    ec.clear();
+                    continue;
+                }
+                std::string relName = rootName + "\\" + rel.u8string();
+                for (char& ch : relName)
+                {
+                    if (ch == '/')
+                        ch = '\\';
+                }
+                const bool isDir = item.is_directory(ec);
+                const uint64_t size = isDir ? 0 : item.file_size(ec);
+                entries.push_back({relName, item.path(), isDir, size, get_file_last_write_time(item.path())});
+            }
+        }
+        else if (std::filesystem::is_regular_file(rootPath, ec))
+        {
+            const uint64_t size = std::filesystem::file_size(rootPath, ec);
+            entries.push_back({rootName, rootPath, false, size, get_file_last_write_time(rootPath)});
+        }
+    }
+
+    if (entries.empty())
+        return;
+
+    {
+        std::lock_guard<std::mutex> lock(session->clipboard_mutex);
+        session->local_clipboard_kind = 2;
+        session->local_clipboard_text.clear();
+        session->local_clipboard_html.clear();
+        session->local_clipboard_rtf.clear();
+        session->local_clipboard_png.clear();
+        session->local_clipboard_dib.clear();
+        session->local_clipboard_files = std::move(entries);
         ++session->local_clipboard_revision;
     }
 }
