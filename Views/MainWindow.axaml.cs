@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.ComponentModel;
 using System.Linq;
 using Avalonia;
 using AtomUI.Desktop.Controls;
@@ -35,6 +36,7 @@ public partial class MainWindow : AtomWindow
     private Guid? _quickSessionPointerPressedSessionId;
     private bool _isQuickSessionActivationReady;
     private TerminalTabViewModel? _tabContext;
+    private TerminalTabViewModel? _connectionBarMonitorTab;
     private bool _isDraggingSftpSplitter;
     private bool _isSftpPanelWidthApplyQueued;
     private bool _hasSftpSplitterPreviousCursor;
@@ -1730,7 +1732,41 @@ public partial class MainWindow : AtomWindow
         var rdpView = FindRdpViewFor(vm.SelectedTab);
         FullScreenConnectionBar.ShowMultiMonitorButton = vm.SelectedTab?.IsRdpSession == true;
         FullScreenConnectionBar.IsMultiMonitorEnabled =
-            rdpView?.DataContext is RdpViewModel { SupportsMultiMonitor: true };
+            rdpView?.DataContext is RdpViewModel { SupportsMultiMonitor: true, IsConnected: true };
+        FullScreenConnectionBar.IsMultiMonitorActive = rdpView?.IsMultiMonitorActive == true;
+        AttachConnectionBarMonitorSource(vm.SelectedTab);
+    }
+
+    /// <summary>
+    /// Follows the selected tab's session so the bar's monitor state is not
+    /// frozen at whatever it was when the tab was selected. The bridge reports
+    /// its layout capability only once a connect attempt starts, and the view
+    /// that renders the tab may not exist yet at selection time, so the flags
+    /// have to be recomputed from the session's own notifications.
+    /// </summary>
+    private void AttachConnectionBarMonitorSource(TerminalTabViewModel? tab)
+    {
+        if (ReferenceEquals(_connectionBarMonitorTab, tab))
+            return;
+
+        if (_connectionBarMonitorTab?.Rdp is { } previous)
+            previous.PropertyChanged -= OnConnectionBarSessionChanged;
+
+        _connectionBarMonitorTab = tab;
+
+        if (tab?.Rdp is { } rdp)
+            rdp.PropertyChanged += OnConnectionBarSessionChanged;
+    }
+
+    private void OnConnectionBarSessionChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName is not (nameof(RdpViewModel.IsConnected) or
+                                   nameof(RdpViewModel.SupportsMultiMonitor) or
+                                   nameof(RdpViewModel.IsMultiMonitorActive)))
+            return;
+
+        if (DataContext is MainWindowViewModel vm)
+            UpdateConnectionBarMultiMonitorState(vm);
     }
 
     /// <summary>

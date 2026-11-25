@@ -61,7 +61,9 @@ public partial class RdpViewModel : ObservableObject, IDisposable
 
     [ObservableProperty] private WriteableBitmap? _framebuffer;
     [ObservableProperty] private string _statusText = "RDP disconnected";
-    [ObservableProperty] private bool _isConnected;
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(SupportsMultiMonitor))]
+    private bool _isConnected;
     [ObservableProperty] private int _remoteWidth;
     [ObservableProperty] private int _remoteHeight;
     [ObservableProperty] private bool _isFitToWindow = true;
@@ -705,6 +707,13 @@ public partial class RdpViewModel : ObservableObject, IDisposable
             _client.SyncLockKeys(flags);
     }
 
+    /// <summary>
+    /// Whether the loaded bridge can drive a monitor layout. This is decided
+    /// when a connect attempt starts rather than when the view model is built,
+    /// so it is reported again whenever <see cref="IsConnected"/> changes:
+    /// callers that gate a button on it would otherwise be stuck with the
+    /// value they read before the session existed.
+    /// </summary>
     public bool SupportsMultiMonitor => _client.SupportsMultiMonitor;
 
     public bool TryResizeMonitors(IReadOnlyList<RdpMonitorRect> monitors)
