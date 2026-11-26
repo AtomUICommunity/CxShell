@@ -849,7 +849,7 @@ public sealed class RdpBridgeClient : IDisposable
         {
             var m = monitors[i];
             var clampedScale = Math.Clamp(m.DesktopScaleFactor, 100, 500);
-            var deviceScale = clampedScale >= 180 ? 180u : clampedScale >= 140 ? 140u : 100u;
+            var deviceScale = RdpDpiScale.DeviceScaleFactorFromDesktopScale(clampedScale);
             array[i] = new NativeMonitorRect
             {
                 Left = m.Left,

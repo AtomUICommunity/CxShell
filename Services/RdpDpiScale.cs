@@ -43,4 +43,17 @@ public static class RdpDpiScale
             _ => NotAdvertised
         };
     }
+
+    /// <summary>
+    /// MS-RDPBCGR / MS-RDPEDISP only accept 100, 140, or 180 for DeviceScaleFactor;
+    /// any other value causes Windows to ignore both DesktopScaleFactor and DeviceScaleFactor.
+    /// </summary>
+    public static uint DeviceScaleFactorFromDesktopScale(int desktopScalePercent)
+    {
+        if (desktopScalePercent >= 180)
+            return 180u;
+        if (desktopScalePercent >= 140)
+            return 140u;
+        return 100u;
+    }
 }
