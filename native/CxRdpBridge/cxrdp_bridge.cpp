@@ -197,6 +197,8 @@ struct CxRdpSession
     int display_scale_percent = 0; /* 0 = keep the remote session's own DPI */
     DispClientContext* disp = nullptr;
     std::mutex display_mutex;
+    bool disp_caps_received = false;
+    bool initial_display_layout_sent = false;
     bool display_update_pending = false;
     int pending_width = 0;
     int pending_height = 0;
@@ -292,6 +294,11 @@ SSIZE_T cx_retry_dialog(freerdp* instance, const char* what, size_t current, voi
 bool reconnect_session(CxRdpSession* session);
 BOOL cx_desktop_resize(rdpContext* context);
 void apply_pending_display_update(CxRdpSession* session);
+UINT cx_disp_caps(
+    DispClientContext* disp,
+    UINT32 maxNumMonitors,
+    UINT32 maxMonitorAreaFactorA,
+    UINT32 maxMonitorAreaFactorB);
 void cx_channel_connected(void* context, const ChannelConnectedEventArgs* e);
 void cx_channel_disconnected(void* context, const ChannelDisconnectedEventArgs* e);
 UINT send_client_capabilities(CliprdrClientContext* cliprdr);
@@ -340,6 +347,26 @@ rdpSettings* get_settings(CxRdpSession* session)
         return nullptr;
 
     return session->instance->context->settings;
+}
+
+constexpr UINT32 resolve_device_scale_factor(UINT32 desktopScaleFactor)
+{
+    if (desktopScaleFactor >= 180u)
+        return 180u;
+    if (desktopScaleFactor >= 140u)
+        return 140u;
+    return 100u;
+}
+
+UINT32 compute_physical_mm(UINT32 pixels, UINT32 scalePercent)
+{
+    const UINT32 dpi = scalePercent >= 100u ? scalePercent : 100u;
+    const uint64_t mm = (static_cast<uint64_t>(pixels) * 2540ull) / (96ull * dpi);
+    if (mm < 10ull)
+        return 10u;
+    if (mm > 10000ull)
+        return 10000u;
+    return static_cast<UINT32>(mm);
 }
 
 bool initialize_instance(CxRdpSession* session)
@@ -2718,6 +2745,42 @@ void ensure_gfx_dynamic_channel(CxRdpSession* session, rdpSettings* settings)
     notify_status(session, status.str().c_str());
 }
 
+UINT cx_disp_caps(
+    DispClientContext* disp,
+    UINT32 maxNumMonitors,
+    UINT32 maxMonitorAreaFactorA,
+    UINT32 maxMonitorAreaFactorB)
+{
+    (void)maxNumMonitors;
+    (void)maxMonitorAreaFactorA;
+    (void)maxMonitorAreaFactorB;
+    if (!disp || !disp->custom)
+        return CHANNEL_RC_OK;
+
+    auto* session = static_cast<CxRdpSession*>(disp->custom);
+    {
+        std::lock_guard<std::mutex> lock(session->display_mutex);
+        session->disp_caps_received = true;
+        // Windows often ignores TS_UD_CS_CORE desktopScaleFactor when
+        // reconnecting to an existing session. Queue one initial
+        // SendMonitorLayout once the server advertises DISP caps so the
+        // requested DPI applies automatically on startup.
+        if (session->display_scale_percent > 0 &&
+            !session->initial_display_layout_sent &&
+            !session->display_update_pending &&
+            session->width >= 320 &&
+            session->height >= 240)
+        {
+            session->pending_width = session->width & ~1;
+            session->pending_height = session->height;
+            session->pending_scale_percent = session->display_scale_percent;
+            session->display_update_pending = true;
+        }
+    }
+    notify_status(session, "RDP display control capabilities received.");
+    return CHANNEL_RC_OK;
+}
+
 void cx_channel_connected(void* context, const ChannelConnectedEventArgs* e)
 {
     if (!context || !e || !e->name || !e->pInterface)
@@ -2744,12 +2807,16 @@ void cx_channel_connected(void* context, const ChannelConnectedEventArgs* e)
                            std::strcmp(e->name, DISP_DVC_CHANNEL_NAME) == 0;
     if (isDisplay)
     {
+        if (!session)
+            return;
         auto* disp = static_cast<DispClientContext*>(e->pInterface);
+        disp->custom = session;
+        disp->DisplayControlCaps = cx_disp_caps;
         {
             std::lock_guard<std::mutex> lock(session->display_mutex);
             session->disp = disp;
+            session->disp_caps_received = false;
         }
-        disp->custom = session;
         notify_status(session, "RDP display control channel connected.");
         return;
     }
@@ -2787,8 +2854,12 @@ void cx_channel_disconnected(void* context, const ChannelDisconnectedEventArgs* 
         {
             std::lock_guard<std::mutex> lock(session->display_mutex);
             if (session->disp)
+            {
+                session->disp->DisplayControlCaps = nullptr;
                 session->disp->custom = nullptr;
+            }
             session->disp = nullptr;
+            session->disp_caps_received = false;
         }
         return;
     }
@@ -3009,22 +3080,28 @@ void apply_pending_display_update(CxRdpSession* session)
         return;
 
     DispClientContext* disp = nullptr;
+    bool dispCapsReceived = false;
     {
         std::lock_guard<std::mutex> lock(session->display_mutex);
         disp = session->disp;
+        dispCapsReceived = session->disp_caps_received;
     }
 
-    // Give the display-control DVC a moment to arrive. Otherwise the very
-    // first viewport resize lands before the channel exists, the legacy
-    // fallback fails, and the UI tears the whole session down to reconnect.
-    if (!disp && session->connected_at.time_since_epoch().count() > 0 &&
+    // Give the display-control DVC a moment to arrive and exchange caps.
+    // Otherwise the very first viewport resize lands before the channel exists
+    // (or before DisplayControlCaps arrives), the legacy fallback fails, and
+    // the UI tears the whole session down to reconnect.
+    if ((!disp || !dispCapsReceived) && session->connected_at.time_since_epoch().count() > 0 &&
         std::chrono::steady_clock::now() - session->connected_at < kDisplayControlGracePeriod)
     {
         std::lock_guard<std::mutex> lock(session->display_mutex);
-        session->pending_width = width;
-        session->pending_height = height;
-        session->pending_scale_percent = scale;
-        session->display_update_pending = true;
+        if (!session->display_update_pending)
+        {
+            session->pending_width = width;
+            session->pending_height = height;
+            session->pending_scale_percent = scale;
+            session->display_update_pending = true;
+        }
         return;
     }
 
@@ -3035,9 +3112,13 @@ void apply_pending_display_update(CxRdpSession* session)
 
     if (scale > 0)
     {
+        const UINT32 desktopScale = static_cast<UINT32>(scale);
+        const UINT32 deviceScale = resolve_device_scale_factor(desktopScale);
         session->display_scale_percent = scale;
-        freerdp_settings_set_uint32(context->settings, FreeRDP_DesktopScaleFactor, static_cast<UINT32>(scale));
-        freerdp_settings_set_uint32(context->settings, FreeRDP_DeviceScaleFactor, static_cast<UINT32>(scale));
+        freerdp_settings_set_uint32(context->settings, FreeRDP_DesktopPhysicalWidth, compute_physical_mm(static_cast<UINT32>(width), desktopScale));
+        freerdp_settings_set_uint32(context->settings, FreeRDP_DesktopPhysicalHeight, compute_physical_mm(static_cast<UINT32>(height), desktopScale));
+        freerdp_settings_set_uint32(context->settings, FreeRDP_DesktopScaleFactor, desktopScale);
+        freerdp_settings_set_uint32(context->settings, FreeRDP_DeviceScaleFactor, deviceScale);
     }
 
     bool sent = false;
@@ -3051,12 +3132,13 @@ void apply_pending_display_update(CxRdpSession* session)
         layout.Height = static_cast<UINT32>(height);
         // Windows uses the physical monitor size together with the scale
         // factors; sending zeroes makes it ignore the layout.
-        const UINT32 dpi = scale > 0 ? static_cast<UINT32>(scale) : 100;
-        layout.PhysicalWidth = static_cast<UINT32>(width * 2540 / (96 * dpi / 100) / 10);
-        layout.PhysicalHeight = static_cast<UINT32>(height * 2540 / (96 * dpi / 100) / 10);
-        layout.Orientation = 0;
-        layout.DesktopScaleFactor = scale > 0 ? static_cast<UINT32>(scale) : 100;
-        layout.DeviceScaleFactor = scale > 0 ? static_cast<UINT32>(scale) : 100;
+        const UINT32 desktopScale = scale > 0 ? static_cast<UINT32>(scale) : 100u;
+        const UINT32 deviceScale = resolve_device_scale_factor(desktopScale);
+        layout.PhysicalWidth = compute_physical_mm(static_cast<UINT32>(width), desktopScale);
+        layout.PhysicalHeight = compute_physical_mm(static_cast<UINT32>(height), desktopScale);
+        layout.Orientation = ORIENTATION_LANDSCAPE;
+        layout.DesktopScaleFactor = desktopScale;
+        layout.DeviceScaleFactor = deviceScale;
         sent = disp->SendMonitorLayout(disp, 1, &layout) == CHANNEL_RC_OK;
     }
 
@@ -3078,6 +3160,12 @@ void apply_pending_display_update(CxRdpSession* session)
     // surface here so the next frame callback already carries the new size.
     if (sent && context->gdi && !cx_desktop_resize(context))
         sent = false;
+
+    if (sent)
+    {
+        std::lock_guard<std::mutex> lock(session->display_mutex);
+        session->initial_display_layout_sent = true;
+    }
 
     std::ostringstream status;
     status << (sent ? "RDP display update sent: " : "RDP display update failed: ")
@@ -3126,7 +3214,7 @@ BOOL cx_load_channels(freerdp* instance)
                      !localAudioEnabled &&
                      !session->microphone_enabled &&
                      !session->graphics_pipeline_requested &&
-                     session->display_scale_percent <= 0))
+                     !freerdp_settings_get_bool(instance->context->settings, FreeRDP_SupportDisplayControl)))
         return TRUE;
 
     register_static_channel_provider();
@@ -3382,7 +3470,21 @@ BOOL cx_post_connect(freerdp* instance)
 
     {
         std::lock_guard<std::mutex> lock(session->display_mutex);
-        session->display_update_pending = false;
+        session->initial_display_layout_sent = false;
+        if (session->disp_caps_received &&
+            session->display_scale_percent > 0 &&
+            session->width >= 320 &&
+            session->height >= 240)
+        {
+            session->pending_width = session->width & ~1;
+            session->pending_height = session->height;
+            session->pending_scale_percent = session->display_scale_percent;
+            session->display_update_pending = true;
+        }
+        else
+        {
+            session->display_update_pending = false;
+        }
     }
     session->connected_at = std::chrono::steady_clock::now();
     auto* gdi = instance->context ? instance->context->gdi : nullptr;
@@ -3432,6 +3534,8 @@ void cx_post_disconnect(freerdp* instance)
         {
             std::lock_guard<std::mutex> lock(session->display_mutex);
             session->disp = nullptr;
+            session->disp_caps_received = false;
+            session->initial_display_layout_sent = false;
             session->display_update_pending = false;
         }
 
@@ -3665,8 +3769,16 @@ void connection_thread(CxRdpSession* session)
             freerdp_settings_set_string(settings, FreeRDP_Username, session->username.c_str());
             freerdp_settings_set_string(settings, FreeRDP_Password, session->password.c_str());
             freerdp_settings_set_string(settings, FreeRDP_Domain, session->domain.c_str());
-            freerdp_settings_set_uint32(settings, FreeRDP_DesktopWidth, static_cast<uint32_t>(session->width > 0 ? session->width : 1024));
-            freerdp_settings_set_uint32(settings, FreeRDP_DesktopHeight, static_cast<uint32_t>(session->height > 0 ? session->height : 768));
+            const uint32_t initialWidth = session->width >= 320
+                ? static_cast<uint32_t>(session->width & ~1)
+                : 1024u;
+            const uint32_t initialHeight = session->height >= 240
+                ? static_cast<uint32_t>(session->height)
+                : 768u;
+            session->width = static_cast<int>(initialWidth);
+            session->height = static_cast<int>(initialHeight);
+            freerdp_settings_set_uint32(settings, FreeRDP_DesktopWidth, initialWidth);
+            freerdp_settings_set_uint32(settings, FreeRDP_DesktopHeight, initialHeight);
             freerdp_settings_set_uint32(settings, FreeRDP_ColorDepth, static_cast<uint32_t>(session->color_depth));
             freerdp_settings_set_bool(settings, FreeRDP_IgnoreCertificate, TRUE);
             freerdp_settings_set_bool(settings, FreeRDP_AutoAcceptCertificate, TRUE);
@@ -3777,42 +3889,54 @@ void connection_thread(CxRdpSession* session)
 
             // DPI remoting: tell the remote session what scaling the user sees.
             // 0 means "Keep remote" - leave the session's own scaling alone.
+            // Always register the display-control DVC so runtime resize and
+            // multi-monitor remain available under KeepRemote as well.
+            freerdp_settings_set_bool(settings, FreeRDP_SupportDisplayControl, TRUE);
+            freerdp_settings_set_bool(settings, FreeRDP_UseMultimon, TRUE);
+            freerdp_settings_set_bool(settings, FreeRDP_ForceMultimon, TRUE);
+
+            rdpMonitor initialMonitor{};
+            initialMonitor.x = 0;
+            initialMonitor.y = 0;
+            initialMonitor.width = static_cast<INT32>(freerdp_settings_get_uint32(settings, FreeRDP_DesktopWidth));
+            initialMonitor.height = static_cast<INT32>(freerdp_settings_get_uint32(settings, FreeRDP_DesktopHeight));
+            initialMonitor.is_primary = TRUE;
+
             if (session->display_scale_percent > 0)
             {
                 const auto scale = static_cast<UINT32>(session->display_scale_percent);
-                // Adding the display-control DVC is what makes FreeRDP load the
-                // channel; setting SupportDisplayControl as well would register
-                // it twice and fail PostConnect on some builds.
+                const auto deviceScale = resolve_device_scale_factor(scale);
+                const auto desktopW = freerdp_settings_get_uint32(settings, FreeRDP_DesktopWidth);
+                const auto desktopH = freerdp_settings_get_uint32(settings, FreeRDP_DesktopHeight);
+                const auto physW = compute_physical_mm(desktopW, scale);
+                const auto physH = compute_physical_mm(desktopH, scale);
+                freerdp_settings_set_uint32(settings, FreeRDP_DesktopPhysicalWidth, physW);
+                freerdp_settings_set_uint32(settings, FreeRDP_DesktopPhysicalHeight, physH);
+                freerdp_settings_set_uint16(settings, FreeRDP_DesktopOrientation, ORIENTATION_LANDSCAPE);
                 freerdp_settings_set_uint32(settings, FreeRDP_DesktopScaleFactor, scale);
-                freerdp_settings_set_uint32(settings, FreeRDP_DeviceScaleFactor, scale);
+                freerdp_settings_set_uint32(settings, FreeRDP_DeviceScaleFactor, deviceScale);
 
-                // The static addin in freerdp-client3.dll is registered as
-                // "disp"; the long DVC name is only the wire protocol name.
-                freerdp_settings_set_bool(settings, FreeRDP_SupportDisplayControl, TRUE);
-                freerdp_settings_set_bool(settings, FreeRDP_UseMultimon, TRUE);
-                freerdp_settings_set_bool(settings, FreeRDP_ForceMultimon, TRUE);
-                {
-                    rdpMonitor initialMonitor{};
-                    initialMonitor.x = 0;
-                    initialMonitor.y = 0;
-                    initialMonitor.width = static_cast<INT32>(freerdp_settings_get_uint32(settings, FreeRDP_DesktopWidth));
-                    initialMonitor.height = static_cast<INT32>(freerdp_settings_get_uint32(settings, FreeRDP_DesktopHeight));
-                    initialMonitor.is_primary = TRUE;
-                    if (initialMonitor.width > 0 && initialMonitor.height > 0)
-                        freerdp_settings_set_monitor_def_array_sorted(settings, &initialMonitor, 1);
-                }
-                const char* displayChannel[] = { DISP_CHANNEL_NAME };
-                if (!freerdp_client_add_dynamic_channel(settings, 1, displayChannel))
-                {
-                    set_error(session, "Failed to configure the RDP display control channel.");
-                    free_instance(session);
-                    break;
-                }
+                initialMonitor.attributes.physicalWidth = physW;
+                initialMonitor.attributes.physicalHeight = physH;
+                initialMonitor.attributes.orientation = ORIENTATION_LANDSCAPE;
+                initialMonitor.attributes.desktopScaleFactor = scale;
+                initialMonitor.attributes.deviceScaleFactor = deviceScale;
             }
             else
             {
                 freerdp_settings_set_uint32(settings, FreeRDP_DesktopScaleFactor, 0);
                 freerdp_settings_set_uint32(settings, FreeRDP_DeviceScaleFactor, 0);
+            }
+
+            if (initialMonitor.width > 0 && initialMonitor.height > 0)
+                freerdp_settings_set_monitor_def_array_sorted(settings, &initialMonitor, 1);
+
+            const char* displayChannel[] = { DISP_CHANNEL_NAME };
+            if (!freerdp_client_add_dynamic_channel(settings, 1, displayChannel))
+            {
+                set_error(session, "Failed to configure the RDP display control channel.");
+                free_instance(session);
+                break;
             }
 
             // Idle sessions die when a NAT or firewall drops the flow, so keep
@@ -3891,6 +4015,14 @@ void connection_thread(CxRdpSession* session)
                      << " rdp=" << (freerdp_settings_get_bool(settings, FreeRDP_RdpSecurity) ? "true" : "false")
                      << " negotiate=" << (freerdp_settings_get_bool(settings, FreeRDP_NegotiateSecurityLayer) ? "true" : "false");
             notify_status(session, security.str().c_str());
+
+            {
+                std::lock_guard<std::mutex> lock(session->display_mutex);
+                session->disp = nullptr;
+                session->disp_caps_received = false;
+                session->initial_display_layout_sent = false;
+                session->display_update_pending = false;
+            }
 
             if (!freerdp_connect(session->instance))
             {
@@ -4619,15 +4751,17 @@ CX_RDP_API int cxrdp_resize_monitors(
         dst.Top = src.top;
         dst.Width = w;
         dst.Height = h;
-        dst.PhysicalWidth = w;
-        dst.PhysicalHeight = h;
         dst.Orientation = ORIENTATION_LANDSCAPE;
         dst.DesktopScaleFactor = (src.desktop_scale_factor >= 100u && src.desktop_scale_factor <= 500u)
             ? src.desktop_scale_factor
             : 100u;
-        dst.DeviceScaleFactor = src.device_scale_factor == 180u
-            ? 180u
-            : (src.device_scale_factor == 140u ? 140u : 100u);
+        dst.PhysicalWidth = compute_physical_mm(w, dst.DesktopScaleFactor);
+        dst.PhysicalHeight = compute_physical_mm(h, dst.DesktopScaleFactor);
+        dst.DeviceScaleFactor = (src.device_scale_factor == 100u ||
+                                 src.device_scale_factor == 140u ||
+                                 src.device_scale_factor == 180u)
+            ? src.device_scale_factor
+            : resolve_device_scale_factor(dst.DesktopScaleFactor);
     }
 
     if (!hasPrimary)

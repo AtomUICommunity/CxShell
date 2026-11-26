@@ -296,7 +296,11 @@ public partial class RdpView : UserControl
             var scaling = GetRenderScaling();
             var w = Math.Max(640, (int)Math.Round(RdpViewport.Bounds.Width * scaling)) & ~1;
             var h = Math.Max(480, (int)Math.Round(RdpViewport.Bounds.Height * scaling));
-            vm.TryResizeMonitors([new Services.RdpMonitorRect(0, 0, w, h, (int)Math.Round(scaling * 100), true)]);
+            var policy = Enum.TryParse<RdpDpiPolicy>(vm.Session.RdpDpiPolicy, true, out var parsed)
+                ? parsed
+                : RdpDpiPolicy.FollowLocal;
+            var scale = RdpDpiScale.ResolveScalePercent(policy, scaling);
+            vm.TryResizeMonitors([new Services.RdpMonitorRect(0, 0, w, h, scale, true)]);
         }
     }
 
@@ -1122,7 +1126,18 @@ public partial class RdpView : UserControl
 
     private double GetRenderScaling()
     {
-        return TopLevel.GetTopLevel(this)?.RenderScaling ?? 1;
+        var topLevel = TopLevel.GetTopLevel(this);
+        if (topLevel is { RenderScaling: > 0 } && double.IsFinite(topLevel.RenderScaling))
+            return topLevel.RenderScaling;
+
+        if (topLevel is Window window)
+        {
+            var screen = window.Screens.ScreenFromWindow(window) ?? window.Screens.Primary;
+            if (screen is { Scaling: > 0 } && double.IsFinite(screen.Scaling))
+                return screen.Scaling;
+        }
+
+        return 1;
     }
 
     private PixelSize? GetCurrentMonitorPixelSize()

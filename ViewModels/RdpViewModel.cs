@@ -174,17 +174,20 @@ public partial class RdpViewModel : ObservableObject, IDisposable
         StatusText = "Starting RDP bridge...";
         StartConnectWatchdog();
 
+        var initialWidth = _runtimeDesktopWidth;
+        var initialHeight = _runtimeDesktopHeight;
+        var initialScale = RdpDpiScale.ResolveScalePercent(ResolveDpiPolicy(), _renderScaling);
+        _runtimeDisplayScalePercent = initialScale;
+
         _ = Task.Run(() =>
         {
             try
             {
-                var initialScale = RdpDpiScale.ResolveScalePercent(ResolveDpiPolicy(), _renderScaling);
-                _runtimeDisplayScalePercent = initialScale;
                 _client.Connect(
                     Session,
                     Password,
-                    _runtimeDesktopWidth,
-                    _runtimeDesktopHeight,
+                    initialWidth,
+                    initialHeight,
                     initialScale);
                 // Do not reset IsConnected here: Connect() only starts the
                 // native worker. A posted "false" used to race the "RDP
@@ -465,6 +468,10 @@ public partial class RdpViewModel : ObservableObject, IDisposable
         StatusText = "RDP disconnected";
     }
 
+    internal int? InitialDesktopWidth => _runtimeDesktopWidth;
+    internal int? InitialDesktopHeight => _runtimeDesktopHeight;
+    internal double InitialRenderScaling => _renderScaling;
+
     public void ConfigureInitialDisplay(Size viewportSize, PixelSize? monitorPixelSize, double renderScaling)
     {
         _renderScaling = renderScaling > 0 ? renderScaling : 1;
@@ -505,16 +512,21 @@ public partial class RdpViewModel : ObservableObject, IDisposable
 
     public void RequestViewportResize(Size viewportSize, double renderScaling = 1)
     {
-        if (renderScaling > 0)
+        if (renderScaling > 0 && double.IsFinite(renderScaling))
             _renderScaling = renderScaling;
 
-        if (!IsConnected ||
-            !UsesReconnectResizeMode(Session) ||
-            viewportSize.Width < 320 ||
-            viewportSize.Height < 240)
+        if (!IsConnected)
+            return;
+
+        if (!UsesReconnectResizeMode(Session))
         {
+            if (ResolveDpiPolicy() == RdpDpiPolicy.FollowLocal)
+                UpdateDpiScaling(_renderScaling);
             return;
         }
+
+        if (viewportSize.Width < 320 || viewportSize.Height < 240)
+            return;
 
         var size = RdpDisplaySizeResolver.ResolveViewport(viewportSize, _renderScaling);
         if (size == null)
@@ -596,22 +608,31 @@ public partial class RdpViewModel : ObservableObject, IDisposable
     /// </summary>
     public void UpdateDpiScaling(double renderScaling)
     {
-        _renderScaling = renderScaling > 0 ? renderScaling : 1;
+        if (renderScaling > 0 && double.IsFinite(renderScaling))
+            _renderScaling = renderScaling;
+
         if (!IsConnected || ResolveDpiPolicy() != RdpDpiPolicy.FollowLocal)
             return;
 
-        var width = _runtimeDesktopWidth ?? Math.Max(1, Session.RdpDesktopWidth);
-        var height = _runtimeDesktopHeight ?? Math.Max(1, Session.RdpDesktopHeight);
         var scale = RdpDpiScale.ResolveScalePercent(RdpDpiPolicy.FollowLocal, _renderScaling);
+        if (scale == _runtimeDisplayScalePercent)
+            return;
+
+        var width = _runtimeDesktopWidth ?? (RemoteWidth > 0 ? RemoteWidth : Math.Max(1, Session.RdpDesktopWidth));
+        var height = _runtimeDesktopHeight ?? (RemoteHeight > 0 ? RemoteHeight : Math.Max(1, Session.RdpDesktopHeight));
 
         if (_client.UpdateDisplay(width, height, scale))
         {
+            _runtimeDesktopWidth = width;
+            _runtimeDesktopHeight = height;
+            _runtimeDisplayScalePercent = scale;
             StatusText = $"RDP display updated to {width}x{height} @ {scale}%.";
             return;
         }
 
         _runtimeDesktopWidth = width;
         _runtimeDesktopHeight = height;
+        _runtimeDisplayScalePercent = scale;
         Reconnect();
     }
 
@@ -640,6 +661,7 @@ public partial class RdpViewModel : ObservableObject, IDisposable
                 {
                     _runtimeDesktopWidth = width;
                     _runtimeDesktopHeight = height;
+                    _runtimeDisplayScalePercent = scale;
                     StatusText = $"RDP display updated to {width}x{height} @ {scale}%.";
                     return;
                 }
@@ -807,6 +829,14 @@ public partial class RdpViewModel : ObservableObject, IDisposable
         {
             _lastMonitorLayoutSignature = null;
             return false;
+        }
+
+        if (monitors.Count == 1)
+        {
+            _runtimeDesktopWidth = Math.Max(200, monitors[0].Width) & ~1;
+            _runtimeDesktopHeight = Math.Max(200, monitors[0].Height);
+            if (monitors[0].DesktopScaleFactor > 0)
+                _runtimeDisplayScalePercent = monitors[0].DesktopScaleFactor;
         }
 
         _lastMonitorLayoutSignature = signature;
