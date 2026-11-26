@@ -1720,13 +1720,8 @@
                                     <atom:CheckBox Content="{Binding [SessionEdit.RdpSyncLockKeys], Source={x:Static services:LocalizationService.Shared}}"
                                                    atom:ToolTip.Tip="{Binding [SessionEdit.RdpSyncLockKeysHint], Source={x:Static services:LocalizationService.Shared}}"
                                                    IsChecked="{Binding RdpSyncLockKeys, Mode=TwoWay}"/>
-                                    <!-- Hidden until the native bridge implements LockClipboardData:
-                                         cxrdp_set_clipboard_lock_enabled is declared in cxrdp_bridge.h
-                                         (API 14) but never implemented, so the capability bit is
-                                         never reported and the option would do nothing. -->
                                     <atom:CheckBox Content="{Binding [SessionEdit.RdpEnableClipboardLock], Source={x:Static services:LocalizationService.Shared}}"
                                                    atom:ToolTip.Tip="{Binding [SessionEdit.RdpEnableClipboardLockHint], Source={x:Static services:LocalizationService.Shared}}"
-                                                   IsVisible="False"
                                                    IsChecked="{Binding RdpEnableClipboardLock, Mode=TwoWay}"/>
                                 </StackPanel>
 
