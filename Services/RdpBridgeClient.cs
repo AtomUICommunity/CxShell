@@ -1587,6 +1587,21 @@ public sealed class RdpBridgeClient : IDisposable
                status.Contains("closed", StringComparison.OrdinalIgnoreCase) ||
                status.Contains("disabled", StringComparison.OrdinalIgnoreCase) ||
                status.Contains("waiting for server MonitorReady", StringComparison.OrdinalIgnoreCase) ||
+               status.Contains("capabilities", StringComparison.OrdinalIgnoreCase) ||
+               status.Contains("activated", StringComparison.OrdinalIgnoreCase) ||
+               status.Contains("local files", StringComparison.OrdinalIgnoreCase) ||
+               status.Contains("local format list response", StringComparison.OrdinalIgnoreCase) ||
+               status.Contains("local file list", StringComparison.OrdinalIgnoreCase) ||
+               status.Contains("Preferred DropEffect", StringComparison.OrdinalIgnoreCase) ||
+               status.Contains("file size requested", StringComparison.OrdinalIgnoreCase) ||
+               status.Contains("file contents", StringComparison.OrdinalIgnoreCase) ||
+               status.Contains("uploading", StringComparison.OrdinalIgnoreCase) ||
+               status.Contains("downloading", StringComparison.OrdinalIgnoreCase) ||
+               status.Contains("remote files", StringComparison.OrdinalIgnoreCase) ||
+               status.Contains("remote formats", StringComparison.OrdinalIgnoreCase) ||
+               status.Contains("data locked", StringComparison.OrdinalIgnoreCase) ||
+               status.Contains("data unlocked", StringComparison.OrdinalIgnoreCase) ||
+               status.Contains("unsupported format", StringComparison.OrdinalIgnoreCase) ||
                status.StartsWith("RDP clipboard channel ready", StringComparison.OrdinalIgnoreCase);
     }
 

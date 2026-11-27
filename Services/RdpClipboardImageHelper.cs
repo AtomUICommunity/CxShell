@@ -27,11 +27,11 @@ public static class RdpClipboardImageHelper
         return OperatingSystem.IsWindows() ? GetClipboardSequenceNumber() : 0u;
     }
 
-    private static bool TryOpenClipboardWithRetry(int maxAttempts = 10, int delayMs = 10)
+    private static bool TryOpenClipboardWithRetry(IntPtr ownerHwnd = default, int maxAttempts = 10, int delayMs = 10)
     {
         for (var attempt = 0; attempt < maxAttempts; attempt++)
         {
-            if (OpenClipboard(IntPtr.Zero))
+            if (OpenClipboard(ownerHwnd))
                 return true;
 
             if (attempt + 1 < maxAttempts)
@@ -123,13 +123,13 @@ public static class RdpClipboardImageHelper
         }
     }
 
-    public static async Task<bool> TryWriteLocalFilesAsync(IClipboard? clipboard, string[] paths)
+    public static async Task<bool> TryWriteLocalFilesAsync(IClipboard? clipboard, string[] paths, IntPtr ownerHwnd = default)
     {
         if (paths == null || paths.Length == 0)
             return false;
 
         if (OperatingSystem.IsWindows())
-            return TryWriteWindowsClipboardFiles(paths);
+            return TryWriteWindowsClipboardFiles(paths, ownerHwnd);
 
         if (clipboard == null)
             return false;
@@ -208,9 +208,9 @@ public static class RdpClipboardImageHelper
         }
     }
 
-    private static bool TryWriteWindowsClipboardFiles(string[] paths)
+    private static bool TryWriteWindowsClipboardFiles(string[] paths, IntPtr ownerHwnd = default)
     {
-        if (!TryOpenClipboardWithRetry())
+        if (!TryOpenClipboardWithRetry(ownerHwnd))
             return false;
 
         try
@@ -293,7 +293,7 @@ public static class RdpClipboardImageHelper
         return null;
     }
 
-    public static async Task<bool> TryWriteLocalImageAsync(IClipboard? clipboard, uint imageFormat, byte[] data)
+    public static async Task<bool> TryWriteLocalImageAsync(IClipboard? clipboard, uint imageFormat, byte[] data, IntPtr ownerHwnd = default)
     {
         if (data == null || data.Length == 0)
             return false;
@@ -314,7 +314,7 @@ public static class RdpClipboardImageHelper
 
         if (OperatingSystem.IsWindows())
         {
-            if (TryWriteWindowsClipboardImage(pngBytes, dibBytes))
+            if (TryWriteWindowsClipboardImage(pngBytes, dibBytes, ownerHwnd))
                 return true;
         }
 
@@ -505,12 +505,12 @@ public static class RdpClipboardImageHelper
         }
     }
 
-    private static bool TryWriteWindowsClipboardImage(byte[]? pngBytes, byte[]? dibBytes)
+    private static bool TryWriteWindowsClipboardImage(byte[]? pngBytes, byte[]? dibBytes, IntPtr ownerHwnd = default)
     {
         if (pngBytes == null && dibBytes == null)
             return false;
 
-        if (!TryOpenClipboardWithRetry())
+        if (!TryOpenClipboardWithRetry(ownerHwnd))
             return false;
 
         try
