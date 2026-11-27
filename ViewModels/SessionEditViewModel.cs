@@ -331,12 +331,15 @@ public partial class SessionEditViewModel : ObservableObject
     [ObservableProperty] private string _rdpFrameStrategy = "Auto";
     [ObservableProperty] private string _rdpColorQuality = "32";
     [ObservableProperty] private string _rdpSecurityMode = "Auto";
+    [ObservableProperty] private string _rdpWindowMode = "Default";
+    [ObservableProperty] private bool _rdpOpenInStandaloneWindow;
     [ObservableProperty] private bool _rdpApplyKeyCombinations = true;
     [ObservableProperty] private bool _rdpSyncLockKeys = true;
     [ObservableProperty] private bool _rdpEnableClipboardLock = true;
     [ObservableProperty] private bool _rdpClipboardEnabled = true;
     [ObservableProperty] private bool _rdpDisableWallpaper = true;
     [ObservableProperty] private bool _rdpGraphicsPipelineEnabled;
+    [ObservableProperty] private bool _rdpH264Enabled;
     [ObservableProperty] private bool _rdpRedirectDrives;
     [ObservableProperty] private string _rdpDriveName = "CxShell";
     [ObservableProperty] private string _rdpDrivePath = string.Empty;
@@ -1047,6 +1050,12 @@ public partial class SessionEditViewModel : ObservableObject
         new SelectOption { Header = "TLS", Content = "TLS" },
         new SelectOption { Header = "Standard RDP", Content = "RDP" }
     ];
+    public ObservableCollection<ISelectOption> RdpWindowModeOptions { get; } =
+    [
+        new SelectOption { Header = LocalizationService.Shared.Text("SessionEdit.RdpWindowMode.Default"), Content = "Default" },
+        new SelectOption { Header = LocalizationService.Shared.Text("SessionEdit.RdpWindowMode.MultiTab"), Content = "MultiTab" },
+        new SelectOption { Header = LocalizationService.Shared.Text("SessionEdit.RdpWindowMode.Standalone"), Content = "Standalone" }
+    ];
     public ObservableCollection<ISelectOption> RdpAudioModeOptions { get; } =
     [
         new SelectOption { Header = "Play on this computer", Content = "PlayLocal" },
@@ -1546,12 +1555,15 @@ public partial class SessionEditViewModel : ObservableObject
         RdpFrameStrategy = RdpFramePresentationModes.Normalize(session.RdpFrameStrategy);
         RdpColorQuality = string.IsNullOrWhiteSpace(session.RdpColorQuality) ? "32" : session.RdpColorQuality;
         RdpSecurityMode = string.IsNullOrWhiteSpace(session.RdpSecurityMode) ? "Auto" : session.RdpSecurityMode;
+        RdpWindowMode = session.ResolveEffectiveRdpWindowMode();
+        RdpOpenInStandaloneWindow = session.RdpOpenInStandaloneWindow;
         RdpApplyKeyCombinations = session.RdpApplyKeyCombinations;
         RdpSyncLockKeys = session.RdpSyncLockKeys;
         RdpEnableClipboardLock = session.RdpEnableClipboardLock;
         RdpClipboardEnabled = session.RdpClipboardEnabled;
         RdpDisableWallpaper = session.RdpDisableWallpaper;
         RdpGraphicsPipelineEnabled = session.RdpGraphicsPipelineEnabled;
+        RdpH264Enabled = session.RdpH264Enabled;
         RdpRedirectDrives = session.RdpRedirectDrives;
         RdpDriveName = string.IsNullOrWhiteSpace(session.RdpDriveName) ? "CxShell" : session.RdpDriveName;
         RdpDrivePath = session.RdpDrivePath ?? string.Empty;
@@ -1859,12 +1871,15 @@ public partial class SessionEditViewModel : ObservableObject
         session.RdpFrameStrategy = RdpFramePresentationModes.Normalize(RdpFrameStrategy);
         session.RdpColorQuality = RdpColorQuality;
         session.RdpSecurityMode = string.IsNullOrWhiteSpace(RdpSecurityMode) ? "Auto" : RdpSecurityMode;
+        session.RdpWindowMode = string.IsNullOrWhiteSpace(RdpWindowMode) ? "Default" : RdpWindowMode;
+        session.RdpOpenInStandaloneWindow = string.Equals(session.RdpWindowMode, "MultiTab", StringComparison.OrdinalIgnoreCase);
         session.RdpApplyKeyCombinations = RdpApplyKeyCombinations;
         session.RdpSyncLockKeys = RdpSyncLockKeys;
         session.RdpEnableClipboardLock = RdpEnableClipboardLock;
         session.RdpClipboardEnabled = RdpClipboardEnabled;
         session.RdpDisableWallpaper = RdpDisableWallpaper;
         session.RdpGraphicsPipelineEnabled = RdpGraphicsPipelineEnabled;
+        session.RdpH264Enabled = RdpH264Enabled;
         session.RdpRedirectDrives = RdpRedirectDrives;
         session.RdpDriveName = string.IsNullOrWhiteSpace(RdpDriveName) ? "CxShell" : RdpDriveName.Trim();
         session.RdpDrivePath = RdpRedirectDrives ? RdpDrivePath.Trim() : string.Empty;

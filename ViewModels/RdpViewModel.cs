@@ -23,6 +23,7 @@ public partial class RdpViewModel : ObservableObject, IDisposable
     private RdpReconnectPhase _reconnectPhase = RdpReconnectPhase.None;
     private int _reconnectAttempt;
     private double _renderScaling = 1;
+    private CancellationTokenSource? _resizeDebounceCts;
     private CancellationTokenSource? _resizeReconnectCts;
     private CancellationTokenSource? _connectWatchdogCts;
     private int? _runtimeDesktopWidth;
@@ -37,6 +38,7 @@ public partial class RdpViewModel : ObservableObject, IDisposable
     /// has to be wider than the 300 ms that first looked sufficient.
     /// </summary>
     private const int MonitorLayoutDebounceMilliseconds = 500;
+    private int? _runtimeDisplayScalePercent;
     private WriteableBitmap? _bitmapA;
     private WriteableBitmap? _bitmapB;
     private bool _useBitmapA;
@@ -172,6 +174,11 @@ public partial class RdpViewModel : ObservableObject, IDisposable
         StatusText = "Starting RDP bridge...";
         StartConnectWatchdog();
 
+        var initialWidth = _runtimeDesktopWidth;
+        var initialHeight = _runtimeDesktopHeight;
+        var initialScale = RdpDpiScale.ResolveScalePercent(ResolveDpiPolicy(), _renderScaling);
+        _runtimeDisplayScalePercent = initialScale;
+
         _ = Task.Run(() =>
         {
             try
@@ -179,9 +186,9 @@ public partial class RdpViewModel : ObservableObject, IDisposable
                 _client.Connect(
                     Session,
                     Password,
-                    _runtimeDesktopWidth,
-                    _runtimeDesktopHeight,
-                    RdpDpiScale.ResolveScalePercent(ResolveDpiPolicy(), _renderScaling));
+                    initialWidth,
+                    initialHeight,
+                    initialScale);
                 // Do not reset IsConnected here: Connect() only starts the
                 // native worker. A posted "false" used to race the "RDP
                 // connected." status and clear the state right after the
@@ -414,7 +421,7 @@ public partial class RdpViewModel : ObservableObject, IDisposable
     [RelayCommand]
     public void Reconnect()
     {
-        _resizeReconnectCts?.Cancel();
+        CancelPendingResize();
         CancelConnectWatchdog();
         _reconnectPhase = RdpReconnectPhase.None;
         _reconnectAttempt = 0;
@@ -447,7 +454,7 @@ public partial class RdpViewModel : ObservableObject, IDisposable
 
     public void Disconnect()
     {
-        _resizeReconnectCts?.Cancel();
+        CancelPendingResize();
         CancelConnectWatchdog();
         // The native bridge only reports a disconnect while it believes the
         // transport is live, so remember whether this teardown can produce one.
@@ -460,6 +467,10 @@ public partial class RdpViewModel : ObservableObject, IDisposable
         IsClipboardChannelReady = false;
         StatusText = "RDP disconnected";
     }
+
+    internal int? InitialDesktopWidth => _runtimeDesktopWidth;
+    internal int? InitialDesktopHeight => _runtimeDesktopHeight;
+    internal double InitialRenderScaling => _renderScaling;
 
     public void ConfigureInitialDisplay(Size viewportSize, PixelSize? monitorPixelSize, double renderScaling)
     {
@@ -480,42 +491,115 @@ public partial class RdpViewModel : ObservableObject, IDisposable
         _runtimeDesktopHeight = size.Value.Height;
     }
 
+    private void CancelPendingResize()
+    {
+        var debounceCts = _resizeDebounceCts;
+        _resizeDebounceCts = null;
+        if (debounceCts != null)
+        {
+            try { debounceCts.Cancel(); } catch (ObjectDisposedException) { }
+            debounceCts.Dispose();
+        }
+
+        var reconnectCts = _resizeReconnectCts;
+        _resizeReconnectCts = null;
+        if (reconnectCts != null)
+        {
+            try { reconnectCts.Cancel(); } catch (ObjectDisposedException) { }
+            reconnectCts.Dispose();
+        }
+    }
+
     public void RequestViewportResize(Size viewportSize, double renderScaling = 1)
     {
-        if (!IsConnected ||
-            !UsesReconnectResizeMode(Session) ||
-            viewportSize.Width < 320 ||
-            viewportSize.Height < 240)
+        if (renderScaling > 0 && double.IsFinite(renderScaling))
+            _renderScaling = renderScaling;
+
+        if (!IsConnected)
+            return;
+
+        if (!UsesReconnectResizeMode(Session))
         {
+            if (ResolveDpiPolicy() == RdpDpiPolicy.FollowLocal)
+                UpdateDpiScaling(_renderScaling);
             return;
         }
 
-        var size = RdpDisplaySizeResolver.ResolveViewport(viewportSize, renderScaling);
+        if (viewportSize.Width < 320 || viewportSize.Height < 240)
+            return;
+
+        var size = RdpDisplaySizeResolver.ResolveViewport(viewportSize, _renderScaling);
         if (size == null)
             return;
 
         var width = size.Value.Width;
         var height = size.Value.Height;
-        var currentWidth = _runtimeDesktopWidth ?? Math.Max(1, Session.RdpDesktopWidth);
-        var currentHeight = _runtimeDesktopHeight ?? Math.Max(1, Session.RdpDesktopHeight);
-        if (Math.Abs(width - currentWidth) < 32 && Math.Abs(height - currentHeight) < 32)
-            return;
-
-        var scale = RdpDpiScale.ResolveScalePercent(ResolveDpiPolicy(), renderScaling);
-        if (_client.UpdateDisplay(width, height, scale))
+        var scale = RdpDpiScale.ResolveScalePercent(ResolveDpiPolicy(), _renderScaling);
+        var currentWidth = _runtimeDesktopWidth ?? (RemoteWidth > 0 ? RemoteWidth : Math.Max(1, Session.RdpDesktopWidth));
+        var currentHeight = _runtimeDesktopHeight ?? (RemoteHeight > 0 ? RemoteHeight : Math.Max(1, Session.RdpDesktopHeight));
+        var currentScale = _runtimeDisplayScalePercent ?? scale;
+        if (Math.Abs(width - currentWidth) < 2 &&
+            Math.Abs(height - currentHeight) < 2 &&
+            scale == currentScale)
         {
-            _runtimeDesktopWidth = width;
-            _runtimeDesktopHeight = height;
-            StatusText = $"RDP display updated to {width}x{height} @ {scale}%.";
             return;
         }
 
-        // The bridge cannot resize in place (older native build or the display
-        // control channel was not negotiated) - fall back to a full reconnect.
-        _resizeReconnectCts?.Cancel();
-        var cts = new CancellationTokenSource();
-        _resizeReconnectCts = cts;
-        _ = ReconnectAfterResizeDelayAsync(width, height, cts.Token);
+        // Debounce rapid window drags / maximize / fullscreen transitions so we
+        // only send the settled layout once; Windows MS-RDPEDISP drops or
+        // throttles back-to-back SendMonitorLayout PDUs.
+        var previousDebounce = _resizeDebounceCts;
+        var debounceCts = new CancellationTokenSource();
+        _resizeDebounceCts = debounceCts;
+        if (previousDebounce != null)
+        {
+            try { previousDebounce.Cancel(); } catch (ObjectDisposedException) { }
+            previousDebounce.Dispose();
+        }
+
+        _ = ApplyViewportResizeDebouncedAsync(width, height, scale, debounceCts.Token);
+    }
+
+    private async Task ApplyViewportResizeDebouncedAsync(int width, int height, int scale, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await Task.Delay(TimeSpan.FromMilliseconds(250), cancellationToken).ConfigureAwait(false);
+            await Dispatcher.UIThread.InvokeAsync(() =>
+            {
+                if (cancellationToken.IsCancellationRequested || !IsConnected)
+                    return;
+
+                var currentWidth = _runtimeDesktopWidth ?? (RemoteWidth > 0 ? RemoteWidth : Math.Max(1, Session.RdpDesktopWidth));
+                var currentHeight = _runtimeDesktopHeight ?? (RemoteHeight > 0 ? RemoteHeight : Math.Max(1, Session.RdpDesktopHeight));
+                var currentScale = _runtimeDisplayScalePercent ?? scale;
+                if (Math.Abs(width - currentWidth) < 2 &&
+                    Math.Abs(height - currentHeight) < 2 &&
+                    scale == currentScale)
+                {
+                    return;
+                }
+
+                if (_client.UpdateDisplay(width, height, scale))
+                {
+                    _runtimeDesktopWidth = width;
+                    _runtimeDesktopHeight = height;
+                    _runtimeDisplayScalePercent = scale;
+                    StatusText = $"RDP display updated to {width}x{height} @ {scale}%.";
+                    return;
+                }
+
+                // The bridge cannot resize in place (older native build or the display
+                // control channel was not negotiated) - fall back to a full reconnect.
+                _resizeReconnectCts?.Cancel();
+                var cts = new CancellationTokenSource();
+                _resizeReconnectCts = cts;
+                _ = ReconnectAfterResizeDelayAsync(width, height, cts.Token);
+            });
+        }
+        catch (OperationCanceledException)
+        {
+        }
     }
 
     /// <summary>
@@ -524,22 +608,31 @@ public partial class RdpViewModel : ObservableObject, IDisposable
     /// </summary>
     public void UpdateDpiScaling(double renderScaling)
     {
-        _renderScaling = renderScaling > 0 ? renderScaling : 1;
+        if (renderScaling > 0 && double.IsFinite(renderScaling))
+            _renderScaling = renderScaling;
+
         if (!IsConnected || ResolveDpiPolicy() != RdpDpiPolicy.FollowLocal)
             return;
 
-        var width = _runtimeDesktopWidth ?? Math.Max(1, Session.RdpDesktopWidth);
-        var height = _runtimeDesktopHeight ?? Math.Max(1, Session.RdpDesktopHeight);
         var scale = RdpDpiScale.ResolveScalePercent(RdpDpiPolicy.FollowLocal, _renderScaling);
+        if (scale == _runtimeDisplayScalePercent)
+            return;
+
+        var width = _runtimeDesktopWidth ?? (RemoteWidth > 0 ? RemoteWidth : Math.Max(1, Session.RdpDesktopWidth));
+        var height = _runtimeDesktopHeight ?? (RemoteHeight > 0 ? RemoteHeight : Math.Max(1, Session.RdpDesktopHeight));
 
         if (_client.UpdateDisplay(width, height, scale))
         {
+            _runtimeDesktopWidth = width;
+            _runtimeDesktopHeight = height;
+            _runtimeDisplayScalePercent = scale;
             StatusText = $"RDP display updated to {width}x{height} @ {scale}%.";
             return;
         }
 
         _runtimeDesktopWidth = width;
         _runtimeDesktopHeight = height;
+        _runtimeDisplayScalePercent = scale;
         Reconnect();
     }
 
@@ -568,6 +661,7 @@ public partial class RdpViewModel : ObservableObject, IDisposable
                 {
                     _runtimeDesktopWidth = width;
                     _runtimeDesktopHeight = height;
+                    _runtimeDisplayScalePercent = scale;
                     StatusText = $"RDP display updated to {width}x{height} @ {scale}%.";
                     return;
                 }
@@ -737,6 +831,14 @@ public partial class RdpViewModel : ObservableObject, IDisposable
             return false;
         }
 
+        if (monitors.Count == 1)
+        {
+            _runtimeDesktopWidth = Math.Max(200, monitors[0].Width) & ~1;
+            _runtimeDesktopHeight = Math.Max(200, monitors[0].Height);
+            if (monitors[0].DesktopScaleFactor > 0)
+                _runtimeDisplayScalePercent = monitors[0].DesktopScaleFactor;
+        }
+
         _lastMonitorLayoutSignature = signature;
         _lastMonitorLayoutAppliedUtc = DateTime.UtcNow;
         return true;
@@ -818,8 +920,26 @@ public partial class RdpViewModel : ObservableObject, IDisposable
                 var target = GetTargetBitmap(e.Width, e.Height);
                 using (var locked = target.Lock())
                 {
-                    var copyBytes = Math.Min(e.PixelLength, locked.RowBytes * locked.Size.Height);
-                    Marshal.Copy(e.Pixels, 0, locked.Address, copyBytes);
+                    if (e.DirtyRect is { } dirty &&
+                        e.Stride == locked.RowBytes &&
+                        dirty.X >= 0 && dirty.Y >= 0 &&
+                        dirty.X + dirty.Width <= locked.Size.Width &&
+                        dirty.Y + dirty.Height <= locked.Size.Height)
+                    {
+                        var rowBytes = dirty.Width * 4;
+                        var xBytes = dirty.X * 4;
+                        for (var row = 0; row < dirty.Height; row++)
+                        {
+                            var offset = (dirty.Y + row) * e.Stride + xBytes;
+                            if (offset + rowBytes <= e.PixelLength)
+                                Marshal.Copy(e.Pixels, offset, IntPtr.Add(locked.Address, offset), rowBytes);
+                        }
+                    }
+                    else
+                    {
+                        var copyBytes = Math.Min(e.PixelLength, locked.RowBytes * locked.Size.Height);
+                        Marshal.Copy(e.Pixels, 0, locked.Address, copyBytes);
+                    }
                 }
 
                 // Alternating two persistent bitmaps keeps allocations at zero

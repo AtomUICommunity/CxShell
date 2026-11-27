@@ -45,7 +45,14 @@ public partial class DetachedTabWindow : AtomUI.Desktop.Controls.Window
         KeepTaskbarFullScreenButton.SetValue(
             AtomUI.Desktop.Controls.ToolTip.TipProperty,
             Services.LocalizationService.Shared.Text("Toolbar.FullScreenKeepTaskbarTip"));
+        DetachedMultiMonitorButton.SetValue(
+            AtomUI.Desktop.Controls.ToolTip.TipProperty,
+            Services.LocalizationService.Shared.Text("Rdp.MultiMonitorTip"));
+        MoveToWorkspaceButton.SetValue(
+            AtomUI.Desktop.Controls.ToolTip.TipProperty,
+            Services.LocalizationService.Shared.Text("Rdp.MoveToWorkspace"));
         Closed += OnClosed;
+        FullScreenConnectionBar.ToggleFullScreenRequested += ToggleWindowFullScreen;
         FullScreenConnectionBar.MultiMonitorRequested += anchor =>
             DetachedRdpView.ToggleMultiMonitorPopup(anchor, PlacementMode.Bottom, FullScreenConnectionBar.SetExternalPopupOpen);
         PropertyChanged += OnWindowPropertyChanged;
@@ -226,6 +233,13 @@ public partial class DetachedTabWindow : AtomUI.Desktop.Controls.Window
             return;
         }
 
+        if (state == WindowState.Maximized && !_keepTaskbarFullScreen.IsActive)
+        {
+            _keepTaskbarFullScreen.Enter();
+            UpdateConnectionBarState();
+            return;
+        }
+
         // Another full screen path (the caption button, F11, or a window manager
         // shortcut) took over, so hand the title bar back instead of leaving the
         // window stuck in a borderless maximized state.
@@ -347,6 +361,27 @@ public partial class DetachedTabWindow : AtomUI.Desktop.Controls.Window
     private void OnDetachedMultiMonitorMenuClick(object? sender, RoutedEventArgs e)
     {
         DetachedRdpView.ToggleMultiMonitorPopup(TitleBarAddOnPanel, PlacementMode.Bottom);
+    }
+
+    private void OnDetachedMultiMonitorClick(object? sender, RoutedEventArgs e)
+    {
+        if (sender is Control anchor)
+            DetachedRdpView.ToggleMultiMonitorPopup(anchor, PlacementMode.Bottom);
+    }
+
+    private void OnMoveToWorkspaceClick(object? sender, RoutedEventArgs e)
+    {
+        if (_disposed || _tab is not { IsRdpSession: true } tab)
+            return;
+
+        DetachedRdpView.ResetToSingleMonitor();
+        _reattach = null;
+        _closeTab = null;
+        _tab = null;
+        DataContext = null;
+        _disposed = true;
+        RdpWorkspaceWindow.OpenTab(tab);
+        Close();
     }
 
     private void OnKeepTaskbarFullScreenClick(object? sender, RoutedEventArgs e)

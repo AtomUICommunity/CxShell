@@ -6,6 +6,8 @@
 #include <codecvt>
 #include <cctype>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <iomanip>
 #include <cstdlib>
 #include <locale>
@@ -13,6 +15,7 @@
 #include <sstream>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 #if defined(_WIN32)
@@ -64,6 +67,34 @@ extern "C" {
 
 namespace
 {
+struct LocalClipboardFileEntry
+{
+    std::string relative_name;
+    std::filesystem::path full_path;
+    bool is_directory = false;
+    uint64_t file_size = 0;
+    uint64_t last_write_time = 0;
+};
+
+struct RemoteClipboardFileEntry
+{
+    uint32_t remote_index = 0;
+    std::string relative_name;
+    std::filesystem::path local_path;
+    bool is_directory = false;
+    uint64_t expected_size = 0;
+    uint64_t received_bytes = 0;
+    bool size_known = false;
+};
+
+constexpr uint32_t CX_CLIPRDR_FORMAT_PNG = 0xC001u;
+constexpr uint32_t CX_CLIPRDR_FORMAT_FILE_GROUP_DESCRIPTOR_W = 0xC002u;
+constexpr uint32_t CX_CLIPRDR_FORMAT_HTML = 0xC003u;
+constexpr uint32_t CX_CLIPRDR_FORMAT_RTF = 0xC004u;
+constexpr uint32_t CX_CLIPRDR_FORMAT_FILE_CONTENTS = 0xC005u;
+constexpr uint32_t CX_CLIPRDR_FORMAT_PREFERRED_DROP_EFFECT = 0xC006u;
+constexpr uint32_t CX_CLIPRDR_FILE_CHUNK_SIZE = 65536u;
+
 struct CxRdpSession
 {
     freerdp* instance = nullptr;
@@ -85,9 +116,11 @@ struct CxRdpSession
     bool openssl_providers_loaded = false;
     bool clipboard_channel_enabled = false;
     bool clipboard_channel_requested = true;
+    bool clipboard_lock_enabled = true;
     bool frame_marker_enabled = true;
     bool disable_wallpaper = true;
     bool graphics_pipeline_requested = true;
+    bool h264_requested = false;
     bool gfx_frame_mode = false;
     // EGFX is decoded by FreeRDP's GDI backend, but the client must hand the
     // RdpgfxClientContext to gdi_graphics_pipeline_init(). Without that
@@ -130,23 +163,44 @@ struct CxRdpSession
     bool client_capabilities_sent = false;
     std::chrono::steady_clock::time_point cliprdr_connected_at{};
     uint32_t clipboard_requested_format = 0;
+    uint32_t clipboard_requested_image_format = 0;
+    bool clipboard_requested_files = false;
     uint64_t local_clipboard_revision = 0;
     uint64_t offered_clipboard_revision = 0;
     cxrdp_frame_callback frame_callback = nullptr;
     cxrdp_status_callback status_callback = nullptr;
     cxrdp_disconnect_callback disconnect_callback = nullptr;
     cxrdp_clipboard_text_callback clipboard_text_callback = nullptr;
+    cxrdp_clipboard_image_callback clipboard_image_callback = nullptr;
+    cxrdp_clipboard_files_callback clipboard_files_callback = nullptr;
     cxrdp_pointer_callback pointer_callback = nullptr;
     void* user_data = nullptr;
     std::string last_error;
     std::mutex clipboard_mutex;
+    int local_clipboard_kind = 0; // 0=text, 1=image, 2=files
     std::string local_clipboard_text;
+    std::vector<uint8_t> local_clipboard_html;
+    std::vector<uint8_t> local_clipboard_rtf;
+    std::vector<uint8_t> local_clipboard_png;
+    std::vector<uint8_t> local_clipboard_dib;
+    std::vector<LocalClipboardFileEntry> local_clipboard_files;
+    std::unordered_map<uint32_t, std::string> locked_clipboard_text;
+    std::unordered_map<uint32_t, std::vector<LocalClipboardFileEntry>> locked_clipboard_files;
+    std::vector<RemoteClipboardFileEntry> remote_clipboard_files;
+    std::vector<std::string> remote_clipboard_top_level_paths;
+    size_t remote_file_download_index = 0;
+    uint32_t remote_file_stream_id = 1;
+    bool remote_file_requesting_size = false;
+    int last_upload_progress_pct = -1;
+    int last_download_progress_pct = -1;
 
     // Display control (DPI remoting + in-place resize). The worker owns the
     // FreeRDP objects; a UI call only queues a request here.
     int display_scale_percent = 0; /* 0 = keep the remote session's own DPI */
     DispClientContext* disp = nullptr;
     std::mutex display_mutex;
+    bool disp_caps_received = false;
+    bool initial_display_layout_sent = false;
     bool display_update_pending = false;
     int pending_width = 0;
     int pending_height = 0;
@@ -242,6 +296,11 @@ SSIZE_T cx_retry_dialog(freerdp* instance, const char* what, size_t current, voi
 bool reconnect_session(CxRdpSession* session);
 BOOL cx_desktop_resize(rdpContext* context);
 void apply_pending_display_update(CxRdpSession* session);
+UINT cx_disp_caps(
+    DispClientContext* disp,
+    UINT32 maxNumMonitors,
+    UINT32 maxMonitorAreaFactorA,
+    UINT32 maxMonitorAreaFactorB);
 void cx_channel_connected(void* context, const ChannelConnectedEventArgs* e);
 void cx_channel_disconnected(void* context, const ChannelDisconnectedEventArgs* e);
 UINT send_client_capabilities(CliprdrClientContext* cliprdr);
@@ -290,6 +349,26 @@ rdpSettings* get_settings(CxRdpSession* session)
         return nullptr;
 
     return session->instance->context->settings;
+}
+
+constexpr UINT32 resolve_device_scale_factor(UINT32 desktopScaleFactor)
+{
+    if (desktopScaleFactor >= 180u)
+        return 180u;
+    if (desktopScaleFactor >= 140u)
+        return 140u;
+    return 100u;
+}
+
+UINT32 compute_physical_mm(UINT32 pixels, UINT32 scalePercent)
+{
+    const UINT32 dpi = scalePercent >= 100u ? scalePercent : 100u;
+    const uint64_t mm = (static_cast<uint64_t>(pixels) * 2540ull) / (96ull * dpi);
+    if (mm < 10ull)
+        return 10u;
+    if (mm > 10000ull)
+        return 10000u;
+    return static_cast<UINT32>(mm);
 }
 
 bool initialize_instance(CxRdpSession* session)
@@ -425,6 +504,258 @@ void notify_clipboard_text(CxRdpSession* session, const std::string& text)
     std::lock_guard<std::mutex> lock(session->callback_mutex);
     if (session->clipboard_text_callback)
         session->clipboard_text_callback(session->user_data, text.c_str());
+}
+
+void notify_clipboard_image(CxRdpSession* session, uint32_t imageFormat, const uint8_t* data, uint32_t length)
+{
+    if (!session || !data || length == 0)
+        return;
+
+    std::lock_guard<std::mutex> lock(session->callback_mutex);
+    if (session->clipboard_image_callback)
+        session->clipboard_image_callback(session->user_data, imageFormat, data, length);
+}
+
+void notify_clipboard_files(CxRdpSession* session, const std::vector<std::string>& paths)
+{
+    if (!session || paths.empty())
+        return;
+
+    std::ostringstream joined;
+    for (size_t i = 0; i < paths.size(); ++i)
+    {
+        if (i > 0)
+            joined << '\n';
+        joined << paths[i];
+    }
+
+    const auto payload = joined.str();
+    std::lock_guard<std::mutex> lock(session->callback_mutex);
+    if (session->clipboard_files_callback)
+        session->clipboard_files_callback(session->user_data, payload.c_str());
+}
+
+uint64_t get_file_last_write_time(const std::filesystem::path& path)
+{
+#if defined(_WIN32)
+    WIN32_FILE_ATTRIBUTE_DATA attrData{};
+    if (!GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &attrData))
+        return 0;
+
+    return (static_cast<uint64_t>(attrData.ftLastWriteTime.dwHighDateTime) << 32) |
+           static_cast<uint64_t>(attrData.ftLastWriteTime.dwLowDateTime);
+#else
+    (void)path;
+    return 0;
+#endif
+}
+
+std::vector<BYTE> serialize_file_group_descriptor_w(const std::vector<LocalClipboardFileEntry>& files)
+{
+    constexpr size_t descriptorSize = 592;
+    const uint32_t count = static_cast<uint32_t>(files.size());
+    std::vector<BYTE> buffer(4 + static_cast<size_t>(count) * descriptorSize, 0);
+
+    buffer[0] = static_cast<BYTE>(count & 0xFFu);
+    buffer[1] = static_cast<BYTE>((count >> 8) & 0xFFu);
+    buffer[2] = static_cast<BYTE>((count >> 16) & 0xFFu);
+    buffer[3] = static_cast<BYTE>((count >> 24) & 0xFFu);
+
+    std::wstring_convert<std::codecvt_utf8_utf16<char16_t>, char16_t> converter;
+    for (size_t i = 0; i < files.size(); ++i)
+    {
+        const auto& entry = files[i];
+        BYTE* dst = buffer.data() + 4 + i * descriptorSize;
+
+        // dwFlags: FD_ATTRIBUTES (0x04) | FD_FILESIZE (0x40) | FD_PROGRESSUI (0x4000) [| FD_WRITESTIME (0x20)]
+        uint32_t flags = 0x00004044u;
+        if (entry.last_write_time != 0)
+        {
+            flags |= 0x00000020u;
+            const uint32_t writeTimeLow = static_cast<uint32_t>(entry.last_write_time & 0xFFFFFFFFu);
+            const uint32_t writeTimeHigh = static_cast<uint32_t>((entry.last_write_time >> 32) & 0xFFFFFFFFu);
+            std::memcpy(dst + 56, &writeTimeLow, 4);
+            std::memcpy(dst + 60, &writeTimeHigh, 4);
+        }
+        std::memcpy(dst + 0, &flags, 4);
+
+        const uint32_t attrs = entry.is_directory ? 0x00000010u : 0x00000020u;
+        std::memcpy(dst + 36, &attrs, 4);
+
+        const uint32_t sizeHigh = static_cast<uint32_t>((entry.file_size >> 32) & 0xFFFFFFFFu);
+        const uint32_t sizeLow = static_cast<uint32_t>(entry.file_size & 0xFFFFFFFFu);
+        std::memcpy(dst + 64, &sizeHigh, 4);
+        std::memcpy(dst + 68, &sizeLow, 4);
+
+        std::u16string utf16Name;
+        try
+        {
+            utf16Name = converter.from_bytes(entry.relative_name);
+        }
+        catch (const std::range_error&)
+        {
+            for (const unsigned char ch : entry.relative_name)
+                utf16Name.push_back(ch < 0x80 ? static_cast<char16_t>(ch) : u'_');
+        }
+
+        const size_t maxChars = 259;
+        const size_t charCount = utf16Name.size() < maxChars ? utf16Name.size() : maxChars;
+        for (size_t c = 0; c < charCount; ++c)
+        {
+            const uint16_t ch = static_cast<uint16_t>(utf16Name[c]);
+            dst[72 + c * 2] = static_cast<BYTE>(ch & 0xFFu);
+            dst[72 + c * 2 + 1] = static_cast<BYTE>((ch >> 8) & 0xFFu);
+        }
+    }
+
+    return buffer;
+}
+
+bool parse_file_group_descriptor_w(
+    const BYTE* data,
+    uint32_t length,
+    const std::filesystem::path& baseDir,
+    std::vector<RemoteClipboardFileEntry>& outFiles,
+    std::vector<std::string>& outTopLevelPaths)
+{
+    outFiles.clear();
+    outTopLevelPaths.clear();
+    if (!data || length < 4)
+        return false;
+
+    uint32_t count = 0;
+    std::memcpy(&count, data, 4);
+    constexpr size_t descriptorSize = 592;
+    if (count == 0 || 4 + static_cast<size_t>(count) * descriptorSize > length)
+        return false;
+
+    std::wstring_convert<std::codecvt_utf8_utf16<char16_t>, char16_t> converter;
+    for (uint32_t i = 0; i < count; ++i)
+    {
+        const BYTE* src = data + 4 + static_cast<size_t>(i) * descriptorSize;
+        uint32_t flags = 0;
+        uint32_t attrs = 0;
+        uint32_t sizeHigh = 0;
+        uint32_t sizeLow = 0;
+        std::memcpy(&flags, src + 0, 4);
+        std::memcpy(&attrs, src + 36, 4);
+        std::memcpy(&sizeHigh, src + 64, 4);
+        std::memcpy(&sizeLow, src + 68, 4);
+
+        std::u16string utf16Name;
+        for (size_t c = 0; c < 260; ++c)
+        {
+            const uint16_t ch = static_cast<uint16_t>(src[72 + c * 2] | (static_cast<uint16_t>(src[72 + c * 2 + 1]) << 8));
+            if (ch == 0)
+                break;
+            utf16Name.push_back(static_cast<char16_t>(ch));
+        }
+
+        std::string relName;
+        try
+        {
+            relName = converter.to_bytes(utf16Name);
+        }
+        catch (const std::range_error&)
+        {
+            continue;
+        }
+
+        if (relName.empty() || relName.find("..") != std::string::npos)
+            continue;
+
+        std::filesystem::path relPath = std::filesystem::u8path(relName);
+        RemoteClipboardFileEntry entry{};
+        entry.remote_index = i;
+        entry.relative_name = relName;
+        entry.local_path = baseDir / relPath;
+        entry.is_directory = (attrs & 0x00000010u) != 0;
+        const bool hasFileSize = (flags & 0x00000040u) != 0;
+        entry.expected_size = hasFileSize ? ((static_cast<uint64_t>(sizeHigh) << 32) | sizeLow) : 0;
+        entry.size_known = hasFileSize;
+        outFiles.push_back(entry);
+
+        if (relName.find('\\') == std::string::npos && relName.find('/') == std::string::npos)
+            outTopLevelPaths.push_back(entry.local_path.u8string());
+    }
+
+    return !outFiles.empty();
+}
+
+UINT request_next_remote_file_chunk(CliprdrClientContext* cliprdr, CxRdpSession* session)
+{
+    if (!cliprdr || !session || !cliprdr->ClientFileContentsRequest)
+        return CHANNEL_RC_OK;
+
+    CLIPRDR_FILE_CONTENTS_REQUEST req{};
+    bool hasWork = false;
+    std::vector<std::string> completedPaths;
+
+    {
+        std::lock_guard<std::mutex> lock(session->clipboard_mutex);
+        while (session->remote_file_download_index < session->remote_clipboard_files.size())
+        {
+            auto& entry = session->remote_clipboard_files[session->remote_file_download_index];
+            if (entry.is_directory)
+            {
+                std::error_code ec;
+                std::filesystem::create_directories(entry.local_path, ec);
+                ++session->remote_file_download_index;
+                continue;
+            }
+
+            if (entry.size_known && entry.received_bytes >= entry.expected_size)
+            {
+                if (entry.expected_size == 0)
+                {
+                    std::error_code ec;
+                    std::filesystem::create_directories(entry.local_path.parent_path(), ec);
+                    std::ofstream emptyFile(entry.local_path, std::ios::binary | std::ios::trunc);
+                }
+                ++session->remote_file_download_index;
+                continue;
+            }
+
+            req.common.msgType = CB_FILECONTENTS_REQUEST;
+            req.streamId = ++session->remote_file_stream_id;
+            req.listIndex = entry.remote_index;
+            if (!entry.size_known)
+            {
+                req.dwFlags = FILECONTENTS_SIZE;
+                req.cbRequested = 8;
+                session->remote_file_requesting_size = true;
+            }
+            else
+            {
+                req.dwFlags = FILECONTENTS_RANGE;
+                req.nPositionLow = static_cast<UINT32>(entry.received_bytes & 0xFFFFFFFFu);
+                req.nPositionHigh = static_cast<UINT32>((entry.received_bytes >> 32) & 0xFFFFFFFFu);
+                const uint64_t remaining = entry.expected_size - entry.received_bytes;
+                req.cbRequested = static_cast<UINT32>(remaining < CX_CLIPRDR_FILE_CHUNK_SIZE ? remaining : CX_CLIPRDR_FILE_CHUNK_SIZE);
+                session->remote_file_requesting_size = false;
+            }
+            hasWork = true;
+            break;
+        }
+
+        if (!hasWork && !session->remote_clipboard_top_level_paths.empty())
+        {
+            completedPaths = session->remote_clipboard_top_level_paths;
+            session->remote_clipboard_top_level_paths.clear();
+            session->remote_clipboard_files.clear();
+        }
+    }
+
+    if (hasWork)
+        return cliprdr->ClientFileContentsRequest(cliprdr, &req);
+
+    if (!completedPaths.empty())
+    {
+        notify_status(session, "RDP clipboard remote files downloaded.");
+        notify_clipboard_files(session, completedPaths);
+    }
+
+    return CHANNEL_RC_OK;
 }
 
 std::string normalize_clipboard_newlines(const std::string& value)
@@ -685,6 +1016,22 @@ const char* clipboard_format_name(uint32_t formatId)
         return "CF_OEMTEXT";
     case CF_UNICODETEXT:
         return "CF_UNICODETEXT";
+    case CF_DIB:
+        return "CF_DIB";
+    case CF_DIBV5:
+        return "CF_DIBV5";
+    case CX_CLIPRDR_FORMAT_PNG:
+        return "PNG";
+    case CX_CLIPRDR_FORMAT_HTML:
+        return "HTML Format";
+    case CX_CLIPRDR_FORMAT_RTF:
+        return "Rich Text Format";
+    case CX_CLIPRDR_FORMAT_FILE_GROUP_DESCRIPTOR_W:
+        return "FileGroupDescriptorW";
+    case CX_CLIPRDR_FORMAT_FILE_CONTENTS:
+        return "FileContents";
+    case CX_CLIPRDR_FORMAT_PREFERRED_DROP_EFFECT:
+        return "Preferred DropEffect";
     default:
         return "UNKNOWN";
     }
@@ -791,7 +1138,13 @@ UINT send_client_capabilities(CliprdrClientContext* cliprdr)
     generalCapabilitySet.capabilitySetType = CB_CAPSTYPE_GENERAL;
     generalCapabilitySet.capabilitySetLength = CB_CAPSTYPE_GENERAL_LEN;
     generalCapabilitySet.version = CB_CAPS_VERSION_2;
-    generalCapabilitySet.generalFlags = CB_USE_LONG_FORMAT_NAMES;
+    generalCapabilitySet.generalFlags =
+        CB_USE_LONG_FORMAT_NAMES |
+        CB_STREAM_FILECLIP_ENABLED |
+        CB_FILECLIP_NO_FILE_PATHS |
+        CB_HUGE_FILE_SUPPORT_ENABLED;
+    if (!session || session->clipboard_lock_enabled)
+        generalCapabilitySet.generalFlags |= CB_CAN_LOCK_CLIPDATA;
 
     CLIPRDR_CAPABILITIES capabilities{};
     capabilities.common.msgType = CB_CLIP_CAPS;
@@ -807,7 +1160,10 @@ UINT send_client_capabilities(CliprdrClientContext* cliprdr)
             std::lock_guard<std::mutex> lock(session->clipboard_mutex);
             session->client_capabilities_sent = true;
         }
-        notify_status(session, "RDP clipboard client capabilities sent.");
+        std::ostringstream message;
+        message << "RDP clipboard client capabilities sent. flags=0x"
+                << std::hex << generalCapabilitySet.generalFlags;
+        notify_status(session, message.str().c_str());
     }
 
     return rc;
@@ -818,24 +1174,111 @@ UINT send_client_format_list(CliprdrClientContext* cliprdr)
     if (!cliprdr || !cliprdr->ClientFormatList)
         return CHANNEL_RC_OK;
 
-    CLIPRDR_FORMAT formats[3]{};
-    formats[0].formatId = CF_UNICODETEXT;
-    formats[1].formatId = CF_TEXT;
-    formats[2].formatId = CF_OEMTEXT;
+    auto* session = static_cast<CxRdpSession*>(cliprdr->custom);
+    int kind = 0;
+    bool hasPng = false;
+    bool hasDib = false;
+    bool hasFiles = false;
+    bool hasHtml = false;
+    bool hasRtf = false;
+    if (session)
+    {
+        std::lock_guard<std::mutex> lock(session->clipboard_mutex);
+        kind = session->local_clipboard_kind;
+        hasPng = !session->local_clipboard_png.empty();
+        hasDib = !session->local_clipboard_dib.empty();
+        hasFiles = !session->local_clipboard_files.empty();
+        hasHtml = !session->local_clipboard_html.empty();
+        hasRtf = !session->local_clipboard_rtf.empty();
+    }
+
+    std::vector<CLIPRDR_FORMAT> formats;
+    static char pngFormatName[] = "PNG";
+    static char fileGroupDescriptorName[] = "FileGroupDescriptorW";
+    static char fileContentsName[] = "FileContents";
+    static char preferredDropEffectName[] = "Preferred DropEffect";
+    static char htmlFormatName[] = "HTML Format";
+    static char rtfFormatName[] = "Rich Text Format";
+    const char* kindLabel = "text";
+
+    if (kind == 2 && hasFiles)
+    {
+        kindLabel = "files";
+        CLIPRDR_FORMAT fileFormat{};
+        fileFormat.formatId = CX_CLIPRDR_FORMAT_FILE_GROUP_DESCRIPTOR_W;
+        fileFormat.formatName = fileGroupDescriptorName;
+        formats.push_back(fileFormat);
+
+        CLIPRDR_FORMAT fileContentsFormat{};
+        fileContentsFormat.formatId = CX_CLIPRDR_FORMAT_FILE_CONTENTS;
+        fileContentsFormat.formatName = fileContentsName;
+        formats.push_back(fileContentsFormat);
+
+        CLIPRDR_FORMAT dropEffectFormat{};
+        dropEffectFormat.formatId = CX_CLIPRDR_FORMAT_PREFERRED_DROP_EFFECT;
+        dropEffectFormat.formatName = preferredDropEffectName;
+        formats.push_back(dropEffectFormat);
+    }
+    else if (kind == 1 && (hasPng || hasDib))
+    {
+        kindLabel = "image";
+        if (hasDib)
+        {
+            CLIPRDR_FORMAT dibFormat{};
+            dibFormat.formatId = CF_DIB;
+            formats.push_back(dibFormat);
+        }
+        if (hasPng)
+        {
+            CLIPRDR_FORMAT pngFormat{};
+            pngFormat.formatId = CX_CLIPRDR_FORMAT_PNG;
+            pngFormat.formatName = pngFormatName;
+            formats.push_back(pngFormat);
+        }
+    }
+    else
+    {
+        CLIPRDR_FORMAT unicodeFormat{};
+        unicodeFormat.formatId = CF_UNICODETEXT;
+        formats.push_back(unicodeFormat);
+
+        CLIPRDR_FORMAT textFormat{};
+        textFormat.formatId = CF_TEXT;
+        formats.push_back(textFormat);
+
+        CLIPRDR_FORMAT oemFormat{};
+        oemFormat.formatId = CF_OEMTEXT;
+        formats.push_back(oemFormat);
+
+        if (hasHtml)
+        {
+            CLIPRDR_FORMAT htmlFormat{};
+            htmlFormat.formatId = CX_CLIPRDR_FORMAT_HTML;
+            htmlFormat.formatName = htmlFormatName;
+            formats.push_back(htmlFormat);
+        }
+
+        if (hasRtf)
+        {
+            CLIPRDR_FORMAT rtfFormat{};
+            rtfFormat.formatId = CX_CLIPRDR_FORMAT_RTF;
+            rtfFormat.formatName = rtfFormatName;
+            formats.push_back(rtfFormat);
+        }
+    }
 
     CLIPRDR_FORMAT_LIST formatList{};
     formatList.common.msgType = CB_FORMAT_LIST;
     formatList.common.msgFlags = 0;
-    formatList.common.dataLen = sizeof(formats);
-    formatList.numFormats = static_cast<UINT32>(sizeof(formats) / sizeof(formats[0]));
-    formatList.formats = formats;
+    formatList.common.dataLen = static_cast<UINT32>(formats.size() * sizeof(CLIPRDR_FORMAT));
+    formatList.numFormats = static_cast<UINT32>(formats.size());
+    formatList.formats = formats.data();
 
-    auto* session = static_cast<CxRdpSession*>(cliprdr->custom);
     const UINT rc = cliprdr->ClientFormatList(cliprdr, &formatList);
     if (session)
     {
         std::ostringstream message;
-        message << "RDP clipboard offered local text formats. rc=" << rc;
+        message << "RDP clipboard offered local " << kindLabel << " formats. rc=" << rc;
         notify_status(session, message.str().c_str());
     }
 
@@ -1420,8 +1863,10 @@ UINT cx_cliprdr_monitor_ready(CliprdrClientContext* cliprdr, const CLIPRDR_MONIT
     if (!session)
         return CHANNEL_RC_OK;
 
-    mark_cliprdr_confirmed(session, "monitor ready");
-    return activate_cliprdr(cliprdr, "monitor ready");
+    const UINT rc = activate_cliprdr(cliprdr, "monitor ready");
+    if (rc == CHANNEL_RC_OK)
+        mark_cliprdr_confirmed(session, "monitor ready");
+    return rc;
 }
 
 UINT cx_cliprdr_server_capabilities(CliprdrClientContext* cliprdr, const CLIPRDR_CAPABILITIES* capabilities)
@@ -1439,7 +1884,6 @@ UINT cx_cliprdr_server_capabilities(CliprdrClientContext* cliprdr, const CLIPRDR
             message << " flags=0x" << std::hex << general->generalFlags;
         }
         notify_status(session, message.str().c_str());
-        mark_cliprdr_confirmed(session, "server capabilities");
 
         {
             std::lock_guard<std::mutex> lock(session->clipboard_mutex);
@@ -1447,7 +1891,7 @@ UINT cx_cliprdr_server_capabilities(CliprdrClientContext* cliprdr, const CLIPRDR
         }
     }
 
-    return send_client_capabilities(cliprdr);
+    return CHANNEL_RC_OK;
 }
 
 UINT cx_cliprdr_server_format_list(CliprdrClientContext* cliprdr, const CLIPRDR_FORMAT_LIST* formatList)
@@ -1456,29 +1900,83 @@ UINT cx_cliprdr_server_format_list(CliprdrClientContext* cliprdr, const CLIPRDR_
         return CHANNEL_RC_OK;
 
     auto* session = static_cast<CxRdpSession*>(cliprdr->custom);
-    uint32_t selectedFormat = 0;
+    uint32_t selectedTextFormat = 0;
+    uint32_t selectedImageFormat = 0;
+    uint32_t selectedImageKind = 0;
+    uint32_t selectedFilesFormat = 0;
 
     for (UINT32 index = 0; index < formatList->numFormats; ++index)
     {
-        const uint32_t formatId = formatList->formats[index].formatId;
+        const auto& fmt = formatList->formats[index];
+        const uint32_t formatId = fmt.formatId;
         if (formatId == CF_UNICODETEXT)
         {
-            selectedFormat = CF_UNICODETEXT;
-            break;
+            selectedTextFormat = CF_UNICODETEXT;
+        }
+        else if (formatId == CF_TEXT && selectedTextFormat == 0)
+        {
+            selectedTextFormat = CF_TEXT;
+        }
+        else if (formatId == CF_OEMTEXT && selectedTextFormat == 0)
+        {
+            selectedTextFormat = CF_OEMTEXT;
         }
 
-        if (formatId == CF_TEXT && selectedFormat == 0)
-            selectedFormat = CF_TEXT;
-        else if (formatId == CF_OEMTEXT && selectedFormat == 0)
-            selectedFormat = CF_OEMTEXT;
+        if (fmt.formatName && equals_ignore_case(fmt.formatName, "FileGroupDescriptorW"))
+        {
+            selectedFilesFormat = formatId;
+        }
+        else if (fmt.formatName &&
+                 (equals_ignore_case(fmt.formatName, "PNG") || equals_ignore_case(fmt.formatName, "image/png")))
+        {
+            selectedImageFormat = formatId;
+            selectedImageKind = CX_RDP_CLIPBOARD_IMAGE_PNG;
+        }
+        else if (formatId == CF_DIB && selectedImageKind != CX_RDP_CLIPBOARD_IMAGE_PNG)
+        {
+            selectedImageFormat = CF_DIB;
+            selectedImageKind = CX_RDP_CLIPBOARD_IMAGE_DIB;
+        }
+        else if (formatId == CF_DIBV5 && selectedImageFormat == 0)
+        {
+            selectedImageFormat = CF_DIBV5;
+            selectedImageKind = CX_RDP_CLIPBOARD_IMAGE_DIB;
+        }
+    }
+
+    uint32_t selectedFormat = 0;
+    uint32_t requestedImageKind = 0;
+    bool requestedFiles = false;
+    if (selectedFilesFormat != 0)
+    {
+        selectedFormat = selectedFilesFormat;
+        requestedFiles = true;
+    }
+    else if (selectedTextFormat == CF_UNICODETEXT)
+    {
+        selectedFormat = selectedTextFormat;
+    }
+    else if (selectedImageFormat != 0)
+    {
+        selectedFormat = selectedImageFormat;
+        requestedImageKind = selectedImageKind;
+    }
+    else
+    {
+        selectedFormat = selectedTextFormat;
     }
 
     if (session)
     {
+        {
+            std::lock_guard<std::mutex> lock(session->clipboard_mutex);
+            session->clipboard_requested_image_format = requestedImageKind;
+            session->clipboard_requested_files = requestedFiles;
+        }
         mark_cliprdr_confirmed(session, "remote formats");
         std::ostringstream message;
         message << "RDP clipboard remote formats received. count=" << formatList->numFormats
-                << " selected=" << clipboard_format_name(selectedFormat);
+                << " selected=" << (requestedFiles ? "FileGroupDescriptorW" : (requestedImageKind == CX_RDP_CLIPBOARD_IMAGE_PNG ? "PNG" : clipboard_format_name(selectedFormat)));
         notify_status(session, message.str().c_str());
     }
 
@@ -1518,8 +2016,29 @@ UINT cx_cliprdr_server_lock_clipboard_data(
     CliprdrClientContext* cliprdr,
     const CLIPRDR_LOCK_CLIPBOARD_DATA* lockClipboardData)
 {
-    (void)cliprdr;
-    (void)lockClipboardData;
+    if (!cliprdr || !lockClipboardData)
+        return CHANNEL_RC_OK;
+
+    if (auto* session = static_cast<CxRdpSession*>(cliprdr->custom))
+    {
+        bool locked = false;
+        {
+            std::lock_guard<std::mutex> lock(session->clipboard_mutex);
+            if (session->clipboard_lock_enabled)
+            {
+                session->locked_clipboard_text[lockClipboardData->clipDataId] = session->local_clipboard_text;
+                if (!session->local_clipboard_files.empty())
+                    session->locked_clipboard_files[lockClipboardData->clipDataId] = session->local_clipboard_files;
+                locked = true;
+            }
+        }
+        if (locked)
+        {
+            std::ostringstream message;
+            message << "RDP clipboard data locked clipDataId=" << lockClipboardData->clipDataId;
+            notify_status(session, message.str().c_str());
+        }
+    }
     return CHANNEL_RC_OK;
 }
 
@@ -1527,8 +2046,25 @@ UINT cx_cliprdr_server_unlock_clipboard_data(
     CliprdrClientContext* cliprdr,
     const CLIPRDR_UNLOCK_CLIPBOARD_DATA* unlockClipboardData)
 {
-    (void)cliprdr;
-    (void)unlockClipboardData;
+    if (!cliprdr || !unlockClipboardData)
+        return CHANNEL_RC_OK;
+
+    if (auto* session = static_cast<CxRdpSession*>(cliprdr->custom))
+    {
+        bool unlocked = false;
+        {
+            std::lock_guard<std::mutex> lock(session->clipboard_mutex);
+            const bool unlockedText = session->locked_clipboard_text.erase(unlockClipboardData->clipDataId) > 0;
+            const bool unlockedFiles = session->locked_clipboard_files.erase(unlockClipboardData->clipDataId) > 0;
+            unlocked = unlockedText || unlockedFiles;
+        }
+        if (unlocked)
+        {
+            std::ostringstream message;
+            message << "RDP clipboard data unlocked clipDataId=" << unlockClipboardData->clipDataId;
+            notify_status(session, message.str().c_str());
+        }
+    }
     return CHANNEL_RC_OK;
 }
 
@@ -1550,7 +2086,116 @@ UINT cx_cliprdr_server_format_data_request(
     response.common.dataLen = 0;
     response.requestedFormatData = nullptr;
 
-    if (session && is_supported_text_format(formatDataRequest->requestedFormatId))
+    if (session && formatDataRequest->requestedFormatId == CX_CLIPRDR_FORMAT_FILE_GROUP_DESCRIPTOR_W)
+    {
+        std::vector<LocalClipboardFileEntry> files;
+        {
+            std::lock_guard<std::mutex> lock(session->clipboard_mutex);
+            if (session->local_clipboard_kind == 2 && !session->local_clipboard_files.empty())
+                files = session->local_clipboard_files;
+        }
+
+        if (!files.empty())
+        {
+            data = serialize_file_group_descriptor_w(files);
+            response.common.msgFlags = CB_RESPONSE_OK;
+            response.common.dataLen = static_cast<UINT32>(data.size());
+            response.requestedFormatData = data.data();
+
+            std::ostringstream message;
+            message << "RDP clipboard remote requested local file list. count=" << files.size()
+                    << " bytes=" << data.size();
+            notify_status(session, message.str().c_str());
+        }
+    }
+    else if (session && formatDataRequest->requestedFormatId == CX_CLIPRDR_FORMAT_PREFERRED_DROP_EFFECT)
+    {
+        bool hasFiles = false;
+        {
+            std::lock_guard<std::mutex> lock(session->clipboard_mutex);
+            hasFiles = session->local_clipboard_kind == 2 && !session->local_clipboard_files.empty();
+        }
+
+        if (hasFiles)
+        {
+            const uint32_t dropEffect = 1u; // DROPEFFECT_COPY
+            data.resize(4);
+            std::memcpy(data.data(), &dropEffect, 4);
+            response.common.msgFlags = CB_RESPONSE_OK;
+            response.common.dataLen = 4;
+            response.requestedFormatData = data.data();
+            notify_status(session, "RDP clipboard remote requested Preferred DropEffect (COPY).");
+        }
+    }
+    else if (session && formatDataRequest->requestedFormatId == CF_DIB)
+    {
+        {
+            std::lock_guard<std::mutex> lock(session->clipboard_mutex);
+            if (session->local_clipboard_kind == 1 && !session->local_clipboard_dib.empty())
+                data.assign(session->local_clipboard_dib.begin(), session->local_clipboard_dib.end());
+        }
+
+        if (!data.empty())
+        {
+            response.common.msgFlags = CB_RESPONSE_OK;
+            response.common.dataLen = static_cast<UINT32>(data.size());
+            response.requestedFormatData = data.data();
+
+            std::ostringstream message;
+            message << "RDP clipboard remote requested local image. format=CF_DIB bytes=" << data.size();
+            notify_status(session, message.str().c_str());
+        }
+    }
+    else if (session && formatDataRequest->requestedFormatId == CX_CLIPRDR_FORMAT_PNG)
+    {
+        {
+            std::lock_guard<std::mutex> lock(session->clipboard_mutex);
+            if (session->local_clipboard_kind == 1 && !session->local_clipboard_png.empty())
+                data.assign(session->local_clipboard_png.begin(), session->local_clipboard_png.end());
+        }
+
+        if (!data.empty())
+        {
+            response.common.msgFlags = CB_RESPONSE_OK;
+            response.common.dataLen = static_cast<UINT32>(data.size());
+            response.requestedFormatData = data.data();
+
+            std::ostringstream message;
+            message << "RDP clipboard remote requested local image. format=PNG bytes=" << data.size();
+            notify_status(session, message.str().c_str());
+        }
+    }
+    else if (session && formatDataRequest->requestedFormatId == CX_CLIPRDR_FORMAT_HTML)
+    {
+        {
+            std::lock_guard<std::mutex> lock(session->clipboard_mutex);
+            if (session->local_clipboard_kind == 0 && !session->local_clipboard_html.empty())
+                data.assign(session->local_clipboard_html.begin(), session->local_clipboard_html.end());
+        }
+
+        if (!data.empty())
+        {
+            response.common.msgFlags = CB_RESPONSE_OK;
+            response.common.dataLen = static_cast<UINT32>(data.size());
+            response.requestedFormatData = data.data();
+        }
+    }
+    else if (session && formatDataRequest->requestedFormatId == CX_CLIPRDR_FORMAT_RTF)
+    {
+        {
+            std::lock_guard<std::mutex> lock(session->clipboard_mutex);
+            if (session->local_clipboard_kind == 0 && !session->local_clipboard_rtf.empty())
+                data.assign(session->local_clipboard_rtf.begin(), session->local_clipboard_rtf.end());
+        }
+
+        if (!data.empty())
+        {
+            response.common.msgFlags = CB_RESPONSE_OK;
+            response.common.dataLen = static_cast<UINT32>(data.size());
+            response.requestedFormatData = data.data();
+        }
+    }
+    else if (session && is_supported_text_format(formatDataRequest->requestedFormatId))
     {
         std::string text;
         {
@@ -1598,17 +2243,65 @@ UINT cx_cliprdr_server_format_data_response(
         return CHANNEL_RC_OK;
 
     uint32_t requestedFormat = 0;
+    uint32_t requestedImageKind = 0;
+    bool requestedFiles = false;
     {
         std::lock_guard<std::mutex> lock(session->clipboard_mutex);
         requestedFormat = session->clipboard_requested_format;
+        requestedImageKind = session->clipboard_requested_image_format;
+        requestedFiles = session->clipboard_requested_files;
         session->clipboard_requested_format = 0;
+        session->clipboard_requested_image_format = 0;
+        session->clipboard_requested_files = false;
+    }
+
+    const auto* data = formatDataResponse->requestedFormatData;
+    const auto length = formatDataResponse->common.dataLen;
+
+    if (requestedFiles)
+    {
+        if (data && length > 0)
+        {
+            const auto stamp = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                   std::chrono::system_clock::now().time_since_epoch())
+                                   .count();
+            std::error_code ec;
+            const auto baseDir = std::filesystem::temp_directory_path(ec) / "CxShell-RdpClip" / std::to_string(stamp);
+            std::filesystem::create_directories(baseDir, ec);
+
+            std::vector<RemoteClipboardFileEntry> parsedFiles;
+            std::vector<std::string> topLevelPaths;
+            if (parse_file_group_descriptor_w(data, length, baseDir, parsedFiles, topLevelPaths))
+            {
+                {
+                    std::lock_guard<std::mutex> lock(session->clipboard_mutex);
+                    session->remote_clipboard_files = std::move(parsedFiles);
+                    session->remote_clipboard_top_level_paths = std::move(topLevelPaths);
+                    session->remote_file_download_index = 0;
+                    session->remote_file_requesting_size = false;
+                }
+                return request_next_remote_file_chunk(cliprdr, session);
+            }
+        }
+        return CHANNEL_RC_OK;
+    }
+
+    if (requestedImageKind != 0)
+    {
+        if (data && length > 0)
+        {
+            std::ostringstream message;
+            message << "RDP clipboard remote image received. kind=" << requestedImageKind
+                    << " bytes=" << length;
+            notify_status(session, message.str().c_str());
+            notify_clipboard_image(session, requestedImageKind, data, length);
+        }
+        return CHANNEL_RC_OK;
     }
 
     if (!is_supported_text_format(requestedFormat))
         return CHANNEL_RC_OK;
 
-    const auto* data = formatDataResponse->requestedFormatData;
-    const auto length = formatDataResponse->common.dataLen;
     {
         std::ostringstream message;
         message << "RDP clipboard remote data received. format="
@@ -1624,18 +2317,257 @@ UINT cx_cliprdr_server_file_contents_request(
     CliprdrClientContext* cliprdr,
     const CLIPRDR_FILE_CONTENTS_REQUEST* fileContentsRequest)
 {
-    (void)cliprdr;
-    (void)fileContentsRequest;
-    return CHANNEL_RC_OK;
+    if (!cliprdr || !fileContentsRequest || !cliprdr->ClientFileContentsResponse)
+        return CHANNEL_RC_OK;
+
+    auto* session = static_cast<CxRdpSession*>(cliprdr->custom);
+    CLIPRDR_FILE_CONTENTS_RESPONSE response{};
+    response.common.msgType = CB_FILECONTENTS_RESPONSE;
+    response.common.msgFlags = CB_RESPONSE_FAIL;
+    response.streamId = fileContentsRequest->streamId;
+
+    LocalClipboardFileEntry entry{};
+    bool found = false;
+    if (session)
+    {
+        std::lock_guard<std::mutex> lock(session->clipboard_mutex);
+        if (fileContentsRequest->haveClipDataId)
+        {
+            const auto it = session->locked_clipboard_files.find(fileContentsRequest->clipDataId);
+            if (it != session->locked_clipboard_files.end() &&
+                fileContentsRequest->listIndex < it->second.size())
+            {
+                entry = it->second[fileContentsRequest->listIndex];
+                found = true;
+            }
+        }
+        if (!found &&
+            session->local_clipboard_kind == 2 &&
+            fileContentsRequest->listIndex < session->local_clipboard_files.size())
+        {
+            entry = session->local_clipboard_files[fileContentsRequest->listIndex];
+            found = true;
+        }
+    }
+
+    static constexpr BYTE kEmptyPayload = 0;
+    std::vector<BYTE> payload;
+    if (!found && session)
+    {
+        std::ostringstream msg;
+        msg << "RDP clipboard file contents request failed: entry not found listIndex="
+            << fileContentsRequest->listIndex
+            << " clipDataId=" << (fileContentsRequest->haveClipDataId ? fileContentsRequest->clipDataId : 0);
+        notify_status(session, msg.str().c_str());
+    }
+    if (found && (fileContentsRequest->dwFlags & FILECONTENTS_SIZE) != 0)
+    {
+        payload.resize(8);
+        const uint64_t size = entry.file_size;
+        std::memcpy(payload.data(), &size, 8);
+        response.common.msgFlags = CB_RESPONSE_OK;
+        response.cbRequested = 8;
+        response.requestedData = payload.data();
+        if (session)
+        {
+            std::ostringstream msg;
+            msg << "RDP clipboard file size requested listIndex=" << fileContentsRequest->listIndex
+                << " size=" << size;
+            notify_status(session, msg.str().c_str());
+        }
+    }
+    else if (found && !entry.is_directory && (fileContentsRequest->dwFlags & FILECONTENTS_RANGE) != 0)
+    {
+        const uint64_t offset =
+            (static_cast<uint64_t>(fileContentsRequest->nPositionHigh) << 32) |
+            fileContentsRequest->nPositionLow;
+        const uint32_t toRead = fileContentsRequest->cbRequested;
+#if defined(_WIN32)
+        HANDLE hFile = CreateFileW(
+            entry.full_path.c_str(),
+            GENERIC_READ,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            nullptr,
+            OPEN_EXISTING,
+            FILE_ATTRIBUTE_NORMAL,
+            nullptr);
+        if (hFile == INVALID_HANDLE_VALUE)
+        {
+            if (session)
+            {
+                std::ostringstream msg;
+                msg << "RDP clipboard file contents read failed: could not open "
+                    << entry.relative_name << " (error=" << GetLastError() << ")";
+                notify_status(session, msg.str().c_str());
+            }
+        }
+        else
+        {
+            bool readOk = true;
+            uint32_t bytesRead = 0;
+            DWORD winErr = 0;
+            if (toRead > 0)
+            {
+                LARGE_INTEGER liOffset{};
+                liOffset.QuadPart = static_cast<LONGLONG>(offset);
+                if (!SetFilePointerEx(hFile, liOffset, nullptr, FILE_BEGIN))
+                {
+                    readOk = false;
+                    winErr = GetLastError();
+                }
+                else
+                {
+                    payload.resize(toRead);
+                    DWORD chunkRead = 0;
+                    if (!ReadFile(hFile, payload.data(), toRead, &chunkRead, nullptr))
+                    {
+                        readOk = false;
+                        winErr = GetLastError();
+                    }
+                    else
+                    {
+                        bytesRead = static_cast<uint32_t>(chunkRead);
+                    }
+                }
+            }
+            CloseHandle(hFile);
+
+            if (readOk)
+            {
+                payload.resize(bytesRead);
+                response.common.msgFlags = CB_RESPONSE_OK;
+                response.cbRequested = bytesRead;
+                response.requestedData = payload.empty() ? &kEmptyPayload : payload.data();
+            }
+            else if (session)
+            {
+                std::ostringstream msg;
+                msg << "RDP clipboard file contents read failed: " << entry.relative_name
+                    << " (error=" << winErr << ")";
+                notify_status(session, msg.str().c_str());
+            }
+        }
+#else
+        std::ifstream file(entry.full_path, std::ios::binary);
+        if (file)
+        {
+            uint32_t bytesRead = 0;
+            if (toRead > 0)
+            {
+                file.seekg(static_cast<std::streamoff>(offset), std::ios::beg);
+                payload.resize(toRead);
+                file.read(reinterpret_cast<char*>(payload.data()), static_cast<std::streamsize>(toRead));
+                bytesRead = static_cast<uint32_t>(file.gcount());
+            }
+            payload.resize(bytesRead);
+            response.common.msgFlags = CB_RESPONSE_OK;
+            response.cbRequested = bytesRead;
+            response.requestedData = payload.empty() ? &kEmptyPayload : payload.data();
+        }
+#endif
+
+        if (response.common.msgFlags == CB_RESPONSE_OK && session && entry.file_size > 0)
+        {
+            const uint64_t sent = offset + response.cbRequested;
+            const int pct = static_cast<int>(sent >= entry.file_size ? 100 : (sent * 100) / entry.file_size);
+            bool shouldNotify = false;
+            {
+                std::lock_guard<std::mutex> lock(session->clipboard_mutex);
+                if (pct == 100 || session->last_upload_progress_pct < 0 || pct - session->last_upload_progress_pct >= 10)
+                {
+                    session->last_upload_progress_pct = pct == 100 ? -1 : pct;
+                    shouldNotify = true;
+                }
+            }
+            if (shouldNotify)
+            {
+                std::ostringstream msg;
+                msg << "RDP clipboard uploading " << entry.relative_name << " (" << pct << "%)";
+                notify_status(session, msg.str().c_str());
+            }
+        }
+    }
+
+    return cliprdr->ClientFileContentsResponse(cliprdr, &response);
 }
 
 UINT cx_cliprdr_server_file_contents_response(
     CliprdrClientContext* cliprdr,
     const CLIPRDR_FILE_CONTENTS_RESPONSE* fileContentsResponse)
 {
-    (void)cliprdr;
-    (void)fileContentsResponse;
-    return CHANNEL_RC_OK;
+    if (!cliprdr || !fileContentsResponse)
+        return CHANNEL_RC_OK;
+
+    auto* session = static_cast<CxRdpSession*>(cliprdr->custom);
+    if (!session)
+        return CHANNEL_RC_OK;
+
+    if ((fileContentsResponse->common.msgFlags & CB_RESPONSE_FAIL) != 0)
+    {
+        std::lock_guard<std::mutex> lock(session->clipboard_mutex);
+        session->remote_clipboard_files.clear();
+        session->remote_clipboard_top_level_paths.clear();
+        return CHANNEL_RC_OK;
+    }
+
+    std::string progressMessage;
+    {
+        std::lock_guard<std::mutex> lock(session->clipboard_mutex);
+        if (session->remote_file_download_index < session->remote_clipboard_files.size())
+        {
+            auto& entry = session->remote_clipboard_files[session->remote_file_download_index];
+            if (session->remote_file_requesting_size)
+            {
+                if (fileContentsResponse->cbRequested >= 8 && fileContentsResponse->requestedData)
+                {
+                    uint64_t size = 0;
+                    std::memcpy(&size, fileContentsResponse->requestedData, 8);
+                    entry.expected_size = size;
+                }
+                entry.size_known = true;
+                session->remote_file_requesting_size = false;
+            }
+            else
+            {
+                std::error_code ec;
+                std::filesystem::create_directories(entry.local_path.parent_path(), ec);
+                const auto mode = entry.received_bytes == 0
+                                      ? (std::ios::binary | std::ios::trunc)
+                                      : (std::ios::binary | std::ios::app);
+                std::ofstream out(entry.local_path, mode);
+                if (out && fileContentsResponse->requestedData && fileContentsResponse->cbRequested > 0)
+                {
+                    out.write(
+                        reinterpret_cast<const char*>(fileContentsResponse->requestedData),
+                        static_cast<std::streamsize>(fileContentsResponse->cbRequested));
+                    entry.received_bytes += fileContentsResponse->cbRequested;
+                    if (entry.expected_size > 0)
+                    {
+                        const int pct = static_cast<int>(
+                            entry.received_bytes >= entry.expected_size
+                                ? 100
+                                : (entry.received_bytes * 100) / entry.expected_size);
+                        if (pct == 100 || session->last_download_progress_pct < 0 || pct - session->last_download_progress_pct >= 10)
+                        {
+                            session->last_download_progress_pct = pct == 100 ? -1 : pct;
+                            std::ostringstream msg;
+                            msg << "RDP clipboard downloading " << entry.relative_name << " (" << pct << "%)";
+                            progressMessage = msg.str();
+                        }
+                    }
+                }
+                else
+                {
+                    entry.received_bytes = entry.expected_size;
+                }
+            }
+        }
+    }
+
+    if (!progressMessage.empty())
+        notify_status(session, progressMessage.c_str());
+
+    return request_next_remote_file_chunk(cliprdr, session);
 }
 
 void initialize_cliprdr(CxRdpSession* session, CliprdrClientContext* cliprdr)
@@ -1653,6 +2585,12 @@ void initialize_cliprdr(CxRdpSession* session, CliprdrClientContext* cliprdr)
         session->client_capabilities_sent = false;
         session->cliprdr_connected_at = std::chrono::steady_clock::now();
         session->clipboard_requested_format = 0;
+        session->clipboard_requested_image_format = 0;
+        session->clipboard_requested_files = false;
+        session->remote_clipboard_files.clear();
+        session->remote_clipboard_top_level_paths.clear();
+        session->remote_file_download_index = 0;
+        session->remote_file_requesting_size = false;
     }
 
     cliprdr->custom = session;
@@ -1689,6 +2627,12 @@ void uninitialize_cliprdr(CxRdpSession* session, CliprdrClientContext* cliprdr)
         session->cliprdr_wait_logged = false;
         session->client_capabilities_sent = false;
         session->clipboard_requested_format = 0;
+        session->clipboard_requested_image_format = 0;
+        session->clipboard_requested_files = false;
+        session->remote_clipboard_files.clear();
+        session->remote_clipboard_top_level_paths.clear();
+        session->remote_file_download_index = 0;
+        session->remote_file_requesting_size = false;
     }
 }
 
@@ -1853,6 +2797,42 @@ void ensure_gfx_dynamic_channel(CxRdpSession* session, rdpSettings* settings)
     notify_status(session, status.str().c_str());
 }
 
+UINT cx_disp_caps(
+    DispClientContext* disp,
+    UINT32 maxNumMonitors,
+    UINT32 maxMonitorAreaFactorA,
+    UINT32 maxMonitorAreaFactorB)
+{
+    (void)maxNumMonitors;
+    (void)maxMonitorAreaFactorA;
+    (void)maxMonitorAreaFactorB;
+    if (!disp || !disp->custom)
+        return CHANNEL_RC_OK;
+
+    auto* session = static_cast<CxRdpSession*>(disp->custom);
+    {
+        std::lock_guard<std::mutex> lock(session->display_mutex);
+        session->disp_caps_received = true;
+        // Windows often ignores TS_UD_CS_CORE desktopScaleFactor when
+        // reconnecting to an existing session. Queue one initial
+        // SendMonitorLayout once the server advertises DISP caps so the
+        // requested DPI applies automatically on startup.
+        if (session->display_scale_percent > 0 &&
+            !session->initial_display_layout_sent &&
+            !session->display_update_pending &&
+            session->width >= 320 &&
+            session->height >= 240)
+        {
+            session->pending_width = session->width & ~1;
+            session->pending_height = session->height;
+            session->pending_scale_percent = session->display_scale_percent;
+            session->display_update_pending = true;
+        }
+    }
+    notify_status(session, "RDP display control capabilities received.");
+    return CHANNEL_RC_OK;
+}
+
 void cx_channel_connected(void* context, const ChannelConnectedEventArgs* e)
 {
     if (!context || !e || !e->name || !e->pInterface)
@@ -1879,12 +2859,16 @@ void cx_channel_connected(void* context, const ChannelConnectedEventArgs* e)
                            std::strcmp(e->name, DISP_DVC_CHANNEL_NAME) == 0;
     if (isDisplay)
     {
+        if (!session)
+            return;
         auto* disp = static_cast<DispClientContext*>(e->pInterface);
+        disp->custom = session;
+        disp->DisplayControlCaps = cx_disp_caps;
         {
             std::lock_guard<std::mutex> lock(session->display_mutex);
             session->disp = disp;
+            session->disp_caps_received = false;
         }
-        disp->custom = session;
         notify_status(session, "RDP display control channel connected.");
         return;
     }
@@ -1922,8 +2906,12 @@ void cx_channel_disconnected(void* context, const ChannelDisconnectedEventArgs* 
         {
             std::lock_guard<std::mutex> lock(session->display_mutex);
             if (session->disp)
+            {
+                session->disp->DisplayControlCaps = nullptr;
                 session->disp->custom = nullptr;
+            }
             session->disp = nullptr;
+            session->disp_caps_received = false;
         }
         return;
     }
@@ -2144,22 +3132,28 @@ void apply_pending_display_update(CxRdpSession* session)
         return;
 
     DispClientContext* disp = nullptr;
+    bool dispCapsReceived = false;
     {
         std::lock_guard<std::mutex> lock(session->display_mutex);
         disp = session->disp;
+        dispCapsReceived = session->disp_caps_received;
     }
 
-    // Give the display-control DVC a moment to arrive. Otherwise the very
-    // first viewport resize lands before the channel exists, the legacy
-    // fallback fails, and the UI tears the whole session down to reconnect.
-    if (!disp && session->connected_at.time_since_epoch().count() > 0 &&
+    // Give the display-control DVC a moment to arrive and exchange caps.
+    // Otherwise the very first viewport resize lands before the channel exists
+    // (or before DisplayControlCaps arrives), the legacy fallback fails, and
+    // the UI tears the whole session down to reconnect.
+    if ((!disp || !dispCapsReceived) && session->connected_at.time_since_epoch().count() > 0 &&
         std::chrono::steady_clock::now() - session->connected_at < kDisplayControlGracePeriod)
     {
         std::lock_guard<std::mutex> lock(session->display_mutex);
-        session->pending_width = width;
-        session->pending_height = height;
-        session->pending_scale_percent = scale;
-        session->display_update_pending = true;
+        if (!session->display_update_pending)
+        {
+            session->pending_width = width;
+            session->pending_height = height;
+            session->pending_scale_percent = scale;
+            session->display_update_pending = true;
+        }
         return;
     }
 
@@ -2170,9 +3164,13 @@ void apply_pending_display_update(CxRdpSession* session)
 
     if (scale > 0)
     {
+        const UINT32 desktopScale = static_cast<UINT32>(scale);
+        const UINT32 deviceScale = resolve_device_scale_factor(desktopScale);
         session->display_scale_percent = scale;
-        freerdp_settings_set_uint32(context->settings, FreeRDP_DesktopScaleFactor, static_cast<UINT32>(scale));
-        freerdp_settings_set_uint32(context->settings, FreeRDP_DeviceScaleFactor, static_cast<UINT32>(scale));
+        freerdp_settings_set_uint32(context->settings, FreeRDP_DesktopPhysicalWidth, compute_physical_mm(static_cast<UINT32>(width), desktopScale));
+        freerdp_settings_set_uint32(context->settings, FreeRDP_DesktopPhysicalHeight, compute_physical_mm(static_cast<UINT32>(height), desktopScale));
+        freerdp_settings_set_uint32(context->settings, FreeRDP_DesktopScaleFactor, desktopScale);
+        freerdp_settings_set_uint32(context->settings, FreeRDP_DeviceScaleFactor, deviceScale);
     }
 
     bool sent = false;
@@ -2186,12 +3184,13 @@ void apply_pending_display_update(CxRdpSession* session)
         layout.Height = static_cast<UINT32>(height);
         // Windows uses the physical monitor size together with the scale
         // factors; sending zeroes makes it ignore the layout.
-        const UINT32 dpi = scale > 0 ? static_cast<UINT32>(scale) : 100;
-        layout.PhysicalWidth = static_cast<UINT32>(width * 2540 / (96 * dpi / 100) / 10);
-        layout.PhysicalHeight = static_cast<UINT32>(height * 2540 / (96 * dpi / 100) / 10);
-        layout.Orientation = 0;
-        layout.DesktopScaleFactor = scale > 0 ? static_cast<UINT32>(scale) : 100;
-        layout.DeviceScaleFactor = scale > 0 ? static_cast<UINT32>(scale) : 100;
+        const UINT32 desktopScale = scale > 0 ? static_cast<UINT32>(scale) : 100u;
+        const UINT32 deviceScale = resolve_device_scale_factor(desktopScale);
+        layout.PhysicalWidth = compute_physical_mm(static_cast<UINT32>(width), desktopScale);
+        layout.PhysicalHeight = compute_physical_mm(static_cast<UINT32>(height), desktopScale);
+        layout.Orientation = ORIENTATION_LANDSCAPE;
+        layout.DesktopScaleFactor = desktopScale;
+        layout.DeviceScaleFactor = deviceScale;
         sent = disp->SendMonitorLayout(disp, 1, &layout) == CHANNEL_RC_OK;
     }
 
@@ -2213,6 +3212,12 @@ void apply_pending_display_update(CxRdpSession* session)
     // surface here so the next frame callback already carries the new size.
     if (sent && context->gdi && !cx_desktop_resize(context))
         sent = false;
+
+    if (sent)
+    {
+        std::lock_guard<std::mutex> lock(session->display_mutex);
+        session->initial_display_layout_sent = true;
+    }
 
     std::ostringstream status;
     status << (sent ? "RDP display update sent: " : "RDP display update failed: ")
@@ -2244,7 +3249,7 @@ BOOL cx_pre_connect(freerdp* instance)
         freerdp_settings_set_uint32(
             instance->context->settings,
             FreeRDP_ClipboardFeatureMask,
-            CLIPRDR_FLAG_LOCAL_TO_REMOTE | CLIPRDR_FLAG_REMOTE_TO_LOCAL);
+            CLIPRDR_FLAG_DEFAULT_MASK);
     }
     return TRUE;
 }
@@ -2261,7 +3266,7 @@ BOOL cx_load_channels(freerdp* instance)
                      !localAudioEnabled &&
                      !session->microphone_enabled &&
                      !session->graphics_pipeline_requested &&
-                     session->display_scale_percent <= 0))
+                     !freerdp_settings_get_bool(instance->context->settings, FreeRDP_SupportDisplayControl)))
         return TRUE;
 
     register_static_channel_provider();
@@ -2517,7 +3522,21 @@ BOOL cx_post_connect(freerdp* instance)
 
     {
         std::lock_guard<std::mutex> lock(session->display_mutex);
-        session->display_update_pending = false;
+        session->initial_display_layout_sent = false;
+        if (session->disp_caps_received &&
+            session->display_scale_percent > 0 &&
+            session->width >= 320 &&
+            session->height >= 240)
+        {
+            session->pending_width = session->width & ~1;
+            session->pending_height = session->height;
+            session->pending_scale_percent = session->display_scale_percent;
+            session->display_update_pending = true;
+        }
+        else
+        {
+            session->display_update_pending = false;
+        }
     }
     session->connected_at = std::chrono::steady_clock::now();
     auto* gdi = instance->context ? instance->context->gdi : nullptr;
@@ -2567,6 +3586,8 @@ void cx_post_disconnect(freerdp* instance)
         {
             std::lock_guard<std::mutex> lock(session->display_mutex);
             session->disp = nullptr;
+            session->disp_caps_received = false;
+            session->initial_display_layout_sent = false;
             session->display_update_pending = false;
         }
 
@@ -2800,8 +3821,16 @@ void connection_thread(CxRdpSession* session)
             freerdp_settings_set_string(settings, FreeRDP_Username, session->username.c_str());
             freerdp_settings_set_string(settings, FreeRDP_Password, session->password.c_str());
             freerdp_settings_set_string(settings, FreeRDP_Domain, session->domain.c_str());
-            freerdp_settings_set_uint32(settings, FreeRDP_DesktopWidth, static_cast<uint32_t>(session->width > 0 ? session->width : 1024));
-            freerdp_settings_set_uint32(settings, FreeRDP_DesktopHeight, static_cast<uint32_t>(session->height > 0 ? session->height : 768));
+            const uint32_t initialWidth = session->width >= 320
+                ? static_cast<uint32_t>(session->width & ~1)
+                : 1024u;
+            const uint32_t initialHeight = session->height >= 240
+                ? static_cast<uint32_t>(session->height)
+                : 768u;
+            session->width = static_cast<int>(initialWidth);
+            session->height = static_cast<int>(initialHeight);
+            freerdp_settings_set_uint32(settings, FreeRDP_DesktopWidth, initialWidth);
+            freerdp_settings_set_uint32(settings, FreeRDP_DesktopHeight, initialHeight);
             freerdp_settings_set_uint32(settings, FreeRDP_ColorDepth, static_cast<uint32_t>(session->color_depth));
             freerdp_settings_set_bool(settings, FreeRDP_IgnoreCertificate, TRUE);
             freerdp_settings_set_bool(settings, FreeRDP_AutoAcceptCertificate, TRUE);
@@ -2840,6 +3869,11 @@ void connection_thread(CxRdpSession* session)
                 freerdp_settings_set_bool(settings, FreeRDP_SupportGraphicsPipeline, TRUE);
                 freerdp_settings_set_bool(settings, FreeRDP_GfxPlanar, TRUE);
                 freerdp_settings_set_bool(settings, FreeRDP_GfxProgressive, TRUE);
+                freerdp_settings_set_bool(settings, FreeRDP_GfxProgressiveV2, TRUE);
+                const BOOL enableH264 = session->h264_requested ? TRUE : FALSE;
+                freerdp_settings_set_bool(settings, FreeRDP_GfxH264, enableH264);
+                freerdp_settings_set_bool(settings, FreeRDP_GfxAVC444, enableH264);
+                freerdp_settings_set_bool(settings, FreeRDP_GfxAVC444v2, enableH264);
                 // A positive FrameAcknowledge makes the client send
                 // RDPGFX_FRAME_ACKNOWLEDGE; without it the server throttles the
                 // graphics channel and may stop streaming frames entirely.
@@ -2848,6 +3882,9 @@ void connection_thread(CxRdpSession* session)
             else
             {
                 freerdp_settings_set_bool(settings, FreeRDP_SupportGraphicsPipeline, FALSE);
+                freerdp_settings_set_bool(settings, FreeRDP_GfxH264, FALSE);
+                freerdp_settings_set_bool(settings, FreeRDP_GfxAVC444, FALSE);
+                freerdp_settings_set_bool(settings, FreeRDP_GfxAVC444v2, FALSE);
             }
 
             // Cheap bandwidth/CPU wins that do not change what the user sees:
@@ -2904,42 +3941,54 @@ void connection_thread(CxRdpSession* session)
 
             // DPI remoting: tell the remote session what scaling the user sees.
             // 0 means "Keep remote" - leave the session's own scaling alone.
+            // Always register the display-control DVC so runtime resize and
+            // multi-monitor remain available under KeepRemote as well.
+            freerdp_settings_set_bool(settings, FreeRDP_SupportDisplayControl, TRUE);
+            freerdp_settings_set_bool(settings, FreeRDP_UseMultimon, TRUE);
+            freerdp_settings_set_bool(settings, FreeRDP_ForceMultimon, TRUE);
+
+            rdpMonitor initialMonitor{};
+            initialMonitor.x = 0;
+            initialMonitor.y = 0;
+            initialMonitor.width = static_cast<INT32>(freerdp_settings_get_uint32(settings, FreeRDP_DesktopWidth));
+            initialMonitor.height = static_cast<INT32>(freerdp_settings_get_uint32(settings, FreeRDP_DesktopHeight));
+            initialMonitor.is_primary = TRUE;
+
             if (session->display_scale_percent > 0)
             {
                 const auto scale = static_cast<UINT32>(session->display_scale_percent);
-                // Adding the display-control DVC is what makes FreeRDP load the
-                // channel; setting SupportDisplayControl as well would register
-                // it twice and fail PostConnect on some builds.
+                const auto deviceScale = resolve_device_scale_factor(scale);
+                const auto desktopW = freerdp_settings_get_uint32(settings, FreeRDP_DesktopWidth);
+                const auto desktopH = freerdp_settings_get_uint32(settings, FreeRDP_DesktopHeight);
+                const auto physW = compute_physical_mm(desktopW, scale);
+                const auto physH = compute_physical_mm(desktopH, scale);
+                freerdp_settings_set_uint32(settings, FreeRDP_DesktopPhysicalWidth, physW);
+                freerdp_settings_set_uint32(settings, FreeRDP_DesktopPhysicalHeight, physH);
+                freerdp_settings_set_uint16(settings, FreeRDP_DesktopOrientation, ORIENTATION_LANDSCAPE);
                 freerdp_settings_set_uint32(settings, FreeRDP_DesktopScaleFactor, scale);
-                freerdp_settings_set_uint32(settings, FreeRDP_DeviceScaleFactor, scale);
+                freerdp_settings_set_uint32(settings, FreeRDP_DeviceScaleFactor, deviceScale);
 
-                // The static addin in freerdp-client3.dll is registered as
-                // "disp"; the long DVC name is only the wire protocol name.
-                freerdp_settings_set_bool(settings, FreeRDP_SupportDisplayControl, TRUE);
-                freerdp_settings_set_bool(settings, FreeRDP_UseMultimon, TRUE);
-                freerdp_settings_set_bool(settings, FreeRDP_ForceMultimon, TRUE);
-                {
-                    rdpMonitor initialMonitor{};
-                    initialMonitor.x = 0;
-                    initialMonitor.y = 0;
-                    initialMonitor.width = static_cast<INT32>(freerdp_settings_get_uint32(settings, FreeRDP_DesktopWidth));
-                    initialMonitor.height = static_cast<INT32>(freerdp_settings_get_uint32(settings, FreeRDP_DesktopHeight));
-                    initialMonitor.is_primary = TRUE;
-                    if (initialMonitor.width > 0 && initialMonitor.height > 0)
-                        freerdp_settings_set_monitor_def_array_sorted(settings, &initialMonitor, 1);
-                }
-                const char* displayChannel[] = { DISP_CHANNEL_NAME };
-                if (!freerdp_client_add_dynamic_channel(settings, 1, displayChannel))
-                {
-                    set_error(session, "Failed to configure the RDP display control channel.");
-                    free_instance(session);
-                    break;
-                }
+                initialMonitor.attributes.physicalWidth = physW;
+                initialMonitor.attributes.physicalHeight = physH;
+                initialMonitor.attributes.orientation = ORIENTATION_LANDSCAPE;
+                initialMonitor.attributes.desktopScaleFactor = scale;
+                initialMonitor.attributes.deviceScaleFactor = deviceScale;
             }
             else
             {
                 freerdp_settings_set_uint32(settings, FreeRDP_DesktopScaleFactor, 0);
                 freerdp_settings_set_uint32(settings, FreeRDP_DeviceScaleFactor, 0);
+            }
+
+            if (initialMonitor.width > 0 && initialMonitor.height > 0)
+                freerdp_settings_set_monitor_def_array_sorted(settings, &initialMonitor, 1);
+
+            const char* displayChannel[] = { DISP_CHANNEL_NAME };
+            if (!freerdp_client_add_dynamic_channel(settings, 1, displayChannel))
+            {
+                set_error(session, "Failed to configure the RDP display control channel.");
+                free_instance(session);
+                break;
             }
 
             // Idle sessions die when a NAT or firewall drops the flow, so keep
@@ -3018,6 +4067,14 @@ void connection_thread(CxRdpSession* session)
                      << " rdp=" << (freerdp_settings_get_bool(settings, FreeRDP_RdpSecurity) ? "true" : "false")
                      << " negotiate=" << (freerdp_settings_get_bool(settings, FreeRDP_NegotiateSecurityLayer) ? "true" : "false");
             notify_status(session, security.str().c_str());
+
+            {
+                std::lock_guard<std::mutex> lock(session->display_mutex);
+                session->disp = nullptr;
+                session->disp_caps_received = false;
+                session->initial_display_layout_sent = false;
+                session->display_update_pending = false;
+            }
 
             if (!freerdp_connect(session->instance))
             {
@@ -3195,7 +4252,12 @@ CX_RDP_API uint32_t cxrdp_get_capabilities(void)
                             CX_RDP_CAPABILITY_GFX |
                             CX_RDP_CAPABILITY_SYNC_LOCK_KEYS |
                             CX_RDP_CAPABILITY_POINTER_SHAPE |
-                            CX_RDP_CAPABILITY_MULTI_MONITOR;
+                            CX_RDP_CAPABILITY_CLIPBOARD_IMAGE |
+                            CX_RDP_CAPABILITY_CLIPBOARD_FILES |
+                            CX_RDP_CAPABILITY_CLIPBOARD_RICH_TEXT |
+                            CX_RDP_CAPABILITY_CLIPBOARD_LOCK |
+                            CX_RDP_CAPABILITY_MULTI_MONITOR |
+                            CX_RDP_CAPABILITY_GFX_H264;
     if (has_native_audio_backend())
         capabilities |= CX_RDP_CAPABILITY_AUDIO_PLAYBACK | CX_RDP_CAPABILITY_MICROPHONE;
     return capabilities;
@@ -3246,6 +4308,30 @@ CX_RDP_API void cxrdp_set_clipboard_callback(
 
     std::lock_guard<std::mutex> lock(session->callback_mutex);
     session->clipboard_text_callback = clipboard_text_callback;
+}
+
+CX_RDP_API void cxrdp_set_clipboard_image_callback(
+    void* handle,
+    cxrdp_clipboard_image_callback clipboard_image_callback)
+{
+    auto* session = static_cast<CxRdpSession*>(handle);
+    if (!session)
+        return;
+
+    std::lock_guard<std::mutex> lock(session->callback_mutex);
+    session->clipboard_image_callback = clipboard_image_callback;
+}
+
+CX_RDP_API void cxrdp_set_clipboard_files_callback(
+    void* handle,
+    cxrdp_clipboard_files_callback clipboard_files_callback)
+{
+    auto* session = static_cast<CxRdpSession*>(handle);
+    if (!session)
+        return;
+
+    std::lock_guard<std::mutex> lock(session->callback_mutex);
+    session->clipboard_files_callback = clipboard_files_callback;
 }
 
 CX_RDP_API void cxrdp_set_pointer_callback(
@@ -3399,7 +4485,161 @@ CX_RDP_API void cxrdp_set_clipboard_text(void* handle, const char* text)
 
     {
         std::lock_guard<std::mutex> lock(session->clipboard_mutex);
+        session->local_clipboard_kind = 0;
         session->local_clipboard_text = text ? text : "";
+        session->local_clipboard_html.clear();
+        session->local_clipboard_rtf.clear();
+        session->local_clipboard_png.clear();
+        session->local_clipboard_dib.clear();
+        session->local_clipboard_files.clear();
+        ++session->local_clipboard_revision;
+    }
+}
+
+CX_RDP_API void cxrdp_set_clipboard_rich_text(
+    void* handle,
+    const char* plain_text,
+    const uint8_t* html_bytes,
+    uint32_t html_length,
+    const uint8_t* rtf_bytes,
+    uint32_t rtf_length)
+{
+    auto* session = static_cast<CxRdpSession*>(handle);
+    if (!session)
+        return;
+
+    {
+        std::lock_guard<std::mutex> lock(session->clipboard_mutex);
+        session->local_clipboard_kind = 0;
+        session->local_clipboard_text = plain_text ? plain_text : "";
+        if (html_bytes && html_length > 0)
+            session->local_clipboard_html.assign(html_bytes, html_bytes + html_length);
+        else
+            session->local_clipboard_html.clear();
+        if (rtf_bytes && rtf_length > 0)
+            session->local_clipboard_rtf.assign(rtf_bytes, rtf_bytes + rtf_length);
+        else
+            session->local_clipboard_rtf.clear();
+        session->local_clipboard_png.clear();
+        session->local_clipboard_dib.clear();
+        session->local_clipboard_files.clear();
+        ++session->local_clipboard_revision;
+    }
+}
+
+CX_RDP_API void cxrdp_set_clipboard_image(
+    void* handle,
+    uint32_t image_format,
+    const uint8_t* data,
+    uint32_t length)
+{
+    auto* session = static_cast<CxRdpSession*>(handle);
+    if (!session || !data || length == 0)
+        return;
+
+    if (image_format != CX_RDP_CLIPBOARD_IMAGE_PNG &&
+        image_format != CX_RDP_CLIPBOARD_IMAGE_DIB)
+        return;
+
+    {
+        std::lock_guard<std::mutex> lock(session->clipboard_mutex);
+        session->local_clipboard_kind = 1;
+        session->local_clipboard_text.clear();
+        session->local_clipboard_html.clear();
+        session->local_clipboard_rtf.clear();
+        session->local_clipboard_files.clear();
+        if (image_format == CX_RDP_CLIPBOARD_IMAGE_PNG)
+        {
+            session->local_clipboard_png.assign(data, data + length);
+            session->local_clipboard_dib.clear();
+        }
+        else
+        {
+            session->local_clipboard_dib.assign(data, data + length);
+            session->local_clipboard_png.clear();
+        }
+        ++session->local_clipboard_revision;
+    }
+}
+
+CX_RDP_API void cxrdp_set_clipboard_files(void* handle, const char* file_paths_newline_separated)
+{
+    auto* session = static_cast<CxRdpSession*>(handle);
+    if (!session || !file_paths_newline_separated)
+        return;
+
+    std::vector<LocalClipboardFileEntry> entries;
+    std::istringstream stream(file_paths_newline_separated);
+    std::string line;
+    while (std::getline(stream, line))
+    {
+        if (!line.empty() && line.back() == '\r')
+            line.pop_back();
+        while (line.size() > 1 && (line.back() == '\\' || line.back() == '/'))
+        {
+            if (line.size() == 3 && std::isalpha(static_cast<unsigned char>(line[0])) && line[1] == ':')
+                break;
+            line.pop_back();
+        }
+        if (line.empty())
+            continue;
+
+        std::error_code ec;
+        const auto rootPath = std::filesystem::u8path(line);
+        if (!std::filesystem::exists(rootPath, ec))
+            continue;
+
+        const auto rootName = rootPath.filename().u8string();
+        if (rootName.empty())
+            continue;
+
+        if (std::filesystem::is_directory(rootPath, ec))
+        {
+            entries.push_back({rootName, rootPath, true, 0, get_file_last_write_time(rootPath)});
+            for (auto it = std::filesystem::recursive_directory_iterator(
+                     rootPath,
+                     std::filesystem::directory_options::skip_permission_denied,
+                     ec);
+                 !ec && it != std::filesystem::recursive_directory_iterator();
+                 it.increment(ec))
+            {
+                const auto& item = *it;
+                const auto rel = std::filesystem::relative(item.path(), rootPath, ec);
+                if (ec)
+                {
+                    ec.clear();
+                    continue;
+                }
+                std::string relName = rootName + "\\" + rel.u8string();
+                for (char& ch : relName)
+                {
+                    if (ch == '/')
+                        ch = '\\';
+                }
+                const bool isDir = item.is_directory(ec);
+                const uint64_t size = isDir ? 0 : item.file_size(ec);
+                entries.push_back({relName, item.path(), isDir, size, get_file_last_write_time(item.path())});
+            }
+        }
+        else if (std::filesystem::is_regular_file(rootPath, ec))
+        {
+            const uint64_t size = std::filesystem::file_size(rootPath, ec);
+            entries.push_back({rootName, rootPath, false, size, get_file_last_write_time(rootPath)});
+        }
+    }
+
+    if (entries.empty())
+        return;
+
+    {
+        std::lock_guard<std::mutex> lock(session->clipboard_mutex);
+        session->local_clipboard_kind = 2;
+        session->local_clipboard_text.clear();
+        session->local_clipboard_html.clear();
+        session->local_clipboard_rtf.clear();
+        session->local_clipboard_png.clear();
+        session->local_clipboard_dib.clear();
+        session->local_clipboard_files = std::move(entries);
         ++session->local_clipboard_revision;
     }
 }
@@ -3563,15 +4803,17 @@ CX_RDP_API int cxrdp_resize_monitors(
         dst.Top = src.top;
         dst.Width = w;
         dst.Height = h;
-        dst.PhysicalWidth = w;
-        dst.PhysicalHeight = h;
         dst.Orientation = ORIENTATION_LANDSCAPE;
         dst.DesktopScaleFactor = (src.desktop_scale_factor >= 100u && src.desktop_scale_factor <= 500u)
             ? src.desktop_scale_factor
             : 100u;
-        dst.DeviceScaleFactor = src.device_scale_factor == 180u
-            ? 180u
-            : (src.device_scale_factor == 140u ? 140u : 100u);
+        dst.PhysicalWidth = compute_physical_mm(w, dst.DesktopScaleFactor);
+        dst.PhysicalHeight = compute_physical_mm(h, dst.DesktopScaleFactor);
+        dst.DeviceScaleFactor = (src.device_scale_factor == 100u ||
+                                 src.device_scale_factor == 140u ||
+                                 src.device_scale_factor == 180u)
+            ? src.device_scale_factor
+            : resolve_device_scale_factor(dst.DesktopScaleFactor);
     }
 
     if (!hasPrimary)
@@ -3592,6 +4834,9 @@ CX_RDP_API int cxrdp_update_display(void* handle, int width, int height, int sca
         set_error(session, "RDP display size is out of range.");
         return -2;
     }
+
+    // MS-RDPEDISP requires an even width; odd widths are rejected by Windows.
+    width &= ~1;
 
     if (scalePercent != 0 && (scalePercent < 50 || scalePercent > 400))
     {
@@ -3723,6 +4968,36 @@ CX_RDP_API int cxrdp_set_graphics_pipeline(void* handle, int enabled)
     }
 
     session->graphics_pipeline_requested = enabled != 0;
+    return 0;
+}
+
+CX_RDP_API int cxrdp_set_h264_enabled(void* handle, int enabled)
+{
+    auto* session = static_cast<CxRdpSession*>(handle);
+    if (!session)
+        return -1;
+    if (session->running)
+    {
+        set_error(session, "RDP H.264 setting must be configured before connecting.");
+        return -2;
+    }
+
+    session->h264_requested = enabled != 0;
+    return 0;
+}
+
+CX_RDP_API int cxrdp_set_clipboard_lock_enabled(void* handle, int enabled)
+{
+    auto* session = static_cast<CxRdpSession*>(handle);
+    if (!session)
+        return -1;
+    if (session->running)
+    {
+        set_error(session, "RDP clipboard lock option must be configured before connecting.");
+        return -2;
+    }
+
+    session->clipboard_lock_enabled = enabled != 0;
     return 0;
 }
 

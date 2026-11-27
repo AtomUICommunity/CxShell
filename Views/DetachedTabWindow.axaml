@@ -26,14 +26,35 @@
                     <MenuItem Header="{Binding [Rdp.MultiMonitorTip], Source={x:Static services:LocalizationService.Shared}}"
                               IsVisible="{Binding IsRdpSession}"
                               Click="OnDetachedMultiMonitorMenuClick"/>
+                    <MenuItem Header="{Binding [Rdp.MoveToWorkspace], Source={x:Static services:LocalizationService.Shared}}"
+                              IsVisible="{Binding IsRdpSession}"
+                              Click="OnMoveToWorkspaceClick"/>
                 </ContextMenu>
             </StackPanel.ContextMenu>
-            <!-- Full screen that keeps the local taskbar visible, drawn rather
-                 than taken from the icon font: the stock set has no glyph for
-                 "screen with the taskbar left on", and the framed ones read as
-                 noise at 16 px. Multi monitor lives in the context menu below
-                 and in the connection bar, which is where the layout applies. -->
+            <atom:Button x:Name="DetachedMultiMonitorButton"
+                         IsVisible="{Binding IsRdpSession}"
+                         Width="32"
+                         Height="28"
+                         Padding="0"
+                         ButtonType="Text"
+                         Focusable="False"
+                         VerticalAlignment="Center"
+                         Icon="{antdicons:AntDesignIconProvider Kind=DesktopOutlined}"
+                         atom:ToolTip.Placement="Bottom"
+                         Click="OnDetachedMultiMonitorClick"/>
+            <atom:Button x:Name="MoveToWorkspaceButton"
+                         IsVisible="{Binding IsRdpSession}"
+                         Width="32"
+                         Height="28"
+                         Padding="0"
+                         ButtonType="Text"
+                         Focusable="False"
+                         VerticalAlignment="Center"
+                         Icon="{antdicons:AntDesignIconProvider Kind=ImportOutlined}"
+                         atom:ToolTip.Placement="Bottom"
+                         Click="OnMoveToWorkspaceClick"/>
             <atom:Button x:Name="KeepTaskbarFullScreenButton"
+                         IsVisible="False"
                          Width="32"
                          Height="28"
                          Padding="0"
@@ -74,6 +95,7 @@
         </Grid>
         <views:FullScreenConnectionBar x:Name="FullScreenConnectionBar"
                                        ZIndex="250"
+                                       ShowFullScreenButton="True"
                                        Endpoint="{Binding Session.Host}"
                                        QualityLevel="{Binding Rdp.LinkQualityLevel}"
                                        IsQualityVisible="{Binding IsRdpSession}"/>

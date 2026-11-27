@@ -87,12 +87,31 @@ public partial class FullScreenConnectionBar : UserControl
     /// <summary>Raised when the user toggles the pin, so the host can persist it.</summary>
     public event EventHandler? PinnedChanged;
 
+    public event Action<RdpWorkspaceTabItem>? TabSelected;
+    public event Action<RdpWorkspaceTabItem>? TabCloseRequested;
     public event Action<Control>? MultiMonitorRequested;
     public event Action? TaskbarModeToggleRequested;
+    public event Action? ToggleFullScreenRequested;
     public event Action? InteractionCompleted;
 #pragma warning disable CS0067
     public event Action<PointerPressedEventArgs>? DragRestoreRequested;
 #pragma warning restore CS0067
+
+    public bool ShowTabSwitcher
+    {
+        get => TabSwitcherScroll.IsVisible;
+        set
+        {
+            TabSwitcherScroll.IsVisible = value;
+            EndpointText.IsVisible = !value;
+        }
+    }
+
+    public System.Collections.IEnumerable? TabItemsSource
+    {
+        get => FloatingTabItems.ItemsSource;
+        set => FloatingTabItems.ItemsSource = value;
+    }
 
     public bool ShowMultiMonitorButton
     {
@@ -152,9 +171,20 @@ public partial class FullScreenConnectionBar : UserControl
         set => MinimizeButton.IsVisible = value;
     }
 
+    public bool ShowFullScreenButton
+    {
+        get => FullScreenButton.IsVisible;
+        set => FullScreenButton.IsVisible = value;
+    }
+
     public string? RestoreToolTip
     {
         set => AtomToolTip.SetTip(RestoreButton, value);
+    }
+
+    public string? FullScreenToolTip
+    {
+        set => AtomToolTip.SetTip(FullScreenButton, value);
     }
 
     public string? CloseToolTip
@@ -211,6 +241,25 @@ public partial class FullScreenConnectionBar : UserControl
         MultiMonitorButton.ClearValue(TemplatedControl.ForegroundProperty);
     }
 
+    private void OnTabItemPointerPressed(object? sender, PointerPressedEventArgs e)
+    {
+        if (sender is Control { DataContext: RdpWorkspaceTabItem item })
+        {
+            TabSelected?.Invoke(item);
+            InteractionCompleted?.Invoke();
+            e.Handled = true;
+        }
+    }
+
+    private void OnCloseTabClick(object? sender, RoutedEventArgs e)
+    {
+        if (sender is Control { DataContext: RdpWorkspaceTabItem item })
+        {
+            TabCloseRequested?.Invoke(item);
+            InteractionCompleted?.Invoke();
+        }
+    }
+
     private void OnMultiMonitorClick(object? sender, RoutedEventArgs e)
     {
         MultiMonitorRequested?.Invoke(MultiMonitorButton);
@@ -219,6 +268,12 @@ public partial class FullScreenConnectionBar : UserControl
     private void OnTaskbarModeClick(object? sender, RoutedEventArgs e)
     {
         TaskbarModeToggleRequested?.Invoke();
+        InteractionCompleted?.Invoke();
+    }
+
+    private void OnFullScreenClick(object? sender, RoutedEventArgs e)
+    {
+        ToggleFullScreenRequested?.Invoke();
         InteractionCompleted?.Invoke();
     }
 
@@ -536,6 +591,7 @@ public partial class FullScreenConnectionBar : UserControl
         MultiMonitorButton.Content = Text("Rdp.MultiMonitor");
         AtomToolTip.SetTip(MinimizeButton, Text("FullScreenBar.Minimize"));
         AtomToolTip.SetTip(RestoreButton, Text("FullScreenBar.Restore"));
+        AtomToolTip.SetTip(FullScreenButton, Text("FullScreenBar.ToggleFullScreen"));
         AtomToolTip.SetTip(CloseButton, Text("FullScreenBar.Close"));
     }
 

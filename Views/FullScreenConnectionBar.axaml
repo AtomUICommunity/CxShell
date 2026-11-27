@@ -27,7 +27,7 @@
             BorderBrush="{atom:SharedTokenResource ColorBorderSecondary}"
             BorderThickness="1"
             BoxShadow="0 6 18 0 #40000000">
-        <Grid ColumnDefinitions="Auto,Auto,*,Auto,Auto,Auto,Auto,Auto,Auto"
+        <Grid ColumnDefinitions="Auto,Auto,*,Auto,Auto,Auto,Auto,Auto,Auto,Auto"
               VerticalAlignment="Stretch">
             <!-- Two pin buttons, only one visible: an outline pushpin while the
                  bar auto-hides, a filled pushpin while it is pinned. Shape
@@ -87,6 +87,61 @@
                            VerticalAlignment="Center"
                            Foreground="{atom:SharedTokenResource ColorText}"/>
 
+                <ScrollViewer x:Name="TabSwitcherScroll"
+                              IsVisible="False"
+                              MaxWidth="520"
+                              HorizontalScrollBarVisibility="Auto"
+                              VerticalScrollBarVisibility="Disabled"
+                              VerticalAlignment="Center"
+                              Margin="4,0">
+                    <ItemsControl x:Name="FloatingTabItems">
+                        <ItemsControl.ItemsPanel>
+                            <ItemsPanelTemplate>
+                                <StackPanel Orientation="Horizontal" Spacing="4"/>
+                            </ItemsPanelTemplate>
+                        </ItemsControl.ItemsPanel>
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate x:DataType="views:RdpWorkspaceTabItem">
+                                <Border Height="24"
+                                        Padding="8,0,4,0"
+                                        CornerRadius="5"
+                                        Background="{atom:SharedTokenResource ColorFillTertiary}"
+                                        Cursor="Hand"
+                                        PointerPressed="OnTabItemPointerPressed">
+                                    <StackPanel Orientation="Horizontal"
+                                                Spacing="4"
+                                                VerticalAlignment="Center">
+                                        <TextBlock Text="{Binding Title}"
+                                                   Foreground="{atom:SharedTokenResource ColorText}"
+                                                   FontSize="12"
+                                                   FontWeight="{Binding TitleFontWeight}"
+                                                   MaxWidth="140"
+                                                   TextTrimming="CharacterEllipsis"
+                                                   VerticalAlignment="Center"/>
+                                        <Button Width="16"
+                                                Height="16"
+                                                Padding="0"
+                                                Background="Transparent"
+                                                BorderThickness="0"
+                                                CornerRadius="3"
+                                                Focusable="False"
+                                                VerticalAlignment="Center"
+                                                HorizontalContentAlignment="Center"
+                                                VerticalContentAlignment="Center"
+                                                ToolTip.Tip="关闭标签页"
+                                                Click="OnCloseTabClick">
+                                            <atom:IconPresenter Icon="{antdicons:AntDesignIconProvider Kind=CloseOutlined}"
+                                                                Width="10"
+                                                                Height="10"
+                                                                HorizontalAlignment="Center"
+                                                                VerticalAlignment="Center"/>
+                                        </Button>
+                                    </StackPanel>
+                                </Border>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </ScrollViewer>
             </Grid>
 
             <atom:Button x:Name="MultiMonitorButton"
@@ -146,11 +201,23 @@
                          ButtonType="Text"
                          Focusable="False"
                          VerticalAlignment="Center"
-                         Icon="{antdicons:AntDesignIconProvider Kind=FullscreenExitOutlined}"
+                         Icon="{antdicons:AntDesignIconProvider Kind=SwitcherOutlined}"
                          Click="OnRestoreClick"/>
 
-            <atom:Button x:Name="CloseButton"
+            <atom:Button x:Name="FullScreenButton"
                          Grid.Column="8"
+                         IsVisible="False"
+                         Width="28"
+                         Height="26"
+                         Padding="0"
+                         ButtonType="Text"
+                         Focusable="False"
+                         VerticalAlignment="Center"
+                         Icon="{antdicons:AntDesignIconProvider Kind=FullscreenOutlined}"
+                         Click="OnFullScreenClick"/>
+
+            <atom:Button x:Name="CloseButton"
+                         Grid.Column="9"
                          Width="28"
                          Height="26"
                          Padding="0"

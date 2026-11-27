@@ -1705,7 +1705,33 @@
                                 BorderThickness="1"
                                 CornerRadius="4"
                                 Padding="18">
-                            <Grid RowDefinitions="Auto,14,Auto,10,Auto,12,Auto,10,Auto,10,Auto,10,Auto,10,Auto,10,Auto"
+                            <Grid RowDefinitions="Auto,14,Auto"
+                                  ColumnDefinitions="150,420,*"
+                                  ColumnSpacing="8">
+                                <TextBlock Grid.ColumnSpan="3"
+                                           Text="{Binding [SessionEdit.RdpWindowModeSection], Source={x:Static services:LocalizationService.Shared}}"
+                                           FontWeight="SemiBold"
+                                           Foreground="{atom:SharedTokenResource ColorText}"/>
+                                <TextBlock Grid.Row="2"
+                                           Text="{Binding [SessionEdit.RdpWindowModeLabel], Source={x:Static services:LocalizationService.Shared}}"
+                                           VerticalAlignment="Center"
+                                           Foreground="{atom:SharedTokenResource ColorTextSecondary}"/>
+                                <atom:Select Grid.Row="2"
+                                             Grid.Column="1"
+                                             x:Name="RdpWindowModeSelect"
+                                             Mode="Single"
+                                             Width="320"
+                                             HorizontalAlignment="Left"
+                                             OptionsSource="{Binding RdpWindowModeOptions}"/>
+                            </Grid>
+                        </Border>
+
+                        <Border Background="{atom:SharedTokenResource ColorBgContainer}"
+                                BorderBrush="{atom:SharedTokenResource ColorBorder}"
+                                BorderThickness="1"
+                                CornerRadius="4"
+                                Padding="18">
+                            <Grid RowDefinitions="Auto,14,Auto,10,Auto,12,Auto,10,Auto,10,Auto,10,Auto,10,Auto,10,Auto,10,Auto"
                                   ColumnDefinitions="150,420,*"
                                   ColumnSpacing="8">
                                 <TextBlock Grid.ColumnSpan="3"
@@ -1720,13 +1746,8 @@
                                     <atom:CheckBox Content="{Binding [SessionEdit.RdpSyncLockKeys], Source={x:Static services:LocalizationService.Shared}}"
                                                    atom:ToolTip.Tip="{Binding [SessionEdit.RdpSyncLockKeysHint], Source={x:Static services:LocalizationService.Shared}}"
                                                    IsChecked="{Binding RdpSyncLockKeys, Mode=TwoWay}"/>
-                                    <!-- Hidden until the native bridge implements LockClipboardData:
-                                         cxrdp_set_clipboard_lock_enabled is declared in cxrdp_bridge.h
-                                         (API 14) but never implemented, so the capability bit is
-                                         never reported and the option would do nothing. -->
                                     <atom:CheckBox Content="{Binding [SessionEdit.RdpEnableClipboardLock], Source={x:Static services:LocalizationService.Shared}}"
                                                    atom:ToolTip.Tip="{Binding [SessionEdit.RdpEnableClipboardLockHint], Source={x:Static services:LocalizationService.Shared}}"
-                                                   IsVisible="False"
                                                    IsChecked="{Binding RdpEnableClipboardLock, Mode=TwoWay}"/>
                                 </StackPanel>
 
@@ -1788,6 +1809,14 @@
                                                Content="{Binding [SessionEdit.RdpGraphicsPipeline], Source={x:Static services:LocalizationService.Shared}}"
                                                atom:ToolTip.Tip="{Binding [SessionEdit.RdpGraphicsPipelineHint], Source={x:Static services:LocalizationService.Shared}}"
                                                IsChecked="{Binding RdpGraphicsPipelineEnabled, Mode=TwoWay}"/>
+
+                                <atom:CheckBox Grid.Row="18"
+                                               Grid.ColumnSpan="3"
+                                               Margin="20,0,0,0"
+                                               Content="{Binding [SessionEdit.RdpH264], Source={x:Static services:LocalizationService.Shared}}"
+                                               atom:ToolTip.Tip="{Binding [SessionEdit.RdpH264Hint], Source={x:Static services:LocalizationService.Shared}}"
+                                               IsEnabled="{Binding RdpGraphicsPipelineEnabled}"
+                                               IsChecked="{Binding RdpH264Enabled, Mode=TwoWay}"/>
                             </Grid>
                         </Border>
 

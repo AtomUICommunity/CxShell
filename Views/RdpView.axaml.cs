@@ -32,6 +32,9 @@ public partial class RdpView : UserControl
     private WindowsClipboardListener? _clipboardListener;
     private DispatcherTimer? _clipboardPollTimer;
     private WindowsRdpShortcutHook? _systemShortcutHook;
+    private IntPtr _savedImeHwnd;
+    private IntPtr _savedImeContext;
+    private bool _imeDisabled;
     private Cursor? _customRemoteCursor;
     private Avalonia.Media.Imaging.WriteableBitmap? _customRemoteCursorBitmap;
     private TopLevel? _subscribedTopLevel;
@@ -93,6 +96,7 @@ public partial class RdpView : UserControl
             SyncMultiMonitorActiveFlag();
             StopClipboardListener();
             UnsubscribeTopLevelScaling();
+            RestoreLocalIme();
             DisposeSystemShortcutHook();
             ReleaseTrackedModifiers();
             _pendingWheelY = 0;
@@ -101,6 +105,7 @@ public partial class RdpView : UserControl
         GotFocus += (_, _) =>
         {
             _hasKeyboardFocus = true;
+            DisableLocalIme();
             UpdateSystemShortcutHook();
             SyncLocalLockKeysToRemote();
             _ = SyncLocalClipboardToRemoteAsync();
@@ -108,6 +113,7 @@ public partial class RdpView : UserControl
         LostFocus += (_, _) =>
         {
             _hasKeyboardFocus = false;
+            RestoreLocalIme();
             DisposeSystemShortcutHook();
             ReleaseTrackedModifiers();
         };
@@ -152,6 +158,8 @@ public partial class RdpView : UserControl
             {
                 SyncLocalLockKeysToRemote();
                 SyncMultiMonitorActiveFlag();
+                if (!IsCustomMonitorLayoutActive)
+                    _boundVm.RequestViewportResize(RdpViewport.Bounds.Size, GetRenderScaling());
             }
             else
             {
@@ -286,9 +294,13 @@ public partial class RdpView : UserControl
         {
             vm.IsMultiMonitorActive = false;
             var scaling = GetRenderScaling();
-            var w = Math.Max(640, (int)Math.Round(RdpViewport.Bounds.Width * scaling));
+            var w = Math.Max(640, (int)Math.Round(RdpViewport.Bounds.Width * scaling)) & ~1;
             var h = Math.Max(480, (int)Math.Round(RdpViewport.Bounds.Height * scaling));
-            vm.TryResizeMonitors([new Services.RdpMonitorRect(0, 0, w, h, (int)Math.Round(scaling * 100), true)]);
+            var policy = Enum.TryParse<RdpDpiPolicy>(vm.Session.RdpDpiPolicy, true, out var parsed)
+                ? parsed
+                : RdpDpiPolicy.FollowLocal;
+            var scale = RdpDpiScale.ResolveScalePercent(policy, scaling);
+            vm.TryResizeMonitors([new Services.RdpMonitorRect(0, 0, w, h, scale, true)]);
         }
     }
 
@@ -484,6 +496,15 @@ public partial class RdpView : UserControl
         }
     }
 
+    private static int ResolveMonitorScalePercent(RdpViewModel vm, double screenScaling)
+    {
+        var policy = Enum.TryParse<RdpDpiPolicy>(vm.Session.RdpDpiPolicy, true, out var parsed)
+            ? parsed
+            : RdpDpiPolicy.FollowLocal;
+        var resolved = RdpDpiScale.ResolveScalePercent(policy, screenScaling);
+        return resolved > 0 ? Math.Clamp(resolved, 100, 500) : 100;
+    }
+
     private void ApplySelectedMonitorLayout()
     {
         if (DataContext is not RdpViewModel vm || !vm.IsConnected || TopLevel.GetTopLevel(this) is not Window window)
@@ -551,7 +572,7 @@ public partial class RdpView : UserControl
 
             var halfW = Math.Max(200, (hostPixelW / 2) & ~1);
             var h = Math.Max(200, hostPixelH & ~1);
-            var scale = Math.Clamp((int)Math.Round(hostEntry.Screen.Scaling * 100), 100, 500);
+            var scale = ResolveMonitorScalePercent(vm, hostEntry.Screen.Scaling);
             var splitLayouts = new System.Collections.Generic.List<RdpMonitorRect>
             {
                 new(0, 0, halfW, h, scale, true),
@@ -581,7 +602,7 @@ public partial class RdpView : UserControl
             }
             var totalW = Math.Clamp((maxX - minX) & ~1, 200, 8192);
             var totalH = Math.Clamp((maxY - minY) & ~1, 200, 8192);
-            var scale = Math.Clamp((int)Math.Round(remotePrimaryEntry.Screen.Scaling * 100), 100, 500);
+            var scale = ResolveMonitorScalePercent(vm, remotePrimaryEntry.Screen.Scaling);
             layouts.Add(new RdpMonitorRect(0, 0, totalW, totalH, scale, true));
         }
         else
@@ -613,7 +634,7 @@ public partial class RdpView : UserControl
                         y = hostBounds.Y - h;
                 }
 
-                var scale = Math.Clamp((int)Math.Round(item.Screen.Scaling * 100), 100, 500);
+                var scale = ResolveMonitorScalePercent(vm, item.Screen.Scaling);
                 snappedCoords[item.Index] = (x, y, w, h, scale, item.Index == remotePrimaryEntry.Index);
             }
 
@@ -1035,6 +1056,43 @@ public partial class RdpView : UserControl
     [System.Runtime.InteropServices.DllImport("user32.dll")]
     private static extern short GetKeyState(int nVirtKey);
 
+    [System.Runtime.InteropServices.DllImport("imm32.dll")]
+    private static extern IntPtr ImmAssociateContext(IntPtr hWnd, IntPtr hIMC);
+
+    private void DisableLocalIme()
+    {
+        if (!OperatingSystem.IsWindows())
+            return;
+
+        var hwnd = TopLevel.GetTopLevel(this)?.TryGetPlatformHandle()?.Handle ?? IntPtr.Zero;
+        if (hwnd == IntPtr.Zero)
+            return;
+
+        if (_imeDisabled)
+        {
+            if (_savedImeHwnd == hwnd)
+                return;
+            RestoreLocalIme();
+        }
+
+        _savedImeContext = ImmAssociateContext(hwnd, IntPtr.Zero);
+        _savedImeHwnd = hwnd;
+        _imeDisabled = true;
+    }
+
+    private void RestoreLocalIme()
+    {
+        if (!_imeDisabled || !OperatingSystem.IsWindows())
+            return;
+
+        if (_savedImeHwnd != IntPtr.Zero)
+            ImmAssociateContext(_savedImeHwnd, _savedImeContext);
+
+        _savedImeHwnd = IntPtr.Zero;
+        _savedImeContext = IntPtr.Zero;
+        _imeDisabled = false;
+    }
+
     private void OnTopLevelScalingChanged(object? sender, EventArgs e)
     {
         if (DataContext is RdpViewModel vm)
@@ -1068,7 +1126,18 @@ public partial class RdpView : UserControl
 
     private double GetRenderScaling()
     {
-        return TopLevel.GetTopLevel(this)?.RenderScaling ?? 1;
+        var topLevel = TopLevel.GetTopLevel(this);
+        if (topLevel is { RenderScaling: > 0 } && double.IsFinite(topLevel.RenderScaling))
+            return topLevel.RenderScaling;
+
+        if (topLevel is Window window)
+        {
+            var screen = window.Screens.ScreenFromWindow(window) ?? window.Screens.Primary;
+            if (screen is { Scaling: > 0 } && double.IsFinite(screen.Scaling))
+                return screen.Scaling;
+        }
+
+        return 1;
     }
 
     private PixelSize? GetCurrentMonitorPixelSize()
@@ -1580,8 +1649,10 @@ public partial class RdpView : UserControl
         _applyingRemoteClipboardText = true;
         try
         {
-            var clipboard = TopLevel.GetTopLevel(this)?.Clipboard;
-            if (await RdpClipboardImageHelper.TryWriteLocalImageAsync(clipboard, imageFormat, data))
+            var topLevel = TopLevel.GetTopLevel(this);
+            var clipboard = topLevel?.Clipboard;
+            var ownerHwnd = topLevel?.TryGetPlatformHandle()?.Handle ?? IntPtr.Zero;
+            if (await RdpClipboardImageHelper.TryWriteLocalImageAsync(clipboard, imageFormat, data, ownerHwnd))
             {
                 _lastSyncedClipboardImageHash = RdpClipboardImageHelper.ComputeHash(
                     imageFormat == RdpBridgeClient.ClipboardImageFormatPng ? data : null,
@@ -1606,8 +1677,10 @@ public partial class RdpView : UserControl
         _applyingRemoteClipboardText = true;
         try
         {
-            var clipboard = TopLevel.GetTopLevel(this)?.Clipboard;
-            if (await RdpClipboardImageHelper.TryWriteLocalFilesAsync(clipboard, paths))
+            var topLevel = TopLevel.GetTopLevel(this);
+            var clipboard = topLevel?.Clipboard;
+            var ownerHwnd = topLevel?.TryGetPlatformHandle()?.Handle ?? IntPtr.Zero;
+            if (await RdpClipboardImageHelper.TryWriteLocalFilesAsync(clipboard, paths, ownerHwnd))
             {
                 _lastSyncedClipboardFilesKey = string.Join("\n", paths);
                 _lastSyncedClipboardText = null;
