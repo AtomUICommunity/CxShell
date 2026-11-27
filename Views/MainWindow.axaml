@@ -716,7 +716,7 @@
 
         <Border Grid.Row="2" Padding="8,4"
                 MinHeight="40"
-                IsVisible="{Binding IsMainChromeVisible}"
+                IsVisible="{Binding IsStatusBarVisible}"
                 Background="{atom:SharedTokenResource ColorBgContainer}"
                 BorderBrush="{atom:SharedTokenResource ColorBorderSecondary}" BorderThickness="0,1,0,0">
             <DockPanel LastChildFill="True"

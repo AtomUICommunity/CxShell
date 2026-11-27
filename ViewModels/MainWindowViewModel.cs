@@ -73,6 +73,7 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
     [ObservableProperty] private SftpViewModel _sftp = null!;
     [ObservableProperty] private bool _isMonitorVisible = false;
     [ObservableProperty] private bool _isSftpVisible = false;
+    private bool _statusBarEnabled;
     [ObservableProperty] private GridLength _sftpPanelWidth = new(0);
     [ObservableProperty] private string _connectionStatusText = "Disconnected";
     [ObservableProperty] private IBrush _connectionStatusColor = Brushes.Gray;
@@ -115,6 +116,11 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
     public bool HasTabs => Tabs.Count > 0;
     public bool HasRecentSessions => RecentSessions.Count > 0;
     public bool IsMainChromeVisible => !IsTerminalFullScreen;
+    /// <summary>
+    /// The status bar is opt in: it is hidden by default so a session keeps the
+    /// full height, and it never shows while the terminal is in full screen.
+    /// </summary>
+    public bool IsStatusBarVisible => _statusBarEnabled && !IsTerminalFullScreen;
     public bool IsSftpPanelVisible => IsSftpVisible && !IsTerminalFullScreen;
     public double SftpPanelPixelWidth => SftpPanelWidth.Value;
     public GridLength SftpSplitterWidth => IsSftpPanelVisible ? new GridLength(8) : new GridLength(0);
@@ -250,6 +256,24 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         _isMonitorVisible = _sessionTreeVm.Settings.ShowMonitorPanel;
         _isTabBarVisible = _sessionTreeVm.Settings.ShowTabBar;
         _isAgentPanelVisible = _sessionTreeVm.Settings.ShowAgentPanel;
+        _statusBarEnabled = _sessionTreeVm.Settings.ShowStatusBar;
+        SessionOverlayPreferences.Configure(_sessionTreeVm.Settings);
+        // A session view can close its floating bar on its own; route that back
+        // through the settings the shell already owns.
+        SessionOverlayPreferences.Persist = showQuickActions =>
+        {
+            _sessionTreeVm.Settings.ShowSessionQuickActions = showQuickActions;
+            _sessionTreeVm.SaveSettings(_sessionTreeVm.Settings);
+        };
+        // Same route for the spot the bar was dragged to. The pair is a
+        // fraction of the free area, so it survives window resizes and the
+        // session reopening at a different size.
+        SessionOverlayPreferences.PersistPosition = (x, y) =>
+        {
+            _sessionTreeVm.Settings.QuickActionsBarX = x;
+            _sessionTreeVm.Settings.QuickActionsBarY = y;
+            _sessionTreeVm.SaveSettings(_sessionTreeVm.Settings);
+        };
         _lastAgentPanelWidth = Math.Clamp(
             _sessionTreeVm.Settings.AgentPanelWidth,
             MinimumAgentPanelWidth,
@@ -912,6 +936,13 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
             IsMonitorVisible = settings.ShowMonitorPanel;
         if (IsAgentPanelVisible != settings.ShowAgentPanel)
             IsAgentPanelVisible = settings.ShowAgentPanel;
+        if (_statusBarEnabled != settings.ShowStatusBar)
+        {
+            _statusBarEnabled = settings.ShowStatusBar;
+            OnPropertyChanged(nameof(IsStatusBarVisible));
+        }
+
+        SessionOverlayPreferences.Configure(settings);
     }
 
     private static string BuildAppVersion()
@@ -1394,6 +1425,7 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         }
 
         OnPropertyChanged(nameof(IsMainChromeVisible));
+        OnPropertyChanged(nameof(IsStatusBarVisible));
         OnPropertyChanged(nameof(IsQuickSessionBarVisible));
         OnPropertyChanged(nameof(IsSftpPanelVisible));
         OnPropertyChanged(nameof(SftpSplitterWidth));

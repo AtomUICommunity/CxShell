@@ -59,6 +59,8 @@ public partial class ApplicationSettingsViewModel : ObservableObject
     [ObservableProperty] private bool _showSftpPanel;
     [ObservableProperty] private bool _showMonitorPanel;
     [ObservableProperty] private bool _showAgentPanel;
+    [ObservableProperty] private bool _showStatusBar;
+    [ObservableProperty] private bool _showSessionQuickActions = true;
     [ObservableProperty] private bool _enableCommandSuggestions;
     [ObservableProperty] private string _themeMode;
     [ObservableProperty] private bool _autoCheckForUpdates;
@@ -151,6 +153,8 @@ public partial class ApplicationSettingsViewModel : ObservableObject
     public string ShowSftpPanelText => Text("ApplicationSettings.ShowSftpPanel");
     public string ShowMonitorPanelText => Text("ApplicationSettings.ShowMonitorPanel");
     public string ShowAgentPanelText => Text("ApplicationSettings.ShowAgentPanel");
+    public string ShowStatusBarText => Text("ApplicationSettings.ShowStatusBar");
+    public string ShowSessionQuickActionsText => Text("ApplicationSettings.ShowSessionQuickActions");
     public string EnableCommandSuggestionsText => Text("ApplicationSettings.EnableCommandSuggestions");
     public string AutoCheckForUpdatesText => Text("ApplicationSettings.AutoCheckForUpdates");
     public string IncludePrereleaseUpdatesText => Text("ApplicationSettings.IncludePrereleaseUpdates");
@@ -275,6 +279,8 @@ public partial class ApplicationSettingsViewModel : ObservableObject
         _showSftpPanel = settings.ShowSftpPanel;
         _showMonitorPanel = settings.ShowMonitorPanel;
         _showAgentPanel = settings.ShowAgentPanel;
+        _showStatusBar = settings.ShowStatusBar;
+        _showSessionQuickActions = settings.ShowSessionQuickActions;
         _enableCommandSuggestions = settings.EnableCommandSuggestions;
         _themeMode = NormalizeThemeMode(settings.ThemeMode);
         _autoCheckForUpdates = settings.AutoCheckForUpdates;
@@ -367,6 +373,18 @@ public partial class ApplicationSettingsViewModel : ObservableObject
     partial void OnShowAgentPanelChanged(bool value)
     {
         _settings.ShowAgentPanel = value;
+        Persist();
+    }
+
+    partial void OnShowStatusBarChanged(bool value)
+    {
+        _settings.ShowStatusBar = value;
+        Persist();
+    }
+
+    partial void OnShowSessionQuickActionsChanged(bool value)
+    {
+        _settings.ShowSessionQuickActions = value;
         Persist();
     }
 
@@ -963,6 +981,8 @@ public partial class ApplicationSettingsViewModel : ObservableObject
         OnPropertyChanged(nameof(ShowSftpPanelText));
         OnPropertyChanged(nameof(ShowMonitorPanelText));
         OnPropertyChanged(nameof(ShowAgentPanelText));
+        OnPropertyChanged(nameof(ShowStatusBarText));
+        OnPropertyChanged(nameof(ShowSessionQuickActionsText));
         OnPropertyChanged(nameof(EnableCommandSuggestionsText));
         OnPropertyChanged(nameof(AutoCheckForUpdatesText));
         OnPropertyChanged(nameof(IncludePrereleaseUpdatesText));

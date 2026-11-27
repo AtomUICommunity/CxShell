@@ -350,6 +350,25 @@ public class ApplicationSettings
     public bool ShowSftpPanel { get; set; }
     public bool ShowMonitorPanel { get; set; }
     public bool ShowAgentPanel { get; set; }
+    /// <summary>
+    /// Opt in for the status bar under the session content. It starts hidden so
+    /// a session gets the whole height, which matters most in windowed RDP and
+    /// VNC sessions where the guest already draws its own taskbar at the
+    /// bottom; the actions that used to live there are on the floating bar
+    /// inside the session.
+    /// </summary>
+    public bool ShowStatusBar { get; set; }
+    /// <summary>Shows the floating quick action bar inside RDP and VNC sessions.</summary>
+    public bool ShowSessionQuickActions { get; set; } = true;
+    /// <summary>
+    /// Where the floating quick action bar was last dragged to, as a fraction
+    /// (0-1) of the free area inside the session. Null keeps the default
+    /// bottom right corner, so a fresh profile behaves the way it always did
+    /// and a dragged bar keeps its relative spot when the window is resized.
+    /// </summary>
+    public double? QuickActionsBarX { get; set; }
+    /// <summary>Vertical counterpart of <see cref="QuickActionsBarX"/>.</summary>
+    public double? QuickActionsBarY { get; set; }
     /// <summary>Keeps the full screen connection bar pinned instead of auto hiding it.</summary>
     public bool FullScreenConnectionBarPinned { get; set; }
     public bool EnableCommandSuggestions { get; set; } = true;

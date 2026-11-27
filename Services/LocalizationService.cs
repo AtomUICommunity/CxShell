@@ -1077,6 +1077,11 @@ public sealed class LocalizationService : INotifyPropertyChanged
         EnglishTexts["ApplicationSettings.ShowSftpPanel"] = "Show the SFTP panel";
         EnglishTexts["ApplicationSettings.ShowMonitorPanel"] = "Show the monitoring panel";
         EnglishTexts["ApplicationSettings.ShowAgentPanel"] = "Show the Agent panel";
+        EnglishTexts["ApplicationSettings.ShowStatusBar"] = "Show the status bar under the session";
+        EnglishTexts["ApplicationSettings.ShowSessionQuickActions"] = "Show floating shortcuts over RDP and VNC sessions";
+        EnglishTexts["SessionQuickActions.SendClipboard"] = "Send clipboard";
+        EnglishTexts["SessionQuickActions.Hide"] = "Hide these shortcuts (re-enable in settings)";
+        EnglishTexts["SessionQuickActions.Drag"] = "Drag to move, double click to put it back in the corner";
         EnglishTexts["ApplicationSettings.EnableCommandSuggestions"] = "Show command input suggestions";
         EnglishTexts["ApplicationSettings.AutoCheckForUpdates"] = "Automatically check for updates";
         EnglishTexts["ApplicationSettings.IncludePrereleaseUpdates"] = "Receive preview updates";
@@ -1621,6 +1626,11 @@ public sealed class LocalizationService : INotifyPropertyChanged
         ChineseTexts["ApplicationSettings.ShowSftpPanel"] = "\u663e\u793a SFTP \u9762\u677f";
         ChineseTexts["ApplicationSettings.ShowMonitorPanel"] = "\u663e\u793a\u76d1\u63a7\u9762\u677f";
         ChineseTexts["ApplicationSettings.ShowAgentPanel"] = "\u663e\u793a Agent \u9762\u677f";
+        ChineseTexts["ApplicationSettings.ShowStatusBar"] = "\u5728\u4f1a\u8bdd\u4e0b\u65b9\u663e\u793a\u72b6\u6001\u680f";
+        ChineseTexts["ApplicationSettings.ShowSessionQuickActions"] = "\u5728 RDP \u548c VNC \u4f1a\u8bdd\u4e0a\u663e\u793a\u6d6e\u52a8\u5feb\u6377\u6309\u94ae";
+        ChineseTexts["SessionQuickActions.SendClipboard"] = "\u53d1\u9001\u526a\u8d34\u677f";
+        ChineseTexts["SessionQuickActions.Hide"] = "\u9690\u85cf\u8fd9\u4e9b\u5feb\u6377\u6309\u94ae\uff08\u53ef\u5728\u8bbe\u7f6e\u4e2d\u91cd\u65b0\u6253\u5f00\uff09";
+        ChineseTexts["SessionQuickActions.Drag"] = "\u62d6\u52a8\u53ef\u79fb\u52a8\u4f4d\u7f6e\uff0c\u53cc\u51fb\u56de\u5230\u53f3\u4e0b\u89d2";
         ChineseTexts["ApplicationSettings.EnableCommandSuggestions"] = "\u663e\u793a\u547d\u4ee4\u8f93\u5165\u63d0\u793a";
         ChineseTexts["ApplicationSettings.AutoCheckForUpdates"] = "\u81ea\u52a8\u68c0\u67e5\u66f4\u65b0";
         ChineseTexts["ApplicationSettings.IncludePrereleaseUpdates"] = "\u63a5\u6536\u9884\u89c8\u7248\u66f4\u65b0";

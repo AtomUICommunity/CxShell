@@ -23,5 +23,6 @@
                                     VerticalAlignment="Stretch"
                                     Focusable="True"/>
         </Border>
+        <controls:SessionQuickActionsBar Target="Vnc"/>
     </Grid>
 </UserControl>

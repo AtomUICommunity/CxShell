@@ -104,6 +104,7 @@
                 </StackPanel>
             </Border>
         </Popup>
+        <controls:SessionQuickActionsBar Target="Rdp"/>
         <Border IsVisible="{Binding IsDesktopLoading}"
                 Background="#FF111111"
                 Cursor="Arrow">

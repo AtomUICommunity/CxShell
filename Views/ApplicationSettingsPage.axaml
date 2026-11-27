@@ -38,6 +38,10 @@
                                        IsChecked="{Binding ShowMonitorPanel, Mode=TwoWay}"/>
                         <atom:CheckBox Content="{Binding ShowAgentPanelText}"
                                        IsChecked="{Binding ShowAgentPanel, Mode=TwoWay}"/>
+                        <atom:CheckBox Content="{Binding ShowStatusBarText}"
+                                       IsChecked="{Binding ShowStatusBar, Mode=TwoWay}"/>
+                        <atom:CheckBox Content="{Binding ShowSessionQuickActionsText}"
+                                       IsChecked="{Binding ShowSessionQuickActions, Mode=TwoWay}"/>
                         <atom:CheckBox Content="{Binding EnableCommandSuggestionsText}"
                                        IsChecked="{Binding EnableCommandSuggestions, Mode=TwoWay}"/>
                     </StackPanel>
