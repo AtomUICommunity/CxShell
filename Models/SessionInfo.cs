@@ -599,6 +599,20 @@ public class SessionInfo
     public string RdpColorQuality { get; set; } = "32";
     /// <summary>Preferred RDP security mode: Auto, Negotiate, NLA, TLS or RDP.</summary>
     public string RdpSecurityMode { get; set; } = "Auto";
+    /// <summary>RDP window mode: Default (main window tab), MultiTab (standalone multi-tab RDP window), or Standalone (detached single-session window with multi-monitor support).</summary>
+    public string RdpWindowMode { get; set; } = "Default";
+    public bool RdpOpenInStandaloneWindow { get; set; }
+
+    public string ResolveEffectiveRdpWindowMode()
+    {
+        if (string.Equals(RdpWindowMode, "MultiTab", StringComparison.OrdinalIgnoreCase))
+            return "MultiTab";
+        if (string.Equals(RdpWindowMode, "Standalone", StringComparison.OrdinalIgnoreCase))
+            return "Standalone";
+        if (string.Equals(RdpWindowMode, "Default", StringComparison.OrdinalIgnoreCase) && RdpOpenInStandaloneWindow)
+            return "MultiTab";
+        return RdpOpenInStandaloneWindow ? "MultiTab" : "Default";
+    }
     public bool RdpApplyKeyCombinations { get; set; } = true;
     public bool RdpSyncLockKeys { get; set; } = true;
     public bool RdpEnableClipboardLock { get; set; } = true;

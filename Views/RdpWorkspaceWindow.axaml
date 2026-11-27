@@ -1,0 +1,144 @@
+<atom:Window xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:atom="https://atomui.net"
+             xmlns:antdicons="https://atomui.net/icons/antdesign"
+             xmlns:controls="using:CxShell.Controls"
+             xmlns:services="using:CxShell.Services"
+             xmlns:views="using:CxShell.Views"
+             x:Class="CxShell.Views.RdpWorkspaceWindow"
+             Title=""
+             Icon="/Assets/CxShellLogo.png"
+             Width="1280"
+             Height="800"
+             MinWidth="640"
+             MinHeight="400"
+             WindowStartupLocation="CenterScreen"
+             FullScreenTitleBarMode="Hidden"
+             IsFullScreenCaptionButtonVisible="True"
+             Background="{atom:SharedTokenResource ColorBgLayout}">
+
+    <!-- 1. Tab bar merged directly into the Window TitleBar -->
+    <atom:Window.LeftAddOn>
+        <ScrollViewer HorizontalScrollBarVisibility="Auto"
+                      VerticalScrollBarVisibility="Disabled"
+                      VerticalAlignment="Center"
+                      Margin="4,0,8,0">
+            <ItemsControl x:Name="TabStripItems">
+                <ItemsControl.ItemsPanel>
+                    <ItemsPanelTemplate>
+                        <StackPanel Orientation="Horizontal" Spacing="4"/>
+                    </ItemsPanelTemplate>
+                </ItemsControl.ItemsPanel>
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate x:DataType="views:RdpWorkspaceTabItem">
+                        <Border Padding="10,4,4,4"
+                                CornerRadius="6"
+                                Background="{Binding TabBackground}"
+                                BorderBrush="{atom:SharedTokenResource ColorSplit}"
+                                BorderThickness="1"
+                                Cursor="Hand"
+                                VerticalAlignment="Center"
+                                PointerPressed="TabItem_OnPointerPressed">
+                            <Border.ContextMenu>
+                                <ContextMenu>
+                                    <MenuItem Header="{Binding [Rdp.OpenInDetachedWindow], Source={x:Static services:LocalizationService.Shared}}" Click="DetachTabButton_OnClick"/>
+                                    <Separator/>
+                                    <MenuItem Header="{Binding [Rdp.CloseTab], Source={x:Static services:LocalizationService.Shared}}" Click="CloseTabButton_OnClick"/>
+                                    <MenuItem Header="{Binding [Rdp.CloseOtherTabs], Source={x:Static services:LocalizationService.Shared}}" Click="CloseOtherTabsButton_OnClick"/>
+                                </ContextMenu>
+                            </Border.ContextMenu>
+                            <StackPanel Orientation="Horizontal"
+                                        Spacing="4"
+                                        VerticalAlignment="Center">
+                                <TextBlock Text="{Binding Title}"
+                                           FontSize="12"
+                                           FontWeight="{Binding TitleFontWeight}"
+                                           Foreground="{atom:SharedTokenResource ColorText}"
+                                           MaxWidth="180"
+                                           TextTrimming="CharacterEllipsis"
+                                           VerticalAlignment="Center"
+                                           Margin="0,0,2,0"/>
+                                <!-- 2. Detach tab into its own standalone window -->
+                                <Button Width="18"
+                                        Height="18"
+                                        Padding="0"
+                                        Background="Transparent"
+                                        BorderThickness="0"
+                                        CornerRadius="3"
+                                        ToolTip.Tip="在独立窗口中打开"
+                                        Click="DetachTabButton_OnClick">
+                                    <atom:IconPresenter Icon="{antdicons:AntDesignIconProvider Kind=ExportOutlined}"
+                                                        Width="11"
+                                                        Height="11"/>
+                                </Button>
+                                <Button Width="18"
+                                        Height="18"
+                                        Padding="0"
+                                        Background="Transparent"
+                                        BorderThickness="0"
+                                        CornerRadius="3"
+                                        ToolTip.Tip="关闭标签页"
+                                        Click="CloseTabButton_OnClick">
+                                    <atom:IconPresenter Icon="{antdicons:AntDesignIconProvider Kind=CloseOutlined}"
+                                                        Width="11"
+                                                        Height="11"/>
+                                </Button>
+                            </StackPanel>
+                        </Border>
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
+        </ScrollViewer>
+    </atom:Window.LeftAddOn>
+
+    <atom:Window.RightAddOn>
+        <Button x:Name="TitleBarMultiMonitorButton"
+                IsVisible="False"
+                IsEnabled="False"
+                Height="24"
+                Padding="8,0"
+                Margin="0,0,4,0"
+                Background="Transparent"
+                BorderThickness="0"
+                CornerRadius="4"
+                ToolTip.Tip="多显示器设置"
+                VerticalAlignment="Center"
+                Click="OnTitleBarMultiMonitorClick">
+            <StackPanel Orientation="Horizontal"
+                        Spacing="4"
+                        VerticalAlignment="Center">
+                <atom:IconPresenter Icon="{antdicons:AntDesignIconProvider Kind=DesktopOutlined}"
+                                    Width="13"
+                                    Height="13"/>
+                <TextBlock Text="多显示器"
+                           FontSize="12"
+                           VerticalAlignment="Center"/>
+            </StackPanel>
+        </Button>
+    </atom:Window.RightAddOn>
+
+    <Grid Background="#111111">
+        <!-- RDP sessions host (keeps all tabs alive while switching) -->
+        <ItemsControl x:Name="RdpViewsItems">
+            <ItemsControl.ItemsPanel>
+                <ItemsPanelTemplate>
+                    <Grid/>
+                </ItemsPanelTemplate>
+            </ItemsControl.ItemsPanel>
+            <ItemsControl.ItemTemplate>
+                <DataTemplate x:DataType="views:RdpWorkspaceTabItem">
+                    <views:RdpView DataContext="{Binding Tab.Rdp, x:CompileBindings=False}"
+                                   IsVisible="{Binding IsSelected}"/>
+                </DataTemplate>
+            </ItemsControl.ItemTemplate>
+        </ItemsControl>
+
+        <!-- Shared full-screen connection bar (multi-tab only, single-monitor) -->
+        <views:FullScreenConnectionBar x:Name="FloatingBar"
+                                       ShowTabSwitcher="True"
+                                       ShowMultiMonitorButton="False"
+                                       ShowFullScreenButton="True"
+                                       IsQualityVisible="False"
+                                       ZIndex="100"/>
+    </Grid>
+</atom:Window>

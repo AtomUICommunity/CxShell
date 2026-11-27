@@ -1705,6 +1705,32 @@
                                 BorderThickness="1"
                                 CornerRadius="4"
                                 Padding="18">
+                            <Grid RowDefinitions="Auto,14,Auto"
+                                  ColumnDefinitions="150,420,*"
+                                  ColumnSpacing="8">
+                                <TextBlock Grid.ColumnSpan="3"
+                                           Text="{Binding [SessionEdit.RdpWindowModeSection], Source={x:Static services:LocalizationService.Shared}}"
+                                           FontWeight="SemiBold"
+                                           Foreground="{atom:SharedTokenResource ColorText}"/>
+                                <TextBlock Grid.Row="2"
+                                           Text="{Binding [SessionEdit.RdpWindowModeLabel], Source={x:Static services:LocalizationService.Shared}}"
+                                           VerticalAlignment="Center"
+                                           Foreground="{atom:SharedTokenResource ColorTextSecondary}"/>
+                                <atom:Select Grid.Row="2"
+                                             Grid.Column="1"
+                                             x:Name="RdpWindowModeSelect"
+                                             Mode="Single"
+                                             Width="320"
+                                             HorizontalAlignment="Left"
+                                             OptionsSource="{Binding RdpWindowModeOptions}"/>
+                            </Grid>
+                        </Border>
+
+                        <Border Background="{atom:SharedTokenResource ColorBgContainer}"
+                                BorderBrush="{atom:SharedTokenResource ColorBorder}"
+                                BorderThickness="1"
+                                CornerRadius="4"
+                                Padding="18">
                             <Grid RowDefinitions="Auto,14,Auto,10,Auto,12,Auto,10,Auto,10,Auto,10,Auto,10,Auto,10,Auto,10,Auto"
                                   ColumnDefinitions="150,420,*"
                                   ColumnSpacing="8">

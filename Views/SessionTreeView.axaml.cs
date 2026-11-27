@@ -100,6 +100,7 @@ public partial class SessionTreeView : UserControl
         LocalizationService.Shared.LanguageChanged += OnLanguageChanged;
 
         if (NewSessionBtn != null) NewSessionBtn.Click += OnNewClick;
+        if (EditSessionBtn != null) EditSessionBtn.Click += OnEditClick;
         if (ImportSessionBtn != null) ImportSessionBtn.Click += OnImportClick;
         if (ExportSessionBtn != null) ExportSessionBtn.Click += OnExportClick;
     }
@@ -806,6 +807,11 @@ public partial class SessionTreeView : UserControl
             OnConnectClick(anchor, new RoutedEventArgs());
             return System.Threading.Tasks.Task.CompletedTask;
         }, vm.CanUseSelectedSession);
+        if (vm.SelectedSession is { Protocol: SessionProtocol.RDP } rdpSession)
+        {
+            AddItem(LocalizationService.Shared.Text("Rdp.OpenInWorkspace"), () => vm.MainWindow.OpenRdpInWorkspaceWindowAsync(rdpSession), vm.CanUseSelectedSession);
+            AddItem(LocalizationService.Shared.Text("Rdp.OpenInDetachedWindow"), () => vm.MainWindow.OpenRdpInDetachedWindowAsync(rdpSession), vm.CanUseSelectedSession);
+        }
         AddItem(vm.PropertiesText, () =>
         {
             OnEditClick(anchor, new RoutedEventArgs());

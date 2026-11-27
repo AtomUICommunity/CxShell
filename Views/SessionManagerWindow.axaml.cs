@@ -25,6 +25,14 @@ public partial class SessionManagerWindow : Window
         DataContext = vm;
     }
 
+    private async void OnEditClick(object? sender, RoutedEventArgs e)
+    {
+        if (DataContext is not SessionTreeViewModel vm || vm.SelectedSession == null)
+            return;
+
+        await vm.MainWindow.EditSessionAsync(vm.SelectedSession);
+    }
+
     private async void OnConnectClick(object? sender, RoutedEventArgs e)
     {
         if (DataContext is not SessionTreeViewModel vm || vm.SelectedSession == null)

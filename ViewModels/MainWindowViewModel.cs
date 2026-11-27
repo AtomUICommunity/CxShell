@@ -2560,7 +2560,17 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         }
     }
 
-    private async Task ConnectRdpSession(SessionInfo session, string? passwordOverride)
+    public Task OpenRdpInWorkspaceWindowAsync(SessionInfo session) =>
+        ConnectRdpSession(session, null, openInWorkspace: true, openInDetached: false);
+
+    public Task OpenRdpInDetachedWindowAsync(SessionInfo session) =>
+        ConnectRdpSession(session, null, openInWorkspace: false, openInDetached: true);
+
+    private async Task ConnectRdpSession(
+        SessionInfo session,
+        string? passwordOverride,
+        bool? openInWorkspace = null,
+        bool openInDetached = false)
     {
         var password = string.IsNullOrEmpty(passwordOverride)
             ? GetSavedPassword(session)
@@ -2574,6 +2584,19 @@ public partial class MainWindowViewModel : ObservableObject, IDisposable
         var rdp = new RdpViewModel(session, password);
         var tab = new TerminalTabViewModel(session, rdp);
         RecordAudit(session, ConnectionAuditEventType.ConnectStarted);
+
+        var effectiveWindowMode = session.ResolveEffectiveRdpWindowMode();
+        if (openInDetached || (openInWorkspace == null && string.Equals(effectiveWindowMode, "Standalone", StringComparison.OrdinalIgnoreCase)))
+        {
+            Views.DetachedTabWindow.ShowFor(tab);
+            return;
+        }
+
+        if (openInWorkspace ?? string.Equals(effectiveWindowMode, "MultiTab", StringComparison.OrdinalIgnoreCase))
+        {
+            Views.RdpWorkspaceWindow.OpenTab(tab);
+            return;
+        }
 
         tab.CloseRequested += CloseTab;
         tab.PropertyChanged += OnTerminalTabPropertyChanged;

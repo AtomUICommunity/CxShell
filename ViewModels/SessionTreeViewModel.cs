@@ -260,6 +260,8 @@ public partial class SessionTreeViewModel : ObservableObject
         target.RdpFrameStrategy = source.RdpFrameStrategy;
         target.RdpColorQuality = source.RdpColorQuality;
         target.RdpSecurityMode = source.RdpSecurityMode;
+        target.RdpWindowMode = source.RdpWindowMode;
+        target.RdpOpenInStandaloneWindow = source.RdpOpenInStandaloneWindow;
         target.RdpSyncLockKeys = source.RdpSyncLockKeys;
         target.RdpEnableClipboardLock = source.RdpEnableClipboardLock;
         target.RdpClipboardEnabled = source.RdpClipboardEnabled;
@@ -1184,6 +1186,8 @@ public partial class SessionTreeViewModel : ObservableObject
             RdpFrameStrategy = source.RdpFrameStrategy,
             RdpColorQuality = source.RdpColorQuality,
             RdpSecurityMode = source.RdpSecurityMode,
+            RdpWindowMode = source.RdpWindowMode,
+            RdpOpenInStandaloneWindow = source.RdpOpenInStandaloneWindow,
             RdpApplyKeyCombinations = source.RdpApplyKeyCombinations,
             RdpSyncLockKeys = source.RdpSyncLockKeys,
             RdpEnableClipboardLock = source.RdpEnableClipboardLock,
