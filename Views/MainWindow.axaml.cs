@@ -29,7 +29,6 @@ public partial class MainWindow : AtomWindow
     protected override Type StyleKeyOverride { get; } = typeof(AtomWindow);
     private readonly string[] _startupArgs;
     private readonly CommandLineLaunchOptions _startupLaunchOptions;
-    private IDisposable? _commandLineHandoffServer;
     private bool _tabReorderHandlersAttached;
     private SessionInfo? _quickSessionContext;
     private readonly HashSet<Guid> _quickSessionActivationsPending = [];
@@ -141,8 +140,6 @@ public partial class MainWindow : AtomWindow
         WriteToolbarDiagnostics("MainWindow initialized; toolbar menus use AtomUI ContextMenu.");
         Closed += (_, _) =>
         {
-            _commandLineHandoffServer?.Dispose();
-            _commandLineHandoffServer = null;
             CloseTabDragGhost();
             DetachedTabWindow.CloseAll();
             vm.Dispose();
@@ -1641,10 +1638,7 @@ public partial class MainWindow : AtomWindow
 
     private void StartCommandLineHandoffServer()
     {
-        if (_commandLineHandoffServer != null)
-            return;
-
-        _commandLineHandoffServer = CommandLineHandoffService.StartServer(HandleCommandLineHandoffAsync);
+        CommandLineHandoffService.AttachHandler(HandleCommandLineHandoffAsync);
     }
 
     private Task HandleCommandLineHandoffAsync(string[] args)
@@ -1659,9 +1653,15 @@ public partial class MainWindow : AtomWindow
                 if (WindowState == Avalonia.Controls.WindowState.Minimized)
                     WindowState = Avalonia.Controls.WindowState.Normal;
 
+                if (!Topmost)
+                {
+                    Topmost = true;
+                    Topmost = false;
+                }
+
                 Activate();
 
-                if (DataContext is MainWindowViewModel vm)
+                if (args.Length > 0 && DataContext is MainWindowViewModel vm)
                     await vm.ExecuteCommandLineLaunchAsync(CommandLineLaunchOptions.Parse(args));
             }
             catch

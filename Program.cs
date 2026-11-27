@@ -16,11 +16,14 @@ internal class Program
             .SetArgs(args)
             .Run();
 
-        if (CommandLineHandoffService.TrySendToExistingInstance(args))
+        if (!CommandLineHandoffService.TryAcquireSingleInstanceOrForward(args, out var singleInstance))
             return;
 
-        BuildAvaloniaApp()
-            .StartWithClassicDesktopLifetime(args);
+        using (singleInstance)
+        {
+            BuildAvaloniaApp()
+                .StartWithClassicDesktopLifetime(args);
+        }
     }
 
     public static AppBuilder BuildAvaloniaApp()
