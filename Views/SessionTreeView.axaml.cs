@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Linq;
 using System.Reflection;
 using AtomUI.Desktop.Controls;
@@ -707,6 +708,10 @@ public partial class SessionTreeView : UserControl
                 {
                     Patterns = ["config", "*.conf"]
                 },
+                new FilePickerFileType("mRemoteNG connections")
+                {
+                    Patterns = ["confCons.xml", "*.xml"]
+                },
                 FilePickerFileTypes.All
             ]
         });
@@ -716,15 +721,62 @@ public partial class SessionTreeView : UserControl
 
         try
         {
-            var result = vm.ImportFile(file.Path.LocalPath);
-            await AtomUiDialogService.ShowMessageAsync(
-                topLevel,
-                T("SessionManager.ImportSuccessTitle"),
-                Tf(
+            var path = file.Path.LocalPath;
+            SessionImportResult result;
+            string? password = null;
+            while (true)
+            {
+                try
+                {
+                    result = vm.ImportFile(path, password);
+                    break;
+                }
+                catch (MRemoteNgPasswordRequiredException)
+                {
+                    // Ask for the master password below; nothing else to do.
+                }
+                catch (MRemoteNgPasswordInvalidException)
+                {
+                    // The prompt re-opens with the error line visible instead of
+                    // stacking a message box in front of it.
+                }
+
+                if (TopLevel.GetTopLevel(this) is not Avalonia.Controls.Window owner)
+                    return;
+
+                var entered = await ImportPasswordWindow.PromptAsync(
+                    owner,
+                    Path.GetFileName(path),
+                    password != null);
+                if (entered == null)
+                    return;
+
+                password = entered;
+            }
+
+            var message = result.IsMRemoteNg
+                ? Tf("SessionManager.ImportMRemoteNgSuccessMessage", result.Count)
+                : Tf(
                     result.IsOpenSshConfig
                         ? "SessionManager.ImportSshConfigSuccessMessage"
                         : "SessionManager.ImportSuccessMessage",
-                    result.Count),
+                    result.Count);
+
+            if (result.SkippedCount > 0)
+            {
+                message += " " + Tf(
+                    "SessionManager.ImportSkippedSuffix",
+                    result.SkippedCount,
+                    string.Join(", ", result.SkippedProtocols ?? []));
+            }
+
+            if (result.PasswordFailures > 0)
+                message += " " + Tf("SessionManager.ImportPasswordFailuresSuffix", result.PasswordFailures);
+
+            await AtomUiDialogService.ShowMessageAsync(
+                topLevel,
+                T("SessionManager.ImportSuccessTitle"),
+                message,
                 MessageBoxStyle.Success);
         }
         catch (Exception ex)

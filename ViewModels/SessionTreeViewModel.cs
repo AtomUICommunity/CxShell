@@ -34,7 +34,13 @@ public sealed record SessionLookupResult(
         => new(SessionLookupStatus.Ambiguous, null, candidates);
 }
 
-public sealed record SessionImportResult(int Count, bool IsOpenSshConfig);
+public sealed record SessionImportResult(
+    int Count,
+    bool IsOpenSshConfig,
+    bool IsMRemoteNg = false,
+    int SkippedCount = 0,
+    IReadOnlyList<string>? SkippedProtocols = null,
+    int PasswordFailures = 0);
 
 public partial class SessionNodeViewModel : ObservableObject
 {
@@ -755,13 +761,84 @@ public partial class SessionTreeViewModel : ObservableObject
         return importedSessions.Count;
     }
 
-    public SessionImportResult ImportFile(string path)
+    public SessionImportResult ImportFile(string path, string? password = null)
     {
         var content = File.ReadAllText(path);
         if (OpenSshConfigParser.LooksLikeConfig(content))
             return new SessionImportResult(ImportOpenSshConfig(path, content), true);
 
+        if (MRemoteNgConfigParser.LooksLikeConfig(content))
+        {
+            // Throws MRemoteNgPasswordRequired/Invalid so the view can ask for
+            // the master password and call back with it.
+            var document = MRemoteNgConfigParser.Parse(content, password);
+            var imported = ImportMRemoteNgDocument(document);
+            if (imported == 0)
+                throw new InvalidDataException("The mRemoteNG configuration contains no supported connections.");
+
+            return new SessionImportResult(
+                imported,
+                false,
+                true,
+                document.SkippedConnections,
+                document.SkippedProtocols,
+                document.PasswordFailures);
+        }
+
         return new SessionImportResult(ImportSessions(path), false);
+    }
+
+    /// <summary>
+    /// Creates the groups and sessions described by an mRemoteNG tree. The
+    /// containers become session groups at the same depth, and names are made
+    /// unique per parent so an import never clashes with what is already there.
+    /// </summary>
+    private int ImportMRemoteNgDocument(MRemoteNgImportDocument document)
+    {
+        var importedGroups = new List<SessionGroup>();
+        var importedSessions = new List<SessionInfo>();
+        var nextSessionSortOrder = _data.Sessions.Count == 0 ? 0 : _data.Sessions.Max(session => session.SortOrder) + 1;
+        var nextGroupSortOrder = _data.Groups.Count == 0 ? 0 : _data.Groups.Max(group => group.SortOrder) + 1;
+
+        void ImportNode(MRemoteNgNode node, Guid? parentId)
+        {
+            if (node.Kind == MRemoteNgNodeKind.Container)
+            {
+                var group = new SessionGroup
+                {
+                    Id = Guid.NewGuid(),
+                    Name = CreateUniqueGroupName(node.Name, parentId, importedGroups),
+                    ParentId = parentId,
+                    SortOrder = nextGroupSortOrder++
+                };
+                importedGroups.Add(group);
+
+                foreach (var child in node.Children)
+                    ImportNode(child, group.Id);
+                return;
+            }
+
+            if (node.Session is null)
+                return;
+
+            node.Session.Name = CreateUniqueSessionName(node.Session.Name, importedSessions);
+            node.Session.GroupId = parentId;
+            node.Session.SortOrder = nextSessionSortOrder++;
+            importedSessions.Add(node.Session);
+        }
+
+        foreach (var node in document.Nodes)
+            ImportNode(node, null);
+
+        if (importedSessions.Count == 0)
+            return 0;
+
+        _data.Groups.AddRange(importedGroups);
+        _data.Sessions.AddRange(importedSessions);
+        _storage.Save(_data);
+        LoadSessions();
+        SelectedNode = SessionRows.FirstOrDefault(node => node.Session?.Id == importedSessions[0].Id);
+        return importedSessions.Count;
     }
 
     private int ImportOpenSshConfig(string path, string content)
