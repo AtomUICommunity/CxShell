@@ -21,8 +21,7 @@ internal static class RdpSecurityProfileCache
     };
 
     private static readonly string CachePath = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-        "CxShell",
+        AppDataPaths.GetLocalCacheDirectory(),
         "rdp-security-profiles.json");
 
     private static Dictionary<string, string>? _profiles;

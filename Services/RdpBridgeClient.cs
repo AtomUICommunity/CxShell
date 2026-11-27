@@ -1433,11 +1433,7 @@ public sealed class RdpBridgeClient : IDisposable
 
     private static string GetDebugLogDirectory()
     {
-        var root = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-        if (string.IsNullOrWhiteSpace(root))
-            root = AppContext.BaseDirectory;
-
-        return Path.Combine(root, "CxShell", "Logs");
+        return AppDataPaths.GetLogsDirectory();
     }
 
     private static void DebugLog(string message)

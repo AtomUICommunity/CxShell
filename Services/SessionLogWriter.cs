@@ -158,10 +158,12 @@ public sealed class SessionLogWriter : IDisposable
         expanded = SanitizePath(expanded);
         if (!Path.IsPathRooted(expanded))
         {
-            var baseDir = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
-                "CxShell",
-                "Logs");
+            var baseDir = AppDataPaths.IsPortableMode
+                ? AppDataPaths.GetLogsDirectory()
+                : Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
+                    "CxShell",
+                    "Logs");
             expanded = Path.Combine(baseDir, expanded);
         }
 

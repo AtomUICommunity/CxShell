@@ -774,10 +774,7 @@ public partial class MainWindow : AtomWindow
     {
         try
         {
-            var logDirectory = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "CxShell",
-                "Logs");
+            var logDirectory = AppDataPaths.GetLogsDirectory();
             Directory.CreateDirectory(logDirectory);
             var path = Path.Combine(logDirectory, "toolbar-menu.log");
             var line = $"{DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss.fff zzz} {message}{Environment.NewLine}";

@@ -844,13 +844,7 @@ public partial class VncViewModel : ObservableObject, IDisposable
 
         private static string GetLogDirectory()
         {
-            var root = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-            if (string.IsNullOrWhiteSpace(root))
-                root = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
-            if (string.IsNullOrWhiteSpace(root))
-                root = AppContext.BaseDirectory;
-
-            var directory = Path.Combine(root, "CxShell", "Logs");
+            var directory = AppDataPaths.GetLogsDirectory();
             Directory.CreateDirectory(directory);
             return directory;
         }

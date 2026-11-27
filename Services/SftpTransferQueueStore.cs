@@ -140,10 +140,6 @@ public sealed class SftpTransferQueueStore
 
     private static string ResolveStorageDirectory()
     {
-        var appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
-        if (!string.IsNullOrWhiteSpace(appData) && Path.IsPathFullyQualified(appData))
-            return Path.Combine(appData, "CxShell");
-
-        return Path.Combine(AppContext.BaseDirectory, ".cxshell-data");
+        return AppDataPaths.GetStorageDirectory();
     }
 }
