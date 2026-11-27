@@ -78,6 +78,7 @@ struct LocalClipboardFileEntry
 
 struct RemoteClipboardFileEntry
 {
+    uint32_t remote_index = 0;
     std::string relative_name;
     std::filesystem::path local_path;
     bool is_directory = false;
@@ -91,6 +92,7 @@ constexpr uint32_t CX_CLIPRDR_FORMAT_FILE_GROUP_DESCRIPTOR_W = 0xC002u;
 constexpr uint32_t CX_CLIPRDR_FORMAT_HTML = 0xC003u;
 constexpr uint32_t CX_CLIPRDR_FORMAT_RTF = 0xC004u;
 constexpr uint32_t CX_CLIPRDR_FORMAT_FILE_CONTENTS = 0xC005u;
+constexpr uint32_t CX_CLIPRDR_FORMAT_PREFERRED_DROP_EFFECT = 0xC006u;
 constexpr uint32_t CX_CLIPRDR_FILE_CHUNK_SIZE = 65536u;
 
 struct CxRdpSession
@@ -631,9 +633,11 @@ bool parse_file_group_descriptor_w(
     for (uint32_t i = 0; i < count; ++i)
     {
         const BYTE* src = data + 4 + static_cast<size_t>(i) * descriptorSize;
+        uint32_t flags = 0;
         uint32_t attrs = 0;
         uint32_t sizeHigh = 0;
         uint32_t sizeLow = 0;
+        std::memcpy(&flags, src + 0, 4);
         std::memcpy(&attrs, src + 36, 4);
         std::memcpy(&sizeHigh, src + 64, 4);
         std::memcpy(&sizeLow, src + 68, 4);
@@ -662,11 +666,13 @@ bool parse_file_group_descriptor_w(
 
         std::filesystem::path relPath = std::filesystem::u8path(relName);
         RemoteClipboardFileEntry entry{};
+        entry.remote_index = i;
         entry.relative_name = relName;
         entry.local_path = baseDir / relPath;
         entry.is_directory = (attrs & 0x00000010u) != 0;
-        entry.expected_size = (static_cast<uint64_t>(sizeHigh) << 32) | sizeLow;
-        entry.size_known = entry.expected_size > 0;
+        const bool hasFileSize = (flags & 0x00000040u) != 0;
+        entry.expected_size = hasFileSize ? ((static_cast<uint64_t>(sizeHigh) << 32) | sizeLow) : 0;
+        entry.size_known = hasFileSize;
         outFiles.push_back(entry);
 
         if (relName.find('\\') == std::string::npos && relName.find('/') == std::string::npos)
@@ -712,7 +718,7 @@ UINT request_next_remote_file_chunk(CliprdrClientContext* cliprdr, CxRdpSession*
 
             req.common.msgType = CB_FILECONTENTS_REQUEST;
             req.streamId = ++session->remote_file_stream_id;
-            req.listIndex = static_cast<UINT32>(session->remote_file_download_index);
+            req.listIndex = entry.remote_index;
             if (!entry.size_known)
             {
                 req.dwFlags = FILECONTENTS_SIZE;
@@ -1024,6 +1030,8 @@ const char* clipboard_format_name(uint32_t formatId)
         return "FileGroupDescriptorW";
     case CX_CLIPRDR_FORMAT_FILE_CONTENTS:
         return "FileContents";
+    case CX_CLIPRDR_FORMAT_PREFERRED_DROP_EFFECT:
+        return "Preferred DropEffect";
     default:
         return "UNKNOWN";
     }
@@ -1152,7 +1160,10 @@ UINT send_client_capabilities(CliprdrClientContext* cliprdr)
             std::lock_guard<std::mutex> lock(session->clipboard_mutex);
             session->client_capabilities_sent = true;
         }
-        notify_status(session, "RDP clipboard client capabilities sent.");
+        std::ostringstream message;
+        message << "RDP clipboard client capabilities sent. flags=0x"
+                << std::hex << generalCapabilitySet.generalFlags;
+        notify_status(session, message.str().c_str());
     }
 
     return rc;
@@ -1185,6 +1196,7 @@ UINT send_client_format_list(CliprdrClientContext* cliprdr)
     static char pngFormatName[] = "PNG";
     static char fileGroupDescriptorName[] = "FileGroupDescriptorW";
     static char fileContentsName[] = "FileContents";
+    static char preferredDropEffectName[] = "Preferred DropEffect";
     static char htmlFormatName[] = "HTML Format";
     static char rtfFormatName[] = "Rich Text Format";
     const char* kindLabel = "text";
@@ -1201,6 +1213,11 @@ UINT send_client_format_list(CliprdrClientContext* cliprdr)
         fileContentsFormat.formatId = CX_CLIPRDR_FORMAT_FILE_CONTENTS;
         fileContentsFormat.formatName = fileContentsName;
         formats.push_back(fileContentsFormat);
+
+        CLIPRDR_FORMAT dropEffectFormat{};
+        dropEffectFormat.formatId = CX_CLIPRDR_FORMAT_PREFERRED_DROP_EFFECT;
+        dropEffectFormat.formatName = preferredDropEffectName;
+        formats.push_back(dropEffectFormat);
     }
     else if (kind == 1 && (hasPng || hasDib))
     {
@@ -1846,8 +1863,10 @@ UINT cx_cliprdr_monitor_ready(CliprdrClientContext* cliprdr, const CLIPRDR_MONIT
     if (!session)
         return CHANNEL_RC_OK;
 
-    mark_cliprdr_confirmed(session, "monitor ready");
-    return activate_cliprdr(cliprdr, "monitor ready");
+    const UINT rc = activate_cliprdr(cliprdr, "monitor ready");
+    if (rc == CHANNEL_RC_OK)
+        mark_cliprdr_confirmed(session, "monitor ready");
+    return rc;
 }
 
 UINT cx_cliprdr_server_capabilities(CliprdrClientContext* cliprdr, const CLIPRDR_CAPABILITIES* capabilities)
@@ -1865,7 +1884,6 @@ UINT cx_cliprdr_server_capabilities(CliprdrClientContext* cliprdr, const CLIPRDR
             message << " flags=0x" << std::hex << general->generalFlags;
         }
         notify_status(session, message.str().c_str());
-        mark_cliprdr_confirmed(session, "server capabilities");
 
         {
             std::lock_guard<std::mutex> lock(session->clipboard_mutex);
@@ -1873,7 +1891,7 @@ UINT cx_cliprdr_server_capabilities(CliprdrClientContext* cliprdr, const CLIPRDR
         }
     }
 
-    return send_client_capabilities(cliprdr);
+    return CHANNEL_RC_OK;
 }
 
 UINT cx_cliprdr_server_format_list(CliprdrClientContext* cliprdr, const CLIPRDR_FORMAT_LIST* formatList)
@@ -2088,6 +2106,25 @@ UINT cx_cliprdr_server_format_data_request(
             message << "RDP clipboard remote requested local file list. count=" << files.size()
                     << " bytes=" << data.size();
             notify_status(session, message.str().c_str());
+        }
+    }
+    else if (session && formatDataRequest->requestedFormatId == CX_CLIPRDR_FORMAT_PREFERRED_DROP_EFFECT)
+    {
+        bool hasFiles = false;
+        {
+            std::lock_guard<std::mutex> lock(session->clipboard_mutex);
+            hasFiles = session->local_clipboard_kind == 2 && !session->local_clipboard_files.empty();
+        }
+
+        if (hasFiles)
+        {
+            const uint32_t dropEffect = 1u; // DROPEFFECT_COPY
+            data.resize(4);
+            std::memcpy(data.data(), &dropEffect, 4);
+            response.common.msgFlags = CB_RESPONSE_OK;
+            response.common.dataLen = 4;
+            response.requestedFormatData = data.data();
+            notify_status(session, "RDP clipboard remote requested Preferred DropEffect (COPY).");
         }
     }
     else if (session && formatDataRequest->requestedFormatId == CF_DIB)
@@ -2315,6 +2352,14 @@ UINT cx_cliprdr_server_file_contents_request(
 
     static constexpr BYTE kEmptyPayload = 0;
     std::vector<BYTE> payload;
+    if (!found && session)
+    {
+        std::ostringstream msg;
+        msg << "RDP clipboard file contents request failed: entry not found listIndex="
+            << fileContentsRequest->listIndex
+            << " clipDataId=" << (fileContentsRequest->haveClipDataId ? fileContentsRequest->clipDataId : 0);
+        notify_status(session, msg.str().c_str());
+    }
     if (found && (fileContentsRequest->dwFlags & FILECONTENTS_SIZE) != 0)
     {
         payload.resize(8);
@@ -2323,6 +2368,13 @@ UINT cx_cliprdr_server_file_contents_request(
         response.common.msgFlags = CB_RESPONSE_OK;
         response.cbRequested = 8;
         response.requestedData = payload.data();
+        if (session)
+        {
+            std::ostringstream msg;
+            msg << "RDP clipboard file size requested listIndex=" << fileContentsRequest->listIndex
+                << " size=" << size;
+            notify_status(session, msg.str().c_str());
+        }
     }
     else if (found && !entry.is_directory && (fileContentsRequest->dwFlags & FILECONTENTS_RANGE) != 0)
     {
@@ -3197,7 +3249,7 @@ BOOL cx_pre_connect(freerdp* instance)
         freerdp_settings_set_uint32(
             instance->context->settings,
             FreeRDP_ClipboardFeatureMask,
-            CLIPRDR_FLAG_LOCAL_TO_REMOTE | CLIPRDR_FLAG_REMOTE_TO_LOCAL);
+            CLIPRDR_FLAG_DEFAULT_MASK);
     }
     return TRUE;
 }

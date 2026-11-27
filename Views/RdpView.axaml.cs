@@ -1649,8 +1649,10 @@ public partial class RdpView : UserControl
         _applyingRemoteClipboardText = true;
         try
         {
-            var clipboard = TopLevel.GetTopLevel(this)?.Clipboard;
-            if (await RdpClipboardImageHelper.TryWriteLocalImageAsync(clipboard, imageFormat, data))
+            var topLevel = TopLevel.GetTopLevel(this);
+            var clipboard = topLevel?.Clipboard;
+            var ownerHwnd = topLevel?.TryGetPlatformHandle()?.Handle ?? IntPtr.Zero;
+            if (await RdpClipboardImageHelper.TryWriteLocalImageAsync(clipboard, imageFormat, data, ownerHwnd))
             {
                 _lastSyncedClipboardImageHash = RdpClipboardImageHelper.ComputeHash(
                     imageFormat == RdpBridgeClient.ClipboardImageFormatPng ? data : null,
@@ -1675,8 +1677,10 @@ public partial class RdpView : UserControl
         _applyingRemoteClipboardText = true;
         try
         {
-            var clipboard = TopLevel.GetTopLevel(this)?.Clipboard;
-            if (await RdpClipboardImageHelper.TryWriteLocalFilesAsync(clipboard, paths))
+            var topLevel = TopLevel.GetTopLevel(this);
+            var clipboard = topLevel?.Clipboard;
+            var ownerHwnd = topLevel?.TryGetPlatformHandle()?.Handle ?? IntPtr.Zero;
+            if (await RdpClipboardImageHelper.TryWriteLocalFilesAsync(clipboard, paths, ownerHwnd))
             {
                 _lastSyncedClipboardFilesKey = string.Join("\n", paths);
                 _lastSyncedClipboardText = null;
