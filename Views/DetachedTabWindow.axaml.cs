@@ -188,26 +188,6 @@ public partial class DetachedTabWindow : AtomUI.Desktop.Controls.Window
 
         var state = WindowState;
 
-        // Avalonia reveals a full width bar (window logo, title and the full
-        // screen/close buttons) from a top level layer above the client area as
-        // soon as the pointer touches the top edge of a full screen window.
-        // Hide it: this window draws its own connection bar. Posted because the
-        // vendor hover handler runs on every pointer move, and repeated once
-        // after the decoration template has been built.
-        if (state == WindowState.FullScreen)
-        {
-            Dispatcher.UIThread.Post(
-                () => _keepTaskbarFullScreen.SuppressFullscreenPopover(),
-                DispatcherPriority.Loaded);
-            DispatcherTimer.RunOnce(
-                () =>
-                {
-                    if (WindowState == WindowState.FullScreen)
-                        _keepTaskbarFullScreen.SuppressFullscreenPopover();
-                },
-                TimeSpan.FromMilliseconds(800));
-        }
-
         if (state == WindowState.Minimized)
         {
             UpdateConnectionBarState();
@@ -242,7 +222,6 @@ public partial class DetachedTabWindow : AtomUI.Desktop.Controls.Window
         {
             _keepTaskbarFullScreen.RestoreDecorations();
             _keepTaskbarFullScreen.RestoreTitleBar();
-            _keepTaskbarFullScreen.ReleaseFullscreenPopoverSuppression();
         }
 
         if (state != WindowState.FullScreen)
@@ -273,7 +252,6 @@ public partial class DetachedTabWindow : AtomUI.Desktop.Controls.Window
                 _keepTaskbarFullScreen.HideTitleBar();
                 WindowState = WindowState.FullScreen;
                 _keepTaskbarFullScreen.HideDecorations();
-                _keepTaskbarFullScreen.SuppressFullscreenPopover();
             }
 
             return true;
@@ -372,11 +350,11 @@ public partial class DetachedTabWindow : AtomUI.Desktop.Controls.Window
         if (e.Key != Key.F11)
             return;
 
-        ToggleFullScreen();
+        ToggleWindowFullScreen();
         e.Handled = true;
     }
 
-    private void ToggleFullScreen()
+    private void ToggleWindowFullScreen()
     {
         // Leaving the taskbar mode is what F11 means while it is active: the
         // previous behaviour abandoned the mode and immediately entered the
@@ -396,13 +374,13 @@ public partial class DetachedTabWindow : AtomUI.Desktop.Controls.Window
         }
 
         // WindowState.FullScreen removes only the native frame; AtomUI draws its
-        // title bar inside the client area, and Avalonia reveals a hover popover
-        // from the drawn decoration layers. Drop both for an edge-to-edge view.
+        // title bar inside the client area (and FullScreenTitleBarMode="Hidden"
+        // in XAML keeps AtomUI's built-in full-screen title bar disabled). Drop
+        // the drawn chrome for an edge-to-edge view.
         _keepTaskbarFullScreen.HideDecorations();
         _keepTaskbarFullScreen.HideTitleBar();
         WindowState = WindowState.FullScreen;
-        // Re-assert after the state change: the platform can restore the
-        // decorations while entering full screen, which revives the popover.
+        // Re-assert after the state change in case the platform restores window decorations.
         _keepTaskbarFullScreen.HideDecorations();
     }
 
@@ -412,7 +390,6 @@ public partial class DetachedTabWindow : AtomUI.Desktop.Controls.Window
         {
             _keepTaskbarFullScreen.RestoreDecorations();
             _keepTaskbarFullScreen.RestoreTitleBar();
-            _keepTaskbarFullScreen.ReleaseFullscreenPopoverSuppression();
             return;
         }
 
@@ -420,11 +397,9 @@ public partial class DetachedTabWindow : AtomUI.Desktop.Controls.Window
             ? WindowState.Normal
             : _windowStateBeforeFullScreen;
 
-        // Restore the chrome only after the window left full screen, so the
-        // fullscreen popover can never flash on the way out.
+        // Restore the chrome only after the window has left full screen so it never flashes on exit.
         _keepTaskbarFullScreen.RestoreDecorations();
         _keepTaskbarFullScreen.RestoreTitleBar();
-        _keepTaskbarFullScreen.ReleaseFullscreenPopoverSuppression();
     }
 
     /// <summary>

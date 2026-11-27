@@ -15,6 +15,7 @@
              MinHeight="320"
              WindowStartupLocation="CenterScreen"
              IsFullScreenCaptionButtonVisible="True"
+             FullScreenTitleBarMode="Hidden"
              Background="{atom:SharedTokenResource ColorBgLayout}">
     <!-- Sits immediately left of the AtomUI caption buttons. The icon is a
          screen outline whose bottom edge is filled like a taskbar, which is the

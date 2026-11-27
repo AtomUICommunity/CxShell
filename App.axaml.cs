@@ -9,8 +9,8 @@ using AtomUI;
 using AtomUI.Controls;
 using AtomUI.Desktop.Controls;
 using AtomUI.Theme;
-using AtomUI.Theme.Algorithms;
-using AtomUI.Theme.Configuration;
+using AtomUI.DesignLanguages.AntDesign;
+using AtomUI.Desktop.Controls.Themes.AntDesign;
 using CxShell.Models;
 using CxShell.Services;
 using CxShell.ViewModels;
@@ -30,15 +30,19 @@ public partial class App : Application
 
     public static void ConfigureAtomUI(IAtomUIBuilder builder)
     {
-        var initialTheme = LoadInitialTheme();
-        builder.WithInitialTheme(IThemeManager.DEFAULT_THEME_ID, initialTheme);
+        var initialTheme = LoadInitialThemeSelection();
         builder.UseAlibabaSansFont();
         builder.UseDesktopControls();
         builder.UseDesktopColorPicker();
         builder.UseDesktopDataGrid();
+        builder.UseAntDesign(language => language
+            .AddDesktopControls()
+            .AddDesktopColorPicker()
+            .AddDesktopDataGrid());
+        builder.WithInitialTheme(initialTheme);
     }
 
-    private static ThemeConfig LoadInitialTheme()
+    private static ThemeSelection LoadInitialThemeSelection()
     {
         var themeMode = ApplicationSettings.DarkThemeMode;
 
@@ -52,16 +56,16 @@ public partial class App : Application
             // Keep startup on the established dark theme if the settings file is unavailable.
         }
 
-        var algorithms = string.Equals(
+        var appearance = string.Equals(
             themeMode,
             ApplicationSettings.LightThemeMode,
             StringComparison.OrdinalIgnoreCase)
-            ? new[] { ThemeAlgorithm.Default }
-            : new[] { ThemeAlgorithm.Default, ThemeAlgorithm.Dark };
+            ? ThemeAppearance.Light
+            : ThemeAppearance.Dark;
 
-        return new ThemeConfigBuilder()
-            .WithAlgorithms(algorithms)
-            .Build();
+        return ThemeSelection.Of<AntDesignLanguage>()
+            .WithTheme(AntDesignThemes.DaybreakBlue)
+            .WithAppearance(appearance);
     }
 
     public override void OnFrameworkInitializationCompleted()

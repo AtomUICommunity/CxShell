@@ -9,6 +9,7 @@
              MinWidth="480"
              MinHeight="320"
              IsFullScreenCaptionButtonVisible="True"
+             FullScreenTitleBarMode="Hidden"
              Background="#111111">
     <atom:Window.RightAddOn>
         <StackPanel Orientation="Horizontal"

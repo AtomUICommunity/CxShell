@@ -63,7 +63,7 @@ RDP sessions run inside the same tabbed workspace and share CxShell's session ma
 
 | Area | Technology |
 | --- | --- |
-| Runtime | .NET 10 |
+| Runtime | .NET 11 |
 | UI framework | Avalonia 12 |
 | UI components | AtomUI Desktop Controls 6 |
 | MVVM | CommunityToolkit.Mvvm |
@@ -143,7 +143,7 @@ OpenCowork is an architectural reference only. CxShell does not start, embed, or
 
 ### Basic Application
 
-- .NET 10 SDK
+- .NET 11 SDK
 - Git
 - Windows 10/11, macOS 11+, or a mainstream Linux desktop environment
 
