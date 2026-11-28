@@ -40,14 +40,12 @@ public sealed class SqliteAgentConversationHistoryStore : IAgentConversationHist
             : Path.GetFullPath(filePath!);
         _legacyFilePath = string.IsNullOrWhiteSpace(legacyFilePath)
             ? Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "CxShell",
+                AppDataPaths.GetLocalCacheDirectory(),
                 "agent-history.json")
             : Path.GetFullPath(legacyFilePath);
         _legacyDatabasePath = isDefaultPath
             ? Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "CxShell",
+                AppDataPaths.GetLocalCacheDirectory(),
                 "agent-history.db")
             : string.Empty;
 

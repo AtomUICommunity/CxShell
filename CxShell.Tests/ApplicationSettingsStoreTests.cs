@@ -1,6 +1,8 @@
 using System.Text.Json;
+using Avalonia.Controls;
 using CxShell.Models;
 using CxShell.Services;
+using CxShell.Views;
 
 namespace CxShell.Tests;
 
@@ -69,6 +71,47 @@ public sealed class ApplicationSettingsStoreTests
         Assert.True(loaded.ShowSftpPanel);
         Assert.True(loaded.ShowMonitorPanel);
         Assert.True(loaded.ShowAgentPanel);
+    }
+
+    [Fact]
+    public void MinimizeToTrayOnClose_DefaultsToTrueAndPersistsChanges()
+    {
+        using var directory = new TemporaryDirectory();
+        var store = new ApplicationSettingsStore(directory.Path);
+
+        var defaults = new ApplicationSettings();
+        Assert.True(defaults.MinimizeToTrayOnClose);
+
+        store.Save(new ApplicationSettings { MinimizeToTrayOnClose = false });
+        var loadedDisabled = store.Load();
+        Assert.False(loadedDisabled.MinimizeToTrayOnClose);
+
+        store.Save(new ApplicationSettings { MinimizeToTrayOnClose = true });
+        var loadedEnabled = store.Load();
+        Assert.True(loadedEnabled.MinimizeToTrayOnClose);
+    }
+
+    [Theory]
+    [InlineData(false, true, true, WindowCloseReason.WindowClosing, true)]
+    [InlineData(false, true, false, WindowCloseReason.WindowClosing, false)]
+    [InlineData(false, false, true, WindowCloseReason.WindowClosing, false)]
+    [InlineData(true, true, true, WindowCloseReason.WindowClosing, false)]
+    [InlineData(false, true, true, WindowCloseReason.ApplicationShutdown, false)]
+    [InlineData(false, true, true, WindowCloseReason.OSShutdown, false)]
+    public void ShouldMinimizeToTrayOnClose_HandlesCloseReasonsAndGuards(
+        bool allowClose,
+        bool hasActiveTrayIcon,
+        bool minimizeToTrayOnClose,
+        WindowCloseReason closeReason,
+        bool expected)
+    {
+        var result = MainWindow.ShouldMinimizeToTrayOnClose(
+            allowClose,
+            hasActiveTrayIcon,
+            minimizeToTrayOnClose,
+            closeReason);
+
+        Assert.Equal(expected, result);
     }
 
     [Fact]

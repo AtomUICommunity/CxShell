@@ -20,8 +20,6 @@ public class SessionData
 
 public class SessionStorageService
 {
-    private const string CurrentAppDirectoryName = "CxShell";
-
     private readonly string _storageDir;
     private readonly string _storagePath;
     private readonly SqliteAppDataStore _store;
@@ -37,7 +35,7 @@ public class SessionStorageService
 
     public static string GetStorageDirectory()
     {
-        return ResolveStorageDirectory();
+        return AppDataPaths.GetStorageDirectory();
     }
 
     public SessionData Load()
@@ -83,58 +81,6 @@ public class SessionStorageService
             return System.Text.Json.JsonSerializer.Deserialize<SessionData>(json, AppJsonOptions.Default);
         }
         catch (System.Text.Json.JsonException)
-        {
-            return null;
-        }
-    }
-
-    private static string ResolveStorageDirectory()
-    {
-        var root = ResolveStorageRoot();
-        if (!string.IsNullOrWhiteSpace(root))
-            return Path.Combine(root, CurrentAppDirectoryName);
-
-        return Path.Combine(AppContext.BaseDirectory, ".cxshell-data");
-    }
-
-    private static string? ResolveStorageRoot()
-    {
-        var appData = TryGetFullRoot(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData));
-        if (!string.IsNullOrWhiteSpace(appData))
-            return appData;
-
-        if (OperatingSystem.IsWindows())
-            return null;
-
-        var xdgConfigHome = TryGetFullRoot(Environment.GetEnvironmentVariable("XDG_CONFIG_HOME"));
-        if (!string.IsNullOrWhiteSpace(xdgConfigHome))
-            return xdgConfigHome;
-
-        var userProfile = TryGetFullRoot(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile));
-        if (!string.IsNullOrWhiteSpace(userProfile))
-        {
-            return OperatingSystem.IsMacOS()
-                ? Path.Combine(userProfile, "Library", "Application Support")
-                : Path.Combine(userProfile, ".config");
-        }
-
-        return null;
-    }
-
-    private static string? TryGetFullRoot(string? root)
-    {
-        if (string.IsNullOrWhiteSpace(root))
-            return null;
-
-        try
-        {
-            var expanded = Environment.ExpandEnvironmentVariables(root);
-            if (!Path.IsPathFullyQualified(expanded))
-                return null;
-
-            return Path.GetFullPath(expanded);
-        }
-        catch
         {
             return null;
         }

@@ -56,6 +56,20 @@
                         </Border>
                     </StackPanel>
 
+                    <StackPanel Spacing="8" IsVisible="{Binding IsMinimizeToTraySupported}">
+                        <TextBlock Text="{Binding WindowText}"
+                                   FontWeight="SemiBold"
+                                   Foreground="{atom:SharedTokenResource ColorText}"/>
+                        <Border Background="{atom:SharedTokenResource ColorBgLayout}"
+                                BorderBrush="{atom:SharedTokenResource ColorSplit}"
+                                BorderThickness="1"
+                                CornerRadius="5"
+                                Padding="12,10">
+                            <atom:CheckBox Content="{Binding MinimizeToTrayOnCloseText}"
+                                           IsChecked="{Binding MinimizeToTrayOnClose, Mode=TwoWay}"/>
+                        </Border>
+                    </StackPanel>
+
                     <StackPanel Spacing="8">
                         <TextBlock Text="{Binding AppearanceText}"
                                    FontWeight="SemiBold"

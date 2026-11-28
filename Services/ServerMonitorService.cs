@@ -711,17 +711,7 @@ exit 0
 
     private static string GetDebugLogDirectory()
     {
-        try
-        {
-            var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-            if (!string.IsNullOrWhiteSpace(localAppData))
-                return Path.Combine(localAppData, "CxShell", "Logs");
-        }
-        catch
-        {
-        }
-
-        return AppContext.BaseDirectory;
+        return AppDataPaths.GetLogsDirectory();
     }
 
     private static bool IsPowerShellClixml(string? text)

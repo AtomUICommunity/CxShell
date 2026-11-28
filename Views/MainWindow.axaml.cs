@@ -29,7 +29,6 @@ public partial class MainWindow : AtomWindow
     protected override Type StyleKeyOverride { get; } = typeof(AtomWindow);
     private readonly string[] _startupArgs;
     private readonly CommandLineLaunchOptions _startupLaunchOptions;
-    private IDisposable? _commandLineHandoffServer;
     private bool _tabReorderHandlersAttached;
     private SessionInfo? _quickSessionContext;
     private readonly HashSet<Guid> _quickSessionActivationsPending = [];
@@ -67,6 +66,8 @@ public partial class MainWindow : AtomWindow
     private readonly KeepTaskbarFullScreen _keepTaskbarFullScreen;
     private Avalonia.Controls.WindowState _windowStateBeforeFullScreen = Avalonia.Controls.WindowState.Normal;
     private bool _restoreFullScreenAfterMinimize;
+    private bool _allowClose;
+    private bool _hasCompletedInitialLoad;
 
     public MainWindow()
         : this(Array.Empty<string>())
@@ -163,6 +164,39 @@ public partial class MainWindow : AtomWindow
         QueueApplySftpPanelWidth(vm);
     }
 
+    public void PrepareForExit()
+    {
+        _allowClose = true;
+    }
+
+    internal static bool ShouldMinimizeToTrayOnClose(
+        bool allowClose,
+        bool hasActiveTrayIcon,
+        bool minimizeToTrayOnClose,
+        Avalonia.Controls.WindowCloseReason closeReason)
+    {
+        if (allowClose || !hasActiveTrayIcon || !minimizeToTrayOnClose)
+            return false;
+
+        return closeReason is not (
+            Avalonia.Controls.WindowCloseReason.ApplicationShutdown or
+            Avalonia.Controls.WindowCloseReason.OSShutdown);
+    }
+
+    protected override void OnClosing(Avalonia.Controls.WindowClosingEventArgs e)
+    {
+        var hasActiveTrayIcon = Avalonia.Application.Current is App { HasActiveTrayIcon: true };
+        var minimizeToTray = SessionTreeViewModel.SharedSettings?.MinimizeToTrayOnClose ?? true;
+        if (ShouldMinimizeToTrayOnClose(_allowClose, hasActiveTrayIcon, minimizeToTray, e.CloseReason))
+        {
+            e.Cancel = true;
+            Hide();
+            return;
+        }
+
+        base.OnClosing(e);
+    }
+
     protected override void OnLoaded(RoutedEventArgs e)
     {
         base.OnLoaded(e);
@@ -172,9 +206,14 @@ public partial class MainWindow : AtomWindow
                 $"leftVisible={LeftToolbarAddOn.IsVisible}; rightVisible={RightToolbarAddOn.IsVisible}."),
             DispatcherPriority.ApplicationIdle);
         StartCommandLineHandoffServer();
-        StartRdpSmokeIfRequested();
-        HandleCommandLineLaunchIfRequested();
-        ShowSessionManagerOnStartupIfNeeded();
+        var isInitialLoad = !_hasCompletedInitialLoad;
+        _hasCompletedInitialLoad = true;
+        if (isInitialLoad)
+        {
+            StartRdpSmokeIfRequested();
+            HandleCommandLineLaunchIfRequested();
+            ShowSessionManagerOnStartupIfNeeded();
+        }
         if (DataContext is MainWindowViewModel vm)
         {
             AttachTabReorderHandlers();
@@ -189,7 +228,8 @@ public partial class MainWindow : AtomWindow
                 _isQuickSessionActivationReady = true;
             }, DispatcherPriority.ApplicationIdle);
             UpdateApplicationSuspension(vm);
-            vm.StartAutomaticUpdateCheck(_startupArgs);
+            if (isInitialLoad)
+                vm.StartAutomaticUpdateCheck(_startupArgs);
         }
     }
 
@@ -201,8 +241,6 @@ public partial class MainWindow : AtomWindow
         DetachTabReorderHandlers();
         if (DataContext is MainWindowViewModel vm)
             vm.SetApplicationSuspended(true);
-        _commandLineHandoffServer?.Dispose();
-        _commandLineHandoffServer = null;
         base.OnUnloaded(e);
     }
 
@@ -733,10 +771,7 @@ public partial class MainWindow : AtomWindow
     {
         try
         {
-            var logDirectory = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "CxShell",
-                "Logs");
+            var logDirectory = AppDataPaths.GetLogsDirectory();
             Directory.CreateDirectory(logDirectory);
             var path = Path.Combine(logDirectory, "toolbar-menu.log");
             var line = $"{DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss.fff zzz} {message}{Environment.NewLine}";
@@ -1603,10 +1638,7 @@ public partial class MainWindow : AtomWindow
 
     private void StartCommandLineHandoffServer()
     {
-        if (_commandLineHandoffServer != null)
-            return;
-
-        _commandLineHandoffServer = CommandLineHandoffService.StartServer(HandleCommandLineHandoffAsync);
+        CommandLineHandoffService.AttachHandler(HandleCommandLineHandoffAsync);
     }
 
     private Task HandleCommandLineHandoffAsync(string[] args)
@@ -1615,12 +1647,21 @@ public partial class MainWindow : AtomWindow
         {
             try
             {
+                if (!IsVisible)
+                    Show();
+
                 if (WindowState == Avalonia.Controls.WindowState.Minimized)
                     WindowState = Avalonia.Controls.WindowState.Normal;
 
+                if (!Topmost)
+                {
+                    Topmost = true;
+                    Topmost = false;
+                }
+
                 Activate();
 
-                if (DataContext is MainWindowViewModel vm)
+                if (args.Length > 0 && DataContext is MainWindowViewModel vm)
                     await vm.ExecuteCommandLineLaunchAsync(CommandLineLaunchOptions.Parse(args));
             }
             catch

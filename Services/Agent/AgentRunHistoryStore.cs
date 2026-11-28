@@ -32,8 +32,7 @@ public sealed class SqliteAgentRunHistoryStore : IAgentRunHistoryStore
         var isDefaultPath = string.IsNullOrWhiteSpace(legacyHistoryPath);
         _legacyHistoryPath = isDefaultPath
             ? Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "CxShell",
+                AppDataPaths.GetLocalCacheDirectory(),
                 "agent-runs.json")
             : Path.GetFullPath(legacyHistoryPath!);
         _legacyRecoveryPath = _legacyHistoryPath + ".recovery";

@@ -55,6 +55,7 @@ public partial class ApplicationSettingsViewModel : ObservableObject
     public Func<KnownSshHostKey, Task<bool>>? ConfirmRemoveKnownHostAsync { get; set; }
 
     [ObservableProperty] private bool _showSessionManagerOnStartup;
+    [ObservableProperty] private bool _minimizeToTrayOnClose;
     [ObservableProperty] private bool _showTabBar;
     [ObservableProperty] private bool _showSftpPanel;
     [ObservableProperty] private bool _showMonitorPanel;
@@ -120,6 +121,9 @@ public partial class ApplicationSettingsViewModel : ObservableObject
     public string TitleText => Text("ApplicationSettings.Title");
     public string GeneralText => Text("ApplicationSettings.General");
     public string StartupText => Text("ApplicationSettings.Startup");
+    public string WindowText => Text("ApplicationSettings.Window");
+    public string MinimizeToTrayOnCloseText => Text("ApplicationSettings.MinimizeToTrayOnClose");
+    public bool IsMinimizeToTraySupported => OperatingSystem.IsWindows();
     public string AppearanceText => Text("ApplicationSettings.Appearance");
     public string ThemeText => Text("ApplicationSettings.Theme");
     public string DarkThemeText => Text("ApplicationSettings.DarkTheme");
@@ -275,6 +279,7 @@ public partial class ApplicationSettingsViewModel : ObservableObject
             globalProxyProvider: () => GetGlobalProxyIfEnabled());
 
         _showSessionManagerOnStartup = settings.ShowSessionManagerOnStartup;
+        _minimizeToTrayOnClose = settings.MinimizeToTrayOnClose;
         _showTabBar = settings.ShowTabBar;
         _showSftpPanel = settings.ShowSftpPanel;
         _showMonitorPanel = settings.ShowMonitorPanel;
@@ -349,6 +354,12 @@ public partial class ApplicationSettingsViewModel : ObservableObject
     partial void OnShowSessionManagerOnStartupChanged(bool value)
     {
         _settings.ShowSessionManagerOnStartup = value;
+        Persist();
+    }
+
+    partial void OnMinimizeToTrayOnCloseChanged(bool value)
+    {
+        _settings.MinimizeToTrayOnClose = value;
         Persist();
     }
 
@@ -954,6 +965,8 @@ public partial class ApplicationSettingsViewModel : ObservableObject
         OnPropertyChanged(nameof(TitleText));
         OnPropertyChanged(nameof(GeneralText));
         OnPropertyChanged(nameof(StartupText));
+        OnPropertyChanged(nameof(WindowText));
+        OnPropertyChanged(nameof(MinimizeToTrayOnCloseText));
         OnPropertyChanged(nameof(AppearanceText));
         OnPropertyChanged(nameof(ThemeText));
         OnPropertyChanged(nameof(DarkThemeText));
